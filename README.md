@@ -2,6 +2,22 @@
 
 Local-first CLI assistant for planning work, remembering context, triaging tasks, and safely proposing agentic actions. It keeps the user's working memory in a local SQLite store, retrieves relevant context on demand, and gates external mutations behind explicit approval.
 
+## Current Status
+
+This repository is an MVP public baseline. It is useful as a local CLI assistant, but it is not yet a production-stable application, a full GraphRAG system, or a graph database application.
+
+The current graph support is SQLite-based and lightweight: `knowledge_nodes`, `knowledge_edges`, manual links, and conversation-derived relationship hints. Real GraphRAG is planned in stages. See `ARCHITECTURE.md` and `ROADMAP.md`.
+
+## Project Direction
+
+The long-term direction is a local-first AI control plane:
+
+```text
+Intent -> Context -> Plan -> Agent Work -> Review -> Approval -> Execution -> Audit -> Learning
+```
+
+The design is inspired by AI-native software-factory ideas: intent-first workflows, living documentation, graph-backed context, approval-gated agents, and full audit trails. This project applies those ideas to a personal, open-source, local-first assistant OS.
+
 ## What It Does
 
 - Captures notes, tasks, commitments, decisions, risks, and daily logs.
@@ -10,6 +26,11 @@ Local-first CLI assistant for planning work, remembering context, triaging tasks
 - Builds searchable memory with provenance, graph links, hybrid retrieval, and "why" explanations.
 - Runs assistant workflows such as briefings, risk scans, delegation, autopilot, approvals, and weekly reviews.
 - Redacts common PII and secrets before persistence and keeps private runtime data out of git.
+
+## Design Docs
+
+- `ARCHITECTURE.md`: current architecture, target operating loop, and GraphRAG direction.
+- `ROADMAP.md`: surgical roadmap from MVP to stable app, intent layer, GraphRAG, and product hardening.
 
 ## Open Source Stack
 
