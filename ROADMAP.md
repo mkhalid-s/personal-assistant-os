@@ -117,8 +117,8 @@ Work items:
 - Add SQLite-first retrieval trace tests before adding graph storage.
 - Extend deterministic entity extraction, then add provider-assisted extraction behind approval/policy.
 - Extend typed edge extraction across notes, conversations, tickets, and PRs.
-- Add graph expansion to `myos context` and `myos why`.
-- Add retrieval traces so every answer can show why sources were chosen.
+- Extend graph expansion from `myos context --graph` into `myos why`.
+- Extend retrieval traces so every answer can show why sources were chosen.
 - Add retrieval eval fixtures for common assistant questions.
 
 Exit criteria:

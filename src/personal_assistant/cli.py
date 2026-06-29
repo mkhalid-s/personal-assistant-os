@@ -24,7 +24,7 @@ from .ingest.audio import transcribe_audio
 from .ingest.image import extract_image_text
 from .pulse import detect_mode, run_cycle
 from .retrieval import hybrid_score
-from . import assistant, autonomy, context as ctx, em, entities, intents, providers, queries, relationships, watch
+from . import assistant, autonomy, context as ctx, em, entities, graphrag, intents, providers, queries, relationships, watch
 # Helpers extracted out of this module (refactor #12) — re-imported so existing
 # call sites (and tests importing them from cli) keep working unchanged.
 from .inbox import (
@@ -513,6 +513,22 @@ def cmd_related(args: argparse.Namespace) -> None:
 
 def cmd_context(args: argparse.Namespace) -> None:
     conn = get_connection()
+    if getattr(args, "graph", False):
+        hits = graphrag.retrieve(conn, args.query, limit=args.limit, graph_hops=args.graph_hops)
+        if not hits:
+            print("No relevant graph context found.")
+            return
+        print(f"Graph context results for: {args.query}")
+        for hit in hits:
+            snippet = str(hit["content"]).strip().replace("\n", " ")
+            if len(snippet) > 120:
+                snippet = snippet[:117] + "..."
+            print(f"- ({hit['score']:.3f}) {hit['citation']}: {snippet}")
+            print(f"  reason: {hit['reason']}")
+            if hit["graph_path"]:
+                print(f"  path: {' -> '.join(hit['graph_path'])}")
+        return
+
     rows = conn.execute(
         """
         SELECT source_type, source_id, content
@@ -4098,6 +4114,8 @@ def build_parser() -> argparse.ArgumentParser:
     context = sub.add_parser("context", help="Find semantic context from indexed chunks.")
     context.add_argument("query", help="Search query.")
     context.add_argument("--limit", type=int, default=5)
+    context.add_argument("--graph", action="store_true", help="Use SQLite GraphRAG retrieval trace.")
+    context.add_argument("--graph-hops", type=int, default=1)
     context.set_defaults(func=cmd_context)
 
     recall = sub.add_parser("recall", help="Scored recall over conversation memory (relevance+recency+importance).")
