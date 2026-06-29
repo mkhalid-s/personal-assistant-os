@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import shlex
+import shutil
 import sqlite3
+import sys
 import time
 import uuid
 from xml.sax.saxutils import escape as xml_escape
@@ -14,7 +17,7 @@ import subprocess
 
 from .connectors import AhaConnector, ConfluenceConnector, GitHubConnector, JiraConnector
 from .dashboard import render_dashboard_html, serve_dashboard
-from .db import append_event, get_connection
+from .db import append_event, get_connection, resolve_db_path
 from .extraction import extract_suggestions
 from .graph import connect_work_items
 from .ingest.audio import transcribe_audio
@@ -684,7 +687,20 @@ def cmd_sync(args: argparse.Namespace) -> None:
         print(f"{result.connector}: status={result.status}, fetched={result.fetched}, msg={result.message}")
 
 
-def cmd_doctor(_: argparse.Namespace) -> None:
+def _sqlite_fts5_available(conn: sqlite3.Connection) -> tuple[bool, str]:
+    try:
+        conn.execute("CREATE VIRTUAL TABLE temp.myos_fts_check USING fts5(content)")
+        conn.execute("DROP TABLE temp.myos_fts_check")
+        return True, "FTS5 available"
+    except sqlite3.Error as exc:
+        return False, str(exc)
+
+
+def _repo_file(path: str) -> Path:
+    return Path(__file__).resolve().parents[2] / path
+
+
+def cmd_doctor(args: argparse.Namespace) -> None:
     conn = get_connection()
     print("System health:")
     counts = conn.execute(
@@ -701,11 +717,77 @@ def cmd_doctor(_: argparse.Namespace) -> None:
         f"external={counts['external_count']} events={counts['event_count']}"
     )
 
+    core_checks: list[tuple[str, bool, str]] = []
+    optional_checks: list[tuple[str, bool, str]] = []
+
+    db_path = resolve_db_path()
+    db_parent = db_path.expanduser().parent
+    fts_ok, fts_detail = _sqlite_fts5_available(conn)
+    gitignore_text = _repo_file(".gitignore").read_text() if _repo_file(".gitignore").exists() else ""
+
+    core_checks.extend(
+        [
+            (
+                "python_version",
+                sys.version_info >= (3, 10),
+                f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+            ),
+            (
+                "package_import",
+                importlib.util.find_spec("personal_assistant") is not None,
+                "personal_assistant importable",
+            ),
+            ("db_connection", conn.execute("SELECT 1").fetchone() is not None, str(db_path)),
+            (
+                "db_parent_writable",
+                db_parent.exists() and os.access(db_parent, os.W_OK),
+                str(db_parent),
+            ),
+            ("sqlite_fts5", fts_ok, fts_detail),
+            ("env_example", _repo_file(".env.example").exists(), str(_repo_file(".env.example"))),
+            (
+                "local_artifacts_ignored",
+                "data/" in gitignore_text and ".env" in gitignore_text,
+                ".gitignore covers data and env files",
+            ),
+        ]
+    )
+
+    credential_groups = {
+        "jira_credentials": ["JIRA_BASE_URL", "JIRA_USER_EMAIL", "JIRA_API_TOKEN"],
+        "github_credentials": ["GITHUB_TOKEN", "GITHUB_OWNER", "GITHUB_REPO"],
+        "confluence_credentials": ["CONFLUENCE_BASE_URL", "CONFLUENCE_USER_EMAIL", "CONFLUENCE_API_TOKEN"],
+        "aha_credentials": ["AHA_BASE_URL", "AHA_API_TOKEN"],
+    }
+    for name, keys in credential_groups.items():
+        missing = [key for key in keys if not os.getenv(key, "").strip()]
+        optional_checks.append((name, not missing, "ready" if not missing else "missing " + ", ".join(missing)))
+
+    optional_checks.extend(
+        [
+            ("tesseract", bool(shutil.which("tesseract")), shutil.which("tesseract") or "not installed"),
+            ("launchctl", bool(shutil.which("launchctl")), shutil.which("launchctl") or "not available"),
+            (
+                "action_provider",
+                bool(os.getenv("MYOS_ACTION_COMMAND", "").strip()),
+                os.getenv("MYOS_ACTION_COMMAND", "") or "not configured",
+            ),
+        ]
+    )
+
+    print("Core checks:")
+    for name, ok, detail in core_checks:
+        print(f"- {'PASS' if ok else 'FAIL'} {name}: {detail}")
+
+    print("Optional checks:")
+    for name, ok, detail in optional_checks:
+        print(f"- {'PASS' if ok else 'INFO'} {name}: {detail}")
+
     print(f"Autonomy level: {autonomy.level_from_policy(conn)} (auto-run safe / one-tap non-destructive / block destructive)")
     active = providers.resolve_backend_name()
     print(f"Agent backends (active: {active}):")
     for b in providers.available_backends():
-        mark = "✅" if b["available"] else "❌"
+        mark = "PASS" if b["available"] else "INFO"
         print(f"- {mark} {b['name']}: {b['detail']}")
 
     rows = conn.execute(
@@ -717,6 +799,11 @@ def cmd_doctor(_: argparse.Namespace) -> None:
     ).fetchall()
     if not rows:
         print("- sync_state: no connector runs yet")
+        if args.strict and any(not ok for _, ok, _ in core_checks):
+            print("Doctor strict: core checks failed.")
+            raise SystemExit(1)
+        if args.strict:
+            print("Doctor strict: core checks passed.")
         return
     print("Connector status:")
     for row in rows:
@@ -725,6 +812,11 @@ def cmd_doctor(_: argparse.Namespace) -> None:
             f"- {row['connector']}: status={row['last_status']} "
             f"last_success={row['last_success_at']}{err}"
         )
+    if args.strict and any(not ok for _, ok, _ in core_checks):
+        print("Doctor strict: core checks failed.")
+        raise SystemExit(1)
+    if args.strict:
+        print("Doctor strict: core checks passed.")
 
 
 def cmd_ingest_external(args: argparse.Namespace) -> None:
@@ -2419,7 +2511,7 @@ def cmd_live(args: argparse.Namespace) -> None:
 def cmd_health(_: argparse.Namespace) -> None:
     cmd_sanity(argparse.Namespace(strict=False, report_dir=""))
     print()
-    cmd_doctor(argparse.Namespace())
+    cmd_doctor(argparse.Namespace(strict=False))
 
 
 def cmd_ui(args: argparse.Namespace) -> None:
@@ -3886,6 +3978,7 @@ def build_parser() -> argparse.ArgumentParser:
     onboard.set_defaults(func=cmd_onboard)
 
     doctor = sub.add_parser("doctor", help="Show local system and connector health.")
+    doctor.add_argument("--strict", action="store_true", help="Exit non-zero if core local checks fail.")
     doctor.set_defaults(func=cmd_doctor)
 
     ingest_external = sub.add_parser("ingest-external", help="Ingest synced external items into inbox.")
