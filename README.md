@@ -1,0 +1,250 @@
+# Personal Assistant OS
+
+Local-first CLI assistant for planning work, remembering context, triaging tasks, and safely proposing agentic actions. It keeps the user's working memory in a local SQLite store, retrieves relevant context on demand, and gates external mutations behind explicit approval.
+
+## What It Does
+
+- Captures notes, tasks, commitments, decisions, risks, and daily logs.
+- Syncs optional external context from configured connectors such as Jira, GitHub, Confluence, and Aha.
+- Ingests text, audio transcripts, images, meeting notes, and watched folders.
+- Builds searchable memory with provenance, graph links, hybrid retrieval, and "why" explanations.
+- Runs assistant workflows such as briefings, risk scans, delegation, autopilot, approvals, and weekly reviews.
+- Redacts common PII and secrets before persistence and keeps private runtime data out of git.
+
+## Open Source Stack
+
+Core runtime:
+
+- Python 3.10+
+- SQLite via the Python standard library
+- `setuptools` packaging
+- `unittest` test suite
+- `anthropic` Python SDK for the default hosted reasoning backend
+
+Optional local tools:
+
+- `sounddevice` and `faster-whisper` for voice/audio transcription workflows
+- `tesseract` for OCR if you use image ingestion
+- macOS `launchd` for always-on local scheduling
+
+External services are optional. Connectors only run when their environment variables are configured, and approved-action execution is off by default.
+
+## Safety Model
+
+The assistant is designed to propose before it mutates external systems.
+
+- Local capture and bookkeeping can run directly.
+- External updates are drafted into an approval queue.
+- Destructive or broad actions are blocked by policy.
+- Conversation logs, action payloads, and indexed text pass through privacy filters.
+- Runtime data lives under `data/`, which is ignored by git.
+
+## Setup
+
+```bash
+cd personal-assistant-os
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+```
+
+Install optional voice dependencies only if needed:
+
+```bash
+python -m pip install -e '.[voice]'
+```
+
+## Configuration
+
+Set only what you use. Missing connectors are skipped safely.
+
+```bash
+# Optional custom DB path
+export MYOS_DB_PATH="/path/to/personal-assistant-os/data/assistant.db"
+
+# Optional external connectors
+export JIRA_BASE_URL="https://example.atlassian.net"
+export JIRA_USER_EMAIL="you@example.com"
+export JIRA_API_TOKEN="<token>"
+
+export GITHUB_TOKEN="<token>"
+export GITHUB_OWNER="<org-or-user>"
+export GITHUB_REPO="<repo>"
+
+export CONFLUENCE_BASE_URL="https://example.atlassian.net"
+export CONFLUENCE_USER_EMAIL="you@example.com"
+export CONFLUENCE_API_TOKEN="<token>"
+
+export AHA_BASE_URL="https://example.aha.io"
+export AHA_API_TOKEN="<token>"
+
+# Optional connector hardening
+export MYOS_CONNECTOR_RETRIES="3"
+export MYOS_CONNECTOR_BACKOFF_SEC="1.2"
+export MYOS_CONNECTOR_TIMEOUT_SEC="25"
+
+# Optional reasoning provider. Command receives JSON on stdin and returns JSON.
+export MYOS_AI_COMMAND="/path/to/your-ai-wrapper"
+
+# Optional notification hook. Command receives assistant digest JSON on stdin.
+export MYOS_NOTIFY_COMMAND="/path/to/notify-wrapper"
+
+# Built-in safe default: write approved external actions into data/outbox.
+export MYOS_ACTION_PROVIDER="builtin"
+export MYOS_ACTION_COMMAND="myos action-provider"
+```
+
+Do not commit local `.env` files, SQLite databases, logs, generated reports, or agent/tool settings. The repository `.gitignore` is configured to keep those local artifacts out of source control.
+
+## Quick Start
+
+```bash
+myos capture "Follow up with platform team about auth token expiry by Friday"
+myos triage
+myos today --meeting-hours 4
+myos sync --connector all
+myos transcribe /path/to/meeting.m4a --text "Decision: move freeze to Wednesday. Follow up by Friday."
+myos ingest-image /path/to/whiteboard.png --text "Task: add canary checks. Risk: platform dependency."
+myos inbox-process
+myos at-risk
+myos why --item 1
+myos close-day --mode hybrid --note "Meeting-heavy coordination day"
+```
+
+## Command Catalog
+
+Common daily commands:
+
+- `myos capture <text> [--kind note|task|commitment|decision|risk] [--due YYYY-MM-DD] [--owner NAME]`
+- `myos triage`
+- `myos today [--meeting-hours FLOAT]`
+- `myos brief [--meeting-hours FLOAT] [--top N] [--risk-threshold N]`
+- `myos risk-radar`
+- `myos at-risk [--threshold N] [--limit N]`
+- `myos waiting-on [--limit N]`
+- `myos next-action [--meeting-hours FLOAT] [--risk-threshold N]`
+- `myos close-day [--mode maker|hybrid|meeting-heavy|recovery] [--note TEXT]`
+- `myos weekly-review [--days N] [--risk-threshold N] [--risk-alert N]`
+
+Ingestion and context:
+
+- `myos sync [--connector all|jira|github|confluence|aha]`
+- `myos ingest-external [--limit N] [--min-risk N]`
+- `myos transcribe <audio_file> [--text TRANSCRIPT]`
+- `myos ingest-image <image_file> [--text OCR_TEXT]`
+- `myos watch-dir add <path> [--label TEXT]`
+- `myos watch-scan [--limit N]`
+- `myos context <query> [--limit N]`
+- `myos related --item N [--limit N]`
+- `myos why --item N`
+- `myos reindex`
+
+Assistant and automation:
+
+- `myos chat`
+- `myos voice [--text-reply]`
+- `myos delegate <objective> [--context TEXT] [--constraint TEXT] [--mode safe|balanced|aggressive]`
+- `myos act [--task N] [--action N] [--list] [--approve] [--execute]`
+- `myos approve [--list] [--action N] [--execute]`
+- `myos autopilot [--env-file PATH] [--once] [--interval-sec N]`
+- `myos autopilot-status [--limit N]`
+- `myos digest [--id N] [--title-only]`
+- `myos self-review`
+
+Setup and operations:
+
+- `myos config-init [--path ./.env.myos] [--force]`
+- `myos setup-live [--apply] [--check] [--data-dir PATH] [--env-file PATH] [--db-path PATH] [--watch-dir PATH] [--force] [--install-launchd] [--load-launchd] [--autopilot-interval-sec N]`
+- `myos doctor`
+- `myos health`
+- `myos dashboard [--host 127.0.0.1] [--port 8787] [--report-dir PATH]`
+- `myos sanity [--strict] [--report-dir PATH]`
+- `myos cleanup [--days N] [--limit N]`
+- `myos policy [--set KEY=VALUE]`
+- `myos launchd-install [--apply] [--load] [--env-file PATH] [--interval-sec N] [--meeting-hours FLOAT]`
+- `myos launchd-uninstall [--apply]`
+- `myos launchd-status`
+
+## Agentic Workflows
+
+### Conversational Assistant
+
+```bash
+myos chat
+myos voice
+myos voice --text-reply
+myos doctor
+```
+
+The assistant can answer from local memory, retrieve relevant context, capture new tasks, and draft external updates for approval.
+
+### Delegation and Approval
+
+```bash
+myos delegate "Handle a blocked launch dependency" \
+  --context "Need owner confirmation and timeline renegotiation"
+myos act --task 1 --list
+myos act --action 1 --execute
+myos learn --task 1 --outcome success --notes "Owner confirmed reduced scope"
+myos coach "blocked launch dependency"
+myos agent-status --task 1
+```
+
+### Autopilot
+
+```bash
+myos autopilot --env-file ./data/.env.myos --once
+myos autopilot --env-file ./data/.env.myos --interval-sec 900
+myos approve --list
+myos digest
+```
+
+Autopilot runs the pipeline, detects important changes, creates delegated assistant tasks, executes safe local actions, and leaves risky or external actions in the approval queue.
+
+## Privacy and Retention
+
+```bash
+myos policy
+myos policy --set retention_media_days=45
+myos cleanup
+```
+
+Useful policy keys include:
+
+- `retention_media_days`
+- `retention_evidence_days`
+- `retention_conversation_days`
+- `redact_emails`
+- `redact_phones`
+- `redact_secrets`
+- `redact_cards`
+- `log_conversations`
+- `autonomy_level`
+
+## Launchd Auto-Start on macOS
+
+Template plist files are in `deploy/launchd/`.
+
+Before loading them, replace `/path/to/personal-assistant-os` with your local checkout path, then run:
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.myos.sync.plist 2>/dev/null || true
+launchctl unload ~/Library/LaunchAgents/com.myos.pulse.plist 2>/dev/null || true
+cp deploy/launchd/com.myos.sync.plist ~/Library/LaunchAgents/
+cp deploy/launchd/com.myos.pulse.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.myos.sync.plist
+launchctl load ~/Library/LaunchAgents/com.myos.pulse.plist
+```
+
+The CLI setup commands can also generate and install launchd configuration for a local checkout.
+
+## Testing
+
+```bash
+source .venv/bin/activate
+python -m unittest discover -s tests -p "test_*.py" -v
+```
+
+## License
+
+Licensed under the Apache License, Version 2.0. See `LICENSE`.
