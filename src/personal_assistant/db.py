@@ -919,6 +919,69 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
             (20, "add_context_intelligence_loop"),
         )
+    if current < 21:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS intents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                objective TEXT NOT NULL,
+                context TEXT,
+                constraints_json TEXT NOT NULL DEFAULT '[]',
+                success_criteria TEXT,
+                priority INTEGER NOT NULL DEFAULT 2,
+                status TEXT NOT NULL DEFAULT 'open',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS intent_evidence (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                intent_id INTEGER NOT NULL,
+                source_type TEXT NOT NULL DEFAULT 'note',
+                source_id TEXT,
+                summary TEXT,
+                content TEXT NOT NULL,
+                confidence REAL NOT NULL DEFAULT 0.7,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(intent_id) REFERENCES intents(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS intent_decisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                intent_id INTEGER NOT NULL,
+                decision TEXT NOT NULL,
+                rationale TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                superseded_by INTEGER,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(intent_id) REFERENCES intents(id),
+                FOREIGN KEY(superseded_by) REFERENCES intent_decisions(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS intent_risks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                intent_id INTEGER NOT NULL,
+                risk TEXT NOT NULL,
+                impact TEXT,
+                likelihood TEXT,
+                mitigation TEXT,
+                owner TEXT,
+                due_date TEXT,
+                status TEXT NOT NULL DEFAULT 'open',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(intent_id) REFERENCES intents(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_intents_status_priority ON intents(status, priority, created_at);
+            CREATE INDEX IF NOT EXISTS idx_intent_evidence_intent ON intent_evidence(intent_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_intent_decisions_intent ON intent_decisions(intent_id, status, created_at);
+            CREATE INDEX IF NOT EXISTS idx_intent_risks_intent ON intent_risks(intent_id, status, due_date);
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (21, "add_intent_model"),
+        )
 
     _ensure_fts5(conn)  # self-heal: build the FTS index if a no-FTS5 run stranded migration 17
     conn.commit()

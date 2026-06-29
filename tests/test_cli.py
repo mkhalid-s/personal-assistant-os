@@ -229,6 +229,86 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("MYOS_ACTION_COMMAND=myos action-provider", env_example.read_text())
             self.assertIn("myos doctor --strict", demo.read_text())
 
+    def test_intent_lifecycle_and_redacted_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
+            base_cmd = ["python", "-m", "personal_assistant.cli"]
+
+            created = subprocess.run(
+                base_cmd
+                + [
+                    "intent",
+                    "create",
+                    "Ship public assistant baseline",
+                    "--context",
+                    "Local-only release",
+                    "--constraint",
+                    "No external services",
+                    "--success",
+                    "Repeatable demo works",
+                    "--priority",
+                    "1",
+                ],
+                cwd=Path.cwd(),
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertIn("Created intent #1", created.stdout)
+
+            listed = subprocess.run(
+                base_cmd + ["intent", "list", "--status", "open"],
+                cwd=Path.cwd(),
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertIn("#1 status=open priority=1", listed.stdout)
+            self.assertIn("Ship public assistant baseline", listed.stdout)
+
+            evidence = subprocess.run(
+                base_cmd
+                + [
+                    "intent",
+                    "evidence",
+                    "add",
+                    "--id",
+                    "1",
+                    "--text",
+                    "Owner test@example.com has token ghp_abcdefghijklmnopqrstuvwxyz123456.",
+                    "--source-type",
+                    "note",
+                    "--summary",
+                    "Email test@example.com confirmed",
+                ],
+                cwd=Path.cwd(),
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertIn("Added evidence #1 to intent #1", evidence.stdout)
+
+            shown = subprocess.run(
+                base_cmd + ["intent", "show", "--id", "1"],
+                cwd=Path.cwd(),
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertIn("Intent #1", shown.stdout)
+            self.assertIn("Constraints:", shown.stdout)
+            self.assertIn("No external services", shown.stdout)
+            self.assertIn("[REDACTED_EMAIL]", shown.stdout)
+            self.assertIn("[REDACTED_SECRET]", shown.stdout)
+            self.assertNotIn("test@example.com", shown.stdout)
+            self.assertNotIn("ghp_abcdefghijklmnopqrstuvwxyz123456", shown.stdout)
+
     def test_setup_live_dry_run_and_apply(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
