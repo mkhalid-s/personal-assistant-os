@@ -24,7 +24,7 @@ from .ingest.audio import transcribe_audio
 from .ingest.image import extract_image_text
 from .pulse import detect_mode, run_cycle
 from .retrieval import hybrid_score
-from . import assistant, autonomy, context as ctx, em, entities, intents, providers, queries, watch
+from . import assistant, autonomy, context as ctx, em, entities, intents, providers, queries, relationships, watch
 # Helpers extracted out of this module (refactor #12) — re-imported so existing
 # call sites (and tests importing them from cli) keep working unchanged.
 from .inbox import (
@@ -3827,6 +3827,47 @@ def cmd_entity(args: argparse.Namespace) -> None:
     raise SystemExit("Unknown entity command.")
 
 
+def cmd_relationship(args: argparse.Namespace) -> None:
+    conn = get_connection()
+    action = getattr(args, "relationship_action", "")
+    if action == "extract":
+        recorded = relationships.record_relationships(
+            conn,
+            args.text,
+            source_type=args.source_type,
+            source_id=args.source_id,
+        )
+        conn.commit()
+        if not recorded:
+            print("No deterministic relationships found.")
+            return
+        print(f"Recorded {len(recorded)} relationships:")
+        for rel in recorded:
+            src = rel["from_entity"]["canonical_name"]
+            dst = rel["to_entity"]["canonical_name"]
+            print(
+                f"- #{rel['id']} {src} -[{rel['relation_type']}]-> {dst} "
+                f"confidence={rel['confidence']:.2f}"
+            )
+        return
+
+    if action == "list":
+        rows = relationships.list_relationships(conn, relation_type=args.type, limit=args.limit)
+        if not rows:
+            print("No relationships found.")
+            return
+        print("Relationships:")
+        for row in rows:
+            source = f" source={row['source_type']}:{row['source_id']}" if row["source_type"] else ""
+            print(
+                f"- #{row['id']} {row['from_name']} -[{row['relation_type']}]-> {row['to_name']}"
+                f" confidence={row['confidence']:.2f}{source}"
+            )
+        return
+
+    raise SystemExit("Unknown relationship command.")
+
+
 def cmd_pulse(args: argparse.Namespace) -> None:
     if args.env_file:
         load_env_file(args.env_file)
@@ -4349,6 +4390,18 @@ def build_parser() -> argparse.ArgumentParser:
     entity_list.add_argument("--type", default="", help="Optional entity type filter.")
     entity_list.add_argument("--limit", type=int, default=50)
     entity_list.set_defaults(func=cmd_entity)
+
+    relationship = sub.add_parser("relationship", help="Extract and list typed entity relationships.")
+    relationship_sub = relationship.add_subparsers(dest="relationship_action", required=True)
+    relationship_extract = relationship_sub.add_parser("extract", help="Extract typed relationships from text.")
+    relationship_extract.add_argument("--text", required=True)
+    relationship_extract.add_argument("--source-type", default="note")
+    relationship_extract.add_argument("--source-id")
+    relationship_extract.set_defaults(func=cmd_relationship)
+    relationship_list = relationship_sub.add_parser("list", help="List extracted relationships.")
+    relationship_list.add_argument("--type", default="", help="Optional relation type filter.")
+    relationship_list.add_argument("--limit", type=int, default=50)
+    relationship_list.set_defaults(func=cmd_relationship)
 
     intent = sub.add_parser("intent", help="Manage first-class assistant intents.")
     intent_sub = intent.add_subparsers(dest="intent_action", required=True)

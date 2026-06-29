@@ -1015,6 +1015,33 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
             (22, "add_entities_and_aliases"),
         )
+    if current < 23:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS relationships (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                from_entity_id INTEGER NOT NULL,
+                to_entity_id INTEGER NOT NULL,
+                relation_type TEXT NOT NULL,
+                source_type TEXT,
+                source_id TEXT,
+                evidence TEXT,
+                confidence REAL NOT NULL DEFAULT 0.75,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(from_entity_id) REFERENCES entities(id),
+                FOREIGN KEY(to_entity_id) REFERENCES entities(id),
+                UNIQUE(from_entity_id, to_entity_id, relation_type, source_type, source_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_relationships_from ON relationships(from_entity_id, relation_type);
+            CREATE INDEX IF NOT EXISTS idx_relationships_to ON relationships(to_entity_id, relation_type);
+            CREATE INDEX IF NOT EXISTS idx_relationships_source ON relationships(source_type, source_id);
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (23, "add_typed_entity_relationships"),
+        )
 
     _ensure_fts5(conn)  # self-heal: build the FTS index if a no-FTS5 run stranded migration 17
     conn.commit()

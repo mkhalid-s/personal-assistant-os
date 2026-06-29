@@ -97,7 +97,7 @@ Data model additions:
 
 - `entities`: canonical people, projects, systems, documents, tickets, PRs, decisions, risks, requirements, APIs, services. Initial deterministic extraction exists for high-confidence identifiers and labeled names.
 - `entity_aliases`: alternate names and IDs. Initial SQLite persistence exists.
-- `relationships`: typed edges with source, confidence, timestamps, and provenance.
+- `relationships`: typed edges with source, confidence, timestamps, and provenance. Initial deterministic extraction exists for explicit relationship phrases.
 - `claims`: extracted facts with source spans and confidence.
 - `retrieval_runs`: query, selected sources, graph expansion, rerank scores, and final citations.
 
@@ -116,7 +116,7 @@ Work items:
 
 - Add SQLite-first retrieval trace tests before adding graph storage.
 - Extend deterministic entity extraction, then add provider-assisted extraction behind approval/policy.
-- Add typed edge extraction from notes, conversations, tickets, and PRs.
+- Extend typed edge extraction across notes, conversations, tickets, and PRs.
 - Add graph expansion to `myos context` and `myos why`.
 - Add retrieval traces so every answer can show why sources were chosen.
 - Add retrieval eval fixtures for common assistant questions.
