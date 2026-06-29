@@ -8,7 +8,7 @@ Local-first CLI assistant for planning work, remembering context, triaging tasks
 
 This repository is an MVP public baseline. It is useful as a local CLI assistant, but it is not yet a production-stable application, a full GraphRAG system, or a graph database application.
 
-The current graph support is SQLite-based and lightweight: `knowledge_nodes`, `knowledge_edges`, manual links, and conversation-derived relationship hints. Real GraphRAG is planned in stages. See `ARCHITECTURE.md` and `ROADMAP.md`.
+The current graph support is SQLite-based and lightweight: `knowledge_nodes`, `knowledge_edges`, manual links, conversation-derived relationship hints, and a tested retrieval trace for cited graph expansion. Real GraphRAG is planned in stages. See `ARCHITECTURE.md` and `ROADMAP.md`.
 
 ## Project Direction
 
