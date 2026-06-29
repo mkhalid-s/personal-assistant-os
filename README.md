@@ -1,5 +1,7 @@
 # Personal Assistant OS
 
+[![CI](https://github.com/mkhalid-s/personal-assistant-os/actions/workflows/ci.yml/badge.svg)](https://github.com/mkhalid-s/personal-assistant-os/actions/workflows/ci.yml)
+
 Local-first CLI assistant for planning work, remembering context, triaging tasks, and safely proposing agentic actions. It keeps the user's working memory in a local SQLite store, retrieves relevant context on demand, and gates external mutations behind explicit approval.
 
 ## Current Status
