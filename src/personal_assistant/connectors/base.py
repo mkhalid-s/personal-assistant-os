@@ -5,7 +5,7 @@ import os
 import sqlite3
 import time
 import urllib.request
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Any
 
@@ -126,7 +126,7 @@ class BaseConnector:
             items = self.fetch_items()
             for item in items:
                 self.upsert_external(item)
-            cursor = datetime.now(UTC).isoformat(timespec="seconds")
+            cursor = datetime.now(timezone.utc).isoformat(timespec="seconds")
             self.set_sync_state(cursor, "ok", "")
             self.conn.commit()
             return ConnectorResult(self.name, len(items), "ok")
