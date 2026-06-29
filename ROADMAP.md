@@ -30,7 +30,7 @@ Goal: keep the public repo clean and honest.
 - Keep `.env`, databases, logs, local agent settings, and generated reports ignored.
 - Keep current history free of company email and co-author trailers.
 - Document current limitations clearly.
-- Add CI for tests and scans.
+- Maintain CI for tests and public-readiness scans.
 
 Exit criteria:
 
@@ -47,7 +47,8 @@ Work items:
 - Add a `myos doctor --strict` checklist for Python version, package install, DB path, permissions, optional tools, and configured connectors.
 - Add a sample `.env.example` with safe placeholders.
 - Add a deterministic demo workflow using only local data.
-- Add CI with unit tests, diff whitespace checks, secret scans, and dependency license checks.
+- Add CI with unit tests, diff whitespace checks, and public hygiene scans.
+- Add dependency license checks.
 - Add migration backup guidance and recovery commands.
 - Add structured error messages for connector/auth/setup failures.
 

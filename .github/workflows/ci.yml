@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Run tests
+        env:
+          PYTHONPATH: src
+        run: python -m unittest discover -s tests
+
+  hygiene:
+    name: Public Hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check diff whitespace
+        run: git diff --check HEAD~1..HEAD
+
+      - name: Scan for private references
+        run: |
+          patterns=("Guide""wire" "GW Bed""rock" "/Users/mshaikh/Documents/""GW")
+          for pattern in "${patterns[@]}"; do
+            if git grep -n -F "$pattern" -- ':!*.lock'; then
+              echo "Found private reference: $pattern"
+              exit 1
+            fi
+          done
+
+      - name: Scan commit messages for co-author trailers
+        run: |
+          trailer_pattern='^Co-authored-''by:'
+          ! git log --format=%B | grep -i "$trailer_pattern"
+
+      - name: Verify local-only artifacts are not tracked
+        run: |
+          ! git ls-files | grep -E '(^|/)(\.env|\.DS_Store|\.cursor|\.claude)(/|$)|\.(db|sqlite|sqlite3|log)$'
