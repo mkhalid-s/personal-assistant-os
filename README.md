@@ -80,6 +80,9 @@ python -m pip install -e '.[voice]'
 Set only what you use. Missing connectors are skipped safely.
 
 ```bash
+# Start from the tracked safe template:
+cp .env.example data/.env.myos
+
 # Optional custom DB path
 export MYOS_DB_PATH="/path/to/personal-assistant-os/data/assistant.db"
 
@@ -116,6 +119,8 @@ export MYOS_ACTION_COMMAND="myos action-provider"
 ```
 
 Do not commit local `.env` files, SQLite databases, logs, generated reports, or agent/tool settings. The repository `.gitignore` is configured to keep those local artifacts out of source control.
+
+For a no-network first run, follow `examples/demo-local.md`.
 
 ## Quick Start
 
@@ -176,7 +181,7 @@ Setup and operations:
 
 - `myos config-init [--path ./.env.myos] [--force]`
 - `myos setup-live [--apply] [--check] [--data-dir PATH] [--env-file PATH] [--db-path PATH] [--watch-dir PATH] [--force] [--install-launchd] [--load-launchd] [--autopilot-interval-sec N]`
-- `myos doctor`
+- `myos doctor [--strict]`
 - `myos health`
 - `myos dashboard [--host 127.0.0.1] [--port 8787] [--report-dir PATH]`
 - `myos sanity [--strict] [--report-dir PATH]`

@@ -204,6 +204,31 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("Created config template", out.stdout)
             self.assertTrue(cfg.exists())
 
+    def test_doctor_strict_and_public_templates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
+            out = subprocess.run(
+                ["python", "-m", "personal_assistant.cli", "doctor", "--strict"],
+                cwd=Path.cwd(),
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertIn("Core checks", out.stdout)
+            self.assertIn("PASS python_version", out.stdout)
+            self.assertIn("PASS sqlite_fts5", out.stdout)
+            self.assertIn("Doctor strict: core checks passed", out.stdout)
+
+            env_example = Path.cwd() / ".env.example"
+            demo = Path.cwd() / "examples" / "demo-local.md"
+            self.assertTrue(env_example.exists())
+            self.assertTrue(demo.exists())
+            self.assertIn("MYOS_ACTION_COMMAND=myos action-provider", env_example.read_text())
+            self.assertIn("myos doctor --strict", demo.read_text())
+
     def test_setup_live_dry_run_and_apply(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
