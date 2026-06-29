@@ -24,7 +24,7 @@ from .ingest.audio import transcribe_audio
 from .ingest.image import extract_image_text
 from .pulse import detect_mode, run_cycle
 from .retrieval import hybrid_score
-from . import assistant, autonomy, context as ctx, em, providers, queries, watch
+from . import assistant, autonomy, context as ctx, em, intents, providers, queries, watch
 # Helpers extracted out of this module (refactor #12) — re-imported so existing
 # call sites (and tests importing them from cli) keep working unchanged.
 from .inbox import (
@@ -3698,6 +3698,89 @@ def cmd_watch_scan(args: argparse.Namespace) -> None:
     print(f"Watch scan complete: files_ingested={files}, suggestions_created={suggestions}")
 
 
+def cmd_intent(args: argparse.Namespace) -> None:
+    conn = get_connection()
+    action = getattr(args, "intent_action", "")
+    if action == "create":
+        intent_id = intents.create_intent(
+            conn,
+            objective=args.objective,
+            context=args.context,
+            constraints=args.constraint,
+            success_criteria=args.success,
+            priority=args.priority,
+        )
+        conn.commit()
+        intent = intents.get_intent(conn, intent_id)
+        objective = intent["objective"] if intent else args.objective
+        print(f"Created intent #{intent_id}: {objective}")
+        return
+
+    if action == "list":
+        rows = intents.list_intents(conn, status=args.status, limit=args.limit)
+        if not rows:
+            print("No intents found.")
+            return
+        print("Intents:")
+        for row in rows:
+            success = f" success={row['success_criteria']}" if row["success_criteria"] else ""
+            print(
+                f"- #{row['id']} status={row['status']} priority={row['priority']}"
+                f" objective={row['objective']}{success}"
+            )
+        return
+
+    if action == "show":
+        intent = intents.get_intent(conn, args.id)
+        if intent is None:
+            print(f"Intent #{args.id} not found.")
+            raise SystemExit(1)
+        print(f"Intent #{intent['id']}")
+        print(f"Status: {intent['status']}")
+        print(f"Priority: {intent['priority']}")
+        print(f"Objective: {intent['objective']}")
+        if intent.get("context"):
+            print(f"Context: {intent['context']}")
+        if intent.get("success_criteria"):
+            print(f"Success: {intent['success_criteria']}")
+        if intent.get("constraints"):
+            print("Constraints:")
+            for constraint in intent["constraints"]:
+                print(f"- {constraint}")
+        print("Evidence:")
+        for evidence in intent["evidence"]:
+            source_id = f":{evidence['source_id']}" if evidence["source_id"] is not None else ""
+            summary = f" summary={evidence['summary']}" if evidence["summary"] else ""
+            print(
+                f"- #{evidence['id']} source={evidence['source_type']}{source_id}"
+                f" confidence={evidence['confidence']:.2f}{summary}"
+            )
+            print(f"  {evidence['content']}")
+        if not intent["evidence"]:
+            print("- none")
+        return
+
+    if action == "evidence" and getattr(args, "evidence_action", "") == "add":
+        try:
+            evidence_id = intents.add_evidence(
+                conn,
+                intent_id=args.id,
+                content=args.text,
+                source_type=args.source_type,
+                source_id=args.source_id,
+                summary=args.summary,
+                confidence=args.confidence,
+            )
+        except ValueError as exc:
+            print(str(exc))
+            raise SystemExit(1) from exc
+        conn.commit()
+        print(f"Added evidence #{evidence_id} to intent #{args.id}.")
+        return
+
+    raise SystemExit("Unknown intent command.")
+
+
 def cmd_pulse(args: argparse.Namespace) -> None:
     if args.env_file:
         load_env_file(args.env_file)
@@ -4208,6 +4291,33 @@ def build_parser() -> argparse.ArgumentParser:
     tune.add_argument("--days", type=int, default=14)
     tune.add_argument("--apply-policy", action="store_true")
     tune.set_defaults(func=cmd_tune)
+
+    intent = sub.add_parser("intent", help="Manage first-class assistant intents.")
+    intent_sub = intent.add_subparsers(dest="intent_action", required=True)
+    intent_create = intent_sub.add_parser("create", help="Create an intent objective.")
+    intent_create.add_argument("objective")
+    intent_create.add_argument("--context", default="")
+    intent_create.add_argument("--constraint", action="append", default=[])
+    intent_create.add_argument("--success", default="")
+    intent_create.add_argument("--priority", type=int, default=2)
+    intent_create.set_defaults(func=cmd_intent)
+    intent_list = intent_sub.add_parser("list", help="List intents.")
+    intent_list.add_argument("--status", default="open", help="Status filter, or 'all'.")
+    intent_list.add_argument("--limit", type=int, default=20)
+    intent_list.set_defaults(func=cmd_intent)
+    intent_show = intent_sub.add_parser("show", help="Show one intent with evidence.")
+    intent_show.add_argument("--id", type=int, required=True)
+    intent_show.set_defaults(func=cmd_intent)
+    intent_evidence = intent_sub.add_parser("evidence", help="Manage intent evidence.")
+    evidence_sub = intent_evidence.add_subparsers(dest="evidence_action", required=True)
+    evidence_add = evidence_sub.add_parser("add", help="Add evidence to an intent.")
+    evidence_add.add_argument("--id", type=int, required=True)
+    evidence_add.add_argument("--text", required=True)
+    evidence_add.add_argument("--source-type", default="note")
+    evidence_add.add_argument("--source-id")
+    evidence_add.add_argument("--summary", default="")
+    evidence_add.add_argument("--confidence", type=float, default=0.7)
+    evidence_add.set_defaults(func=cmd_intent)
 
     delegate = sub.add_parser("delegate", help="Delegate an objective to the autonomous assistant core.")
     delegate.add_argument("objective", help="Outcome or task objective for the assistant.")
