@@ -94,14 +94,15 @@ GraphRAG should be added deliberately, not implied by the current graph tables.
 ### What Exists Now
 
 - `knowledge_nodes` and `knowledge_edges` tables in SQLite.
+- `entities` and `entity_aliases` tables populated by conservative deterministic extraction.
 - Manual links between work items.
 - Conversation-derived co-mention edges.
 - `related`, `context`, and `why` commands that expose some relationship context.
-- A SQLite-first retrieval trace contract in `graphrag.py` that returns cited chunks and one-hop relationship explanations without adding graph storage.
+- A SQLite-first retrieval trace contract in `graphrag.py` that returns cited chunks and one-hop relationship explanations.
 
 ### What Is Missing
 
-- Robust entity extraction and canonicalization.
+- Robust entity canonicalization beyond conservative identifier and labeled-name extraction.
 - Typed relationship extraction from documents and conversations.
 - Entity-aware retrieval that expands from canonical entities to broader neighborhoods.
 - Real embeddings and vector search.

@@ -29,7 +29,7 @@ class GraphRAGDesignTest(unittest.TestCase):
         index_chunk(conn, "work_item", item_id, title)
         return item_id
 
-    def test_retrieve_returns_citations_without_new_graph_storage(self) -> None:
+    def test_retrieve_returns_citations_without_claim_or_run_storage(self) -> None:
         conn = self._conn()
         try:
             item_id = self._work_item(conn, "Customer escalation dashboard needs daily visibility")
@@ -47,7 +47,7 @@ class GraphRAGDesignTest(unittest.TestCase):
             }
             self.assertIn("knowledge_nodes", tables)
             self.assertIn("knowledge_edges", tables)
-            self.assertNotIn("entities", tables)
+            self.assertIn("entities", tables)
             self.assertNotIn("claims", tables)
             self.assertNotIn("retrieval_runs", tables)
         finally:
