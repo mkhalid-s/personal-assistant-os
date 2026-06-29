@@ -162,7 +162,7 @@ Ingestion and context:
 - `myos ingest-image <image_file> [--text OCR_TEXT]`
 - `myos watch-dir add <path> [--label TEXT]`
 - `myos watch-scan [--limit N]`
-- `myos context <query> [--limit N]`
+- `myos context <query> [--limit N] [--graph]`
 - `myos related --item N [--limit N]`
 - `myos why --item N`
 - `myos reindex`
