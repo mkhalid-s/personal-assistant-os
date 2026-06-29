@@ -2044,14 +2044,18 @@ def cmd_launchd_install(args: argparse.Namespace) -> None:
         dst_autopilot.write_text(autopilot_plist)
     print("Copied launchd files.")
     if args.load:
-        subprocess.run(["launchctl", "unload", str(dst_sync)], check=False)
-        subprocess.run(["launchctl", "unload", str(dst_pulse)], check=False)
+        launchctl = shutil.which("launchctl")
+        if not launchctl:
+            print("launchctl unavailable; copied files but skipped loading launch agents.")
+            return
+        subprocess.run([launchctl, "unload", str(dst_sync)], check=False)
+        subprocess.run([launchctl, "unload", str(dst_pulse)], check=False)
         if args.autopilot:
-            subprocess.run(["launchctl", "unload", str(dst_autopilot)], check=False)
-        subprocess.run(["launchctl", "load", str(dst_sync)], check=False)
-        subprocess.run(["launchctl", "load", str(dst_pulse)], check=False)
+            subprocess.run([launchctl, "unload", str(dst_autopilot)], check=False)
+        subprocess.run([launchctl, "load", str(dst_sync)], check=False)
+        subprocess.run([launchctl, "load", str(dst_pulse)], check=False)
         if args.autopilot:
-            subprocess.run(["launchctl", "load", str(dst_autopilot)], check=False)
+            subprocess.run([launchctl, "load", str(dst_autopilot)], check=False)
         print("Loaded launch agents.")
 
 
@@ -2111,9 +2115,14 @@ def cmd_activate(args: argparse.Namespace) -> None:
 def cmd_launchd_status(_: argparse.Namespace) -> None:
     labels = ["com.myos.sync", "com.myos.pulse", "com.myos.autopilot"]
     print("Launchd status:")
+    launchctl = shutil.which("launchctl")
+    if not launchctl:
+        for label in labels:
+            print(f"- {label}: unavailable (launchctl not found)")
+        return
     for label in labels:
         proc = subprocess.run(
-            ["launchctl", "list", label],
+            [launchctl, "list", label],
             capture_output=True,
             text=True,
             check=False,
