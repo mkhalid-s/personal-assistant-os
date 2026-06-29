@@ -114,6 +114,7 @@ Query
 
 Work items:
 
+- Add SQLite-first retrieval trace tests before adding graph storage.
 - Add deterministic entity extraction first, then provider-assisted extraction behind approval/policy.
 - Add typed edge extraction from notes, conversations, tickets, and PRs.
 - Add graph expansion to `myos context` and `myos why`.

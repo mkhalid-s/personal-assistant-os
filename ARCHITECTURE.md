@@ -97,12 +97,13 @@ GraphRAG should be added deliberately, not implied by the current graph tables.
 - Manual links between work items.
 - Conversation-derived co-mention edges.
 - `related`, `context`, and `why` commands that expose some relationship context.
+- A SQLite-first retrieval trace contract in `graphrag.py` that returns cited chunks and one-hop relationship explanations without adding graph storage.
 
 ### What Is Missing
 
 - Robust entity extraction and canonicalization.
 - Typed relationship extraction from documents and conversations.
-- Graph-aware retrieval that expands from entities to neighborhoods.
+- Entity-aware retrieval that expands from canonical entities to broader neighborhoods.
 - Real embeddings and vector search.
 - Reranking and citation quality checks.
 - Graph summaries or community-level memory.
