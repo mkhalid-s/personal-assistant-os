@@ -24,7 +24,7 @@ from .ingest.audio import transcribe_audio
 from .ingest.image import extract_image_text
 from .pulse import detect_mode, run_cycle
 from .retrieval import hybrid_score
-from . import assistant, autonomy, context as ctx, em, intents, providers, queries, watch
+from . import assistant, autonomy, context as ctx, em, entities, intents, providers, queries, watch
 # Helpers extracted out of this module (refactor #12) — re-imported so existing
 # call sites (and tests importing them from cli) keep working unchanged.
 from .inbox import (
@@ -3790,6 +3790,43 @@ def cmd_intent(args: argparse.Namespace) -> None:
     raise SystemExit("Unknown intent command.")
 
 
+def cmd_entity(args: argparse.Namespace) -> None:
+    conn = get_connection()
+    action = getattr(args, "entity_action", "")
+    if action == "extract":
+        recorded = entities.record_entities(
+            conn,
+            args.text,
+            source_type=args.source_type,
+            source_id=args.source_id,
+        )
+        conn.commit()
+        if not recorded:
+            print("No deterministic entities found.")
+            return
+        print(f"Recorded {len(recorded)} entities:")
+        for entity in recorded:
+            aliases = ", ".join(entity["aliases"])
+            print(
+                f"- #{entity['id']} [{entity['entity_type']}] {entity['canonical_name']} "
+                f"confidence={entity['confidence']:.2f} aliases={aliases}"
+            )
+        return
+
+    if action == "list":
+        rows = entities.list_entities(conn, entity_type=args.type, limit=args.limit)
+        if not rows:
+            print("No entities found.")
+            return
+        print("Entities:")
+        for row in rows:
+            aliases = ", ".join(row["aliases"]) if row["aliases"] else "none"
+            print(f"- #{row['id']} [{row['entity_type']}] {row['canonical_name']} aliases={aliases}")
+        return
+
+    raise SystemExit("Unknown entity command.")
+
+
 def cmd_pulse(args: argparse.Namespace) -> None:
     if args.env_file:
         load_env_file(args.env_file)
@@ -4300,6 +4337,18 @@ def build_parser() -> argparse.ArgumentParser:
     tune.add_argument("--days", type=int, default=14)
     tune.add_argument("--apply-policy", action="store_true")
     tune.set_defaults(func=cmd_tune)
+
+    entity = sub.add_parser("entity", help="Extract and list deterministic graph entities.")
+    entity_sub = entity.add_subparsers(dest="entity_action", required=True)
+    entity_extract = entity_sub.add_parser("extract", help="Extract entities from text and persist them.")
+    entity_extract.add_argument("--text", required=True)
+    entity_extract.add_argument("--source-type", default="note")
+    entity_extract.add_argument("--source-id")
+    entity_extract.set_defaults(func=cmd_entity)
+    entity_list = entity_sub.add_parser("list", help="List extracted entities.")
+    entity_list.add_argument("--type", default="", help="Optional entity type filter.")
+    entity_list.add_argument("--limit", type=int, default=50)
+    entity_list.set_defaults(func=cmd_entity)
 
     intent = sub.add_parser("intent", help="Manage first-class assistant intents.")
     intent_sub = intent.add_subparsers(dest="intent_action", required=True)

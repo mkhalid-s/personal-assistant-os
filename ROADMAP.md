@@ -95,8 +95,8 @@ Goal: add real GraphRAG primitives without introducing a graph server too early.
 
 Data model additions:
 
-- `entities`: canonical people, projects, systems, documents, tickets, PRs, decisions, risks, requirements, APIs, services.
-- `entity_aliases`: alternate names and IDs.
+- `entities`: canonical people, projects, systems, documents, tickets, PRs, decisions, risks, requirements, APIs, services. Initial deterministic extraction exists for high-confidence identifiers and labeled names.
+- `entity_aliases`: alternate names and IDs. Initial SQLite persistence exists.
 - `relationships`: typed edges with source, confidence, timestamps, and provenance.
 - `claims`: extracted facts with source spans and confidence.
 - `retrieval_runs`: query, selected sources, graph expansion, rerank scores, and final citations.
@@ -115,7 +115,7 @@ Query
 Work items:
 
 - Add SQLite-first retrieval trace tests before adding graph storage.
-- Add deterministic entity extraction first, then provider-assisted extraction behind approval/policy.
+- Extend deterministic entity extraction, then add provider-assisted extraction behind approval/policy.
 - Add typed edge extraction from notes, conversations, tickets, and PRs.
 - Add graph expansion to `myos context` and `myos why`.
 - Add retrieval traces so every answer can show why sources were chosen.
