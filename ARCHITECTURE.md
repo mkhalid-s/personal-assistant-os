@@ -95,6 +95,7 @@ GraphRAG should be added deliberately, not implied by the current graph tables.
 
 - `knowledge_nodes` and `knowledge_edges` tables in SQLite.
 - `entities` and `entity_aliases` tables populated by conservative deterministic extraction.
+- `relationships` table populated by conservative deterministic typed edge extraction.
 - Manual links between work items.
 - Conversation-derived co-mention edges.
 - `related`, `context`, and `why` commands that expose some relationship context.
@@ -103,7 +104,7 @@ GraphRAG should be added deliberately, not implied by the current graph tables.
 ### What Is Missing
 
 - Robust entity canonicalization beyond conservative identifier and labeled-name extraction.
-- Typed relationship extraction from documents and conversations.
+- Broader typed relationship extraction from documents, conversations, tickets, and PRs.
 - Entity-aware retrieval that expands from canonical entities to broader neighborhoods.
 - Real embeddings and vector search.
 - Reranking and citation quality checks.
