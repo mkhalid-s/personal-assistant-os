@@ -118,7 +118,7 @@ Work items:
 - Extend deterministic entity extraction, then add provider-assisted extraction behind approval/policy.
 - Extend typed edge extraction across notes, conversations, tickets, and PRs.
 - Extend graph-backed why explanations beyond work items into plans, reviews, and assistant answers.
-- Extend retrieval traces from GraphRAG CLI surfaces into assistant answers and review packets.
+- Extend retrieval traces from GraphRAG CLI surfaces and inspection into assistant answers and review packets.
 - Expand retrieval eval fixtures beyond the initial blocker, mitigation, and approval-evidence cases.
 
 Exit criteria:

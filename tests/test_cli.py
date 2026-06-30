@@ -98,6 +98,44 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("reason: graph expansion", out)
             self.assertIn("path: work_item#1 -> depends_on:0.80 -> work_item#2", out)
 
+    def test_retrieval_run_list_and_show(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
+
+            def run(*args: str) -> str:
+                out = subprocess.run(
+                    ["python", "-m", "personal_assistant.cli", *args],
+                    cwd=Path.cwd(),
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                return out.stdout
+
+            run("capture", "Launch dashboard tracks customer escalations")
+            run("capture", "Backend ingestion job supplies upstream metrics")
+            run("triage")
+            run("link", "--from-item", "1", "--to-item", "2", "--relation", "depends_on", "--weight", "0.8")
+
+            context_out = run("context", "customer escalation dashboard", "--graph")
+            run_id_line = next(line for line in context_out.splitlines() if line.startswith("retrieval run: #"))
+            run_id = run_id_line.rsplit("#", 1)[1]
+
+            list_out = run("retrieval-run", "list")
+            self.assertIn("Retrieval runs:", list_out)
+            self.assertIn(f"#{run_id} [context_graph] customer escalation dashboard", list_out)
+
+            show_out = run("retrieval-run", "show", "--id", run_id)
+            self.assertIn(f"Retrieval run #{run_id} [context_graph]", show_out)
+            self.assertIn("query: customer escalation dashboard", show_out)
+            self.assertIn("sources:", show_out)
+            self.assertIn("work_item#2", show_out)
+            self.assertIn("reason: graph expansion", show_out)
+            self.assertIn("path: work_item#1 -> depends_on:0.80 -> work_item#2", show_out)
+
     def test_duplicate_capture_is_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
