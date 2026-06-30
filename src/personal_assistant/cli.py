@@ -514,11 +514,20 @@ def cmd_related(args: argparse.Namespace) -> None:
 def cmd_context(args: argparse.Namespace) -> None:
     conn = get_connection()
     if getattr(args, "graph", False):
-        hits = graphrag.retrieve(conn, args.query, limit=args.limit, graph_hops=args.graph_hops)
+        hits = graphrag.retrieve(
+            conn,
+            args.query,
+            limit=args.limit,
+            graph_hops=args.graph_hops,
+            record_run=True,
+            mode="context_graph",
+        )
+        conn.commit()
         if not hits:
             print("No relevant graph context found.")
             return
         print(f"Graph context results for: {args.query}")
+        print(f"retrieval run: #{hits[0]['retrieval_run_id']}")
         for hit in hits:
             snippet = str(hit["content"]).strip().replace("\n", " ")
             if len(snippet) > 120:
@@ -966,7 +975,15 @@ def cmd_why(args: argparse.Namespace) -> None:
     if row["snippet"]:
         print(f"snippet: {row['snippet'][:180]}")
     if getattr(args, "graph", False):
-        hits = graphrag.retrieve(conn, row["title"], limit=args.limit, graph_hops=args.graph_hops)
+        hits = graphrag.retrieve(
+            conn,
+            row["title"],
+            limit=args.limit,
+            graph_hops=args.graph_hops,
+            record_run=True,
+            mode="why_graph",
+        )
+        conn.commit()
         evidence = [
             hit for hit in hits
             if hit["graph_path"] or hit["source_type"] != "work_item" or int(hit["source_id"]) != int(row["id"])
@@ -974,6 +991,7 @@ def cmd_why(args: argparse.Namespace) -> None:
         if not evidence:
             print("graph: no related evidence found.")
             return
+        print(f"retrieval run: #{hits[0]['retrieval_run_id']}")
         print("graph evidence:")
         for hit in evidence:
             snippet = str(hit["content"]).strip().replace("\n", " ")
