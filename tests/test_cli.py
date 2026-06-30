@@ -327,6 +327,55 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("MYOS_ACTION_COMMAND=myos action-provider", env_example.read_text())
             self.assertIn("myos doctor --strict", demo.read_text())
 
+    def test_backup_restore_and_migration_verify(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            db_path = Path(tmp) / "assistant.db"
+            backup_path = Path(tmp) / "backup.db"
+            env["MYOS_DB_PATH"] = str(db_path)
+
+            def run(*args: str) -> str:
+                out = subprocess.run(
+                    ["python", "-m", "personal_assistant.cli", *args],
+                    cwd=Path.cwd(),
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                return out.stdout
+
+            run("capture", "Task: keep backup restore reliable")
+            run("triage")
+            verify_out = run("migrations", "verify", "--strict")
+            self.assertIn("Schema migrations verified", verify_out)
+            list_out = run("migrations", "list")
+            self.assertIn("Schema migrations:", list_out)
+            self.assertIn("28 add_action_execution_receipts", list_out)
+            self.assertIn("Current version: 28 / expected 28", list_out)
+
+            backup_out = run("backup", "--output", str(backup_path))
+            self.assertIn("Backup created", backup_out)
+            self.assertTrue(backup_path.exists())
+
+            run("capture", "Task: this should disappear after restore")
+            run("triage")
+            db_path.with_name(db_path.name + "-wal").write_text("stale wal")
+            db_path.with_name(db_path.name + "-shm").write_text("stale shm")
+            restore_out = run("restore", "--from", str(backup_path))
+            self.assertIn("Database restored from", restore_out)
+            self.assertIn("Schema migrations verified", restore_out)
+            self.assertFalse(db_path.with_name(db_path.name + "-wal").exists())
+            self.assertFalse(db_path.with_name(db_path.name + "-shm").exists())
+
+            conn = sqlite3.connect(db_path)
+            work_count = conn.execute("SELECT COUNT(*) FROM work_items").fetchone()[0]
+            title = conn.execute("SELECT title FROM work_items ORDER BY id").fetchone()[0]
+            conn.close()
+            self.assertEqual(work_count, 1)
+            self.assertIn("keep backup restore reliable", title)
+
     def test_intent_lifecycle_and_redacted_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
@@ -406,6 +455,220 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("[REDACTED_SECRET]", shown.stdout)
             self.assertNotIn("test@example.com", shown.stdout)
             self.assertNotIn("ghp_abcdefghijklmnopqrstuvwxyz123456", shown.stdout)
+
+    def test_plan_review_packet_lifecycle_with_retrieval_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
+
+            def run(*args: str) -> str:
+                out = subprocess.run(
+                    ["python", "-m", "personal_assistant.cli", *args],
+                    cwd=Path.cwd(),
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                return out.stdout
+
+            run("intent", "create", "Ship dashboard safely", "--success", "Owner approves cited plan")
+            run("capture", "Launch dashboard tracks customer escalations")
+            run("capture", "Backend ingestion job supplies upstream metrics")
+            run("triage")
+            run("link", "--from-item", "1", "--to-item", "2", "--relation", "depends_on", "--weight", "0.8")
+            context_out = run("context", "customer escalation dashboard", "--graph")
+            run_id_line = next(line for line in context_out.splitlines() if line.startswith("retrieval run: #"))
+            run_id = run_id_line.rsplit("#", 1)[1]
+
+            evidence_out = run("evidence", "attach", "--intent", "1", "--retrieval-run", run_id)
+            self.assertIn(f"Attached retrieval run #{run_id}", evidence_out)
+
+            plan_out = run("plan", "create", "--intent", "1", "--assumption", "No external mutation without approval")
+            self.assertIn("Created plan #1 for intent #1", plan_out)
+
+            show_out = run("plan", "show", "--id", "1")
+            self.assertIn("Plan #1 intent=1 status=draft", show_out)
+            self.assertIn("Steps:", show_out)
+            self.assertIn("Risks:", show_out)
+            self.assertIn("Validations:", show_out)
+
+            packet_out = run("review-packet", "--plan", "1", "--retrieval-run", run_id)
+            self.assertIn("Review packet #1 for plan #1", packet_out)
+            self.assertIn("Intent: #1 Ship dashboard safely", packet_out)
+            self.assertIn("Retrieval sources:", packet_out)
+            self.assertIn("work_item#2", packet_out)
+            self.assertIn("Approval required: True", packet_out)
+            self.assertIn("Rollback:", packet_out)
+
+    def test_claim_extraction_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
+
+            def run(*args: str) -> str:
+                out = subprocess.run(
+                    ["python", "-m", "personal_assistant.cli", *args],
+                    cwd=Path.cwd(),
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                return out.stdout
+
+            out = run(
+                "claim",
+                "extract",
+                "--text",
+                "Project Atlas requires Service Billing API.",
+                "--source-type",
+                "work_item",
+                "--source-id",
+                "7",
+            )
+            self.assertIn("Recorded 1 claim", out)
+            self.assertIn("Project Atlas requires Service Billing API", out)
+            listed = run("claim", "list", "--source-type", "work_item")
+            self.assertIn("Claims:", listed)
+            self.assertIn("source=work_item:7", listed)
+
+    def test_agent_role_run_records_local_control_plane_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            db_path = Path(tmp) / "assistant.db"
+            env["MYOS_DB_PATH"] = str(db_path)
+
+            def run(*args: str) -> str:
+                out = subprocess.run(
+                    ["python", "-m", "personal_assistant.cli", *args],
+                    cwd=Path.cwd(),
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                return out.stdout
+
+            run("intent", "create", "Ship dashboard safely")
+            run("plan", "create", "--intent", "1")
+            out = run("agent-run", "--intent", "1", "--plan", "1", "--role", "reviewer")
+            self.assertIn("Agent run #1 [reviewer] for intent #1", out)
+            self.assertIn("approval_gate: True", out)
+
+            conn = sqlite3.connect(db_path)
+            row = conn.execute(
+                "SELECT agent_name, provider, status, summary FROM agent_runs WHERE id = 1"
+            ).fetchone()
+            conn.close()
+            self.assertEqual(row[0], "reviewer")
+            self.assertEqual(row[1], "local")
+            self.assertEqual(row[2], "completed")
+            self.assertIn("intent #1", row[3])
+
+    def test_daily_loops_surface_intents_approvals_and_evidence_gaps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
+
+            def run(*args: str) -> str:
+                out = subprocess.run(
+                    ["python", "-m", "personal_assistant.cli", *args],
+                    cwd=Path.cwd(),
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                return out.stdout
+
+            run("intent", "create", "Prepare launch review", "--priority", "1")
+            morning = run("morning")
+            self.assertIn("Morning brief:", morning)
+            self.assertIn("intent #1 priority=1 Prepare launch review", morning)
+            self.assertIn("Evidence gaps:", morning)
+            self.assertIn("intent #1 needs evidence", morning)
+
+            close = run("close-day", "--note", "Captured day-end state")
+            self.assertIn("Day closed.", close)
+            self.assertIn("Open intents: 1", close)
+            self.assertIn("Pending approvals: 0", close)
+
+            weekly = run("weekly-review")
+            self.assertIn("Weekly review", weekly)
+            self.assertIn("open_intents=1 evidence_gaps=1", weekly)
+
+    def test_external_items_can_sync_into_intent_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            db_path = Path(tmp) / "assistant.db"
+            env["MYOS_DB_PATH"] = str(db_path)
+
+            def run(*args: str) -> str:
+                out = subprocess.run(
+                    ["python", "-m", "personal_assistant.cli", *args],
+                    cwd=Path.cwd(),
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                return out.stdout
+
+            run("intent", "create", "Resolve dashboard escalation")
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                INSERT INTO external_items (connector, external_id, item_type, title, body, url)
+                VALUES ('jira', 'PROJ-1', 'issue', 'Dashboard escalation is blocked', 'Owner needs mitigation.', 'https://example.test/browse/PROJ-1')
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            out = run("evidence", "sync-external", "--intent", "1", "--connector", "jira")
+            self.assertIn("Attached 1 external evidence item", out)
+            repeated = run("evidence", "sync-external", "--intent", "1", "--connector", "jira")
+            self.assertIn("Attached 0 external evidence item", repeated)
+
+            shown = run("intent", "show", "--id", "1")
+            self.assertIn("source=external_item:1", shown)
+            self.assertIn("Dashboard escalation is blocked", shown)
+
+    def test_hardening_commands_report_dependency_and_performance_baselines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
+
+            def run(*args: str) -> str:
+                out = subprocess.run(
+                    ["python", "-m", "personal_assistant.cli", *args],
+                    cwd=Path.cwd(),
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                return out.stdout
+
+            dep = run("dependency-check", "--strict")
+            self.assertIn("Dependency and license check:", dep)
+            self.assertIn("PASS license_metadata", dep)
+            perf = run("performance-baseline", "--query", "dashboard launch")
+            self.assertIn("Performance baseline:", perf)
+            self.assertIn("retrieval_ms=", perf)
+            self.assertIn("readiness_query_ms=", perf)
+            release = run("release-check", "--strict")
+            self.assertIn("Release readiness check:", release)
+            self.assertIn("PASS schema", release)
+            self.assertIn("docs, changelog, license, workflows", release)
+            self.assertIn("PASS public_hygiene", release)
 
     def test_setup_live_dry_run_and_apply(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1357,10 +1620,28 @@ class CliFlowTest(unittest.TestCase):
             self.assertTrue(action_request.exists())
             conn = sqlite3.connect(db_path)
             exec_count = conn.execute("SELECT COUNT(*) FROM action_provider_executions WHERE status='ok'").fetchone()[0]
+            receipt = conn.execute(
+                """
+                SELECT final_status, approved, follow_up_required, rollback_note
+                FROM action_execution_receipts
+                WHERE agent_action_id = ?
+                """,
+                (action_id,),
+            ).fetchone()
             review_count_before = conn.execute("SELECT COUNT(*) FROM assistant_self_reviews").fetchone()[0]
             conn.close()
             self.assertEqual(exec_count, 1)
+            self.assertEqual(receipt[0], "executed")
+            self.assertEqual(receipt[1], 1)
+            self.assertEqual(receipt[2], 0)
+            self.assertIn("rollback", receipt[3].lower())
             self.assertEqual(review_count_before, 0)
+            receipt_list = run("execution-receipt", "list")
+            self.assertIn("Execution receipts:", receipt_list)
+            self.assertIn("status=executed", receipt_list)
+            receipt_show = run("execution-receipt", "show", "--id", "1")
+            self.assertIn("Execution receipt #1", receipt_show)
+            self.assertIn("Follow-up required: False", receipt_show)
             review = run("self-review")
             self.assertIn("Autonomy self-review", review)
             conn = sqlite3.connect(db_path)
@@ -1408,6 +1689,54 @@ class CliFlowTest(unittest.TestCase):
                 extra_env={"MYOS_ACTION_COMMAND": f"python {fail_script}"},
             )
             self.assertNotEqual(failed.returncode, 0)
+            conn = sqlite3.connect(db_path)
+            failed_receipt = conn.execute(
+                """
+                SELECT final_status, follow_up_required, follow_up_inbox_id
+                FROM action_execution_receipts
+                WHERE agent_action_id = ?
+                ORDER BY id ASC
+                LIMIT 1
+                """,
+                (action_id,),
+            ).fetchone()
+            follow_up_text = conn.execute(
+                "SELECT text FROM inbox_items WHERE id = ?",
+                (failed_receipt[2],),
+            ).fetchone()[0]
+            conn.close()
+            self.assertEqual(failed_receipt[0], "failed")
+            self.assertEqual(failed_receipt[1], 1)
+            self.assertIsNotNone(failed_receipt[2])
+            self.assertIn("Follow up on failed action", follow_up_text)
+
+            failed_again = run(
+                "approve",
+                "--action",
+                str(action_id),
+                "--execute",
+                check=False,
+                extra_env={"MYOS_ACTION_COMMAND": f"python {fail_script}"},
+            )
+            self.assertNotEqual(failed_again.returncode, 0)
+            conn = sqlite3.connect(db_path)
+            receipt_rows = conn.execute(
+                """
+                SELECT final_status, follow_up_inbox_id
+                FROM action_execution_receipts
+                WHERE agent_action_id = ?
+                ORDER BY id ASC
+                """,
+                (action_id,),
+            ).fetchall()
+            follow_up_count = conn.execute(
+                "SELECT COUNT(*) FROM inbox_items WHERE source = 'action_receipt'"
+            ).fetchone()[0]
+            conn.close()
+            self.assertEqual([row[0] for row in receipt_rows], ["failed", "failed"])
+            self.assertEqual(receipt_rows[0][1], receipt_rows[1][1])
+            self.assertEqual(follow_up_count, 1)
+
             retried = run(
                 "approve",
                 "--action",
@@ -1419,6 +1748,10 @@ class CliFlowTest(unittest.TestCase):
                 extra_env={"MYOS_ACTION_COMMAND": f"python {ok_script}"},
             )
             self.assertIn("Executed action", retried.stdout)
+            receipts = run("execution-receipt", "list")
+            self.assertIn("status=failed", receipts.stdout)
+            self.assertIn("follow_up=#", receipts.stdout)
+            self.assertIn("status=executed", receipts.stdout)
 
     def test_builtin_action_provider_dry_run_and_execute_guard(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

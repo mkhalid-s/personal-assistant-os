@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 import time
 
-from . import agentcore, context
+from . import agentcore, context, graphrag
 from .providers import get_backend, resolve_backend_name
 
 
@@ -37,8 +37,18 @@ def run_turn(
     best-effort: a failure here never breaks the turn, and policy can disable it.
     """
     backend = get_backend(backend_name)
+    retrieval_run_ids: list[int] = []
+    try:
+        hits = graphrag.retrieve(conn, user_text, limit=3, record_run=True, mode=f"{surface}_answer")
+        if hits and hits[0].get("retrieval_run_id"):
+            retrieval_run_ids.append(int(hits[0]["retrieval_run_id"]))
+            conn.commit()
+    except Exception:  # noqa: BLE001 - retrieval traces should never block a chat turn
+        conn.rollback()
     started = time.monotonic()
     result = backend.run_turn(conn, user_text, history, on_text=on_text)
+    if retrieval_run_ids:
+        result["retrieval_run_ids"] = retrieval_run_ids
     latency_ms = int((time.monotonic() - started) * 1000)
     try:
         log = context.log_turn(
@@ -49,6 +59,7 @@ def run_turn(
             surface=surface,
             backend=result.get("backend") or backend.name,
             proposed_action_ids=result.get("proposed_action_ids", []),
+            retrieval_run_ids=retrieval_run_ids,
             latency_ms=latency_ms,
         )
         if log.get("conversation_id"):

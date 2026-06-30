@@ -101,6 +101,40 @@ class ProposeAndApproveTest(unittest.TestCase):
         row = self.conn.execute("SELECT requires_approval FROM agent_actions WHERE id = ?", (aid,)).fetchone()
         self.assertEqual(row["requires_approval"], 1)
 
+    def test_run_turn_persists_retrieval_trace_ids(self):
+        from personal_assistant import assistant
+        from personal_assistant.inbox import ensure_work_item_node, index_chunk
+
+        self.conn.execute(
+            """
+            INSERT INTO work_items (title, kind, status, priority, risk_score)
+            VALUES ('Dashboard launch evidence', 'task', 'open', 2, 10)
+            """
+        )
+        item_id = int(self.conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+        ensure_work_item_node(self.conn, item_id, "Dashboard launch evidence")
+        index_chunk(self.conn, "work_item", item_id, "Dashboard launch evidence")
+        self.conn.commit()
+
+        class _Backend:
+            name = "fake"
+
+            def run_turn(self, conn, user_text, history, on_text=None):
+                return {"reply": "Here is the cited dashboard answer.", "backend": "fake", "proposed_action_ids": []}
+
+        original = assistant.get_backend
+        assistant.get_backend = lambda name=None: _Backend()
+        try:
+            result = assistant.run_turn(self.conn, "dashboard launch", [], backend_name="fake")
+        finally:
+            assistant.get_backend = original
+
+        self.assertIn("retrieval_run_ids", result)
+        turn = self.conn.execute(
+            "SELECT retrieval_run_ids FROM conversation_turns ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        self.assertIn(str(result["retrieval_run_ids"][0]), turn["retrieval_run_ids"])
+
 
 class ClaudeLoopTest(unittest.TestCase):
     """Exercise the manual tool-use loop with a fake Anthropic client (no network)."""
@@ -238,14 +272,14 @@ class DelegateHarnessTest(unittest.TestCase):
         from personal_assistant import assistant
 
         exec_script = _write_script(
-            Path(self.repo) / "fake_cursor.sh",
+            Path(self.repo) / "fake_agent.sh",
             '#!/bin/sh\necho "added by harnessed agent" > harnessed.txt\n',
         )
-        os.environ["MYOS_AGENT_EXEC_CURSOR"] = exec_script
+        os.environ["MYOS_AGENT_CMD_COMMAND"] = exec_script
         try:
-            result = assistant.delegate_to_agent(self.conn, "cursor", "add a file", cwd=self.repo)
+            result = assistant.delegate_to_agent(self.conn, "command", "add a file", cwd=self.repo)
         finally:
-            os.environ.pop("MYOS_AGENT_EXEC_CURSOR", None)
+            os.environ.pop("MYOS_AGENT_CMD_COMMAND", None)
 
         self.assertNotIn("error", result, msg=result.get("error", ""))
         self.assertEqual(len(result["proposed_action_ids"]), 1)
@@ -263,11 +297,11 @@ class DelegateHarnessTest(unittest.TestCase):
         from personal_assistant import assistant
 
         non_git = tempfile.mkdtemp()
-        os.environ["MYOS_AGENT_EXEC_CURSOR"] = "/bin/true"
+        os.environ["MYOS_AGENT_CMD_COMMAND"] = "/bin/true"
         try:
-            result = assistant.delegate_to_agent(self.conn, "cursor", "task", cwd=non_git)
+            result = assistant.delegate_to_agent(self.conn, "command", "task", cwd=non_git)
         finally:
-            os.environ.pop("MYOS_AGENT_EXEC_CURSOR", None)
+            os.environ.pop("MYOS_AGENT_CMD_COMMAND", None)
         self.assertIn("error", result)
         self.assertIn("git repo", result["error"])
 

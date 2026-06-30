@@ -1,11 +1,11 @@
 """Generic agent-CLI backend driven as a subprocess.
 
-Base for ``copilot``/``cursor`` and the catch-all ``command`` backend. Speaks the
+Base for external agent CLIs and the catch-all ``command`` backend. Speaks the
 shared contract two ways:
 
 * ``input_mode="json"`` (the legacy ``MYOS_AI_COMMAND`` path): send the request as
   JSON on stdin, expect ``{plan, actions}`` JSON on stdout.
-* ``input_mode="prompt"`` (raw Copilot/Cursor CLIs): send a rendered prompt on
+* ``input_mode="prompt"`` (raw agent CLIs): send a rendered prompt on
   stdin, capture freeform stdout as ``reply``; if the agent happens to emit a JSON
   ``{plan, actions}`` block we parse it, otherwise there are simply no proposals.
 

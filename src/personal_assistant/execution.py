@@ -100,6 +100,81 @@ def _status_from_result(result: str) -> str:
     return "executed"
 
 
+def _record_execution_receipt(conn, row, *, approved: bool, final_status: str, result: str) -> None:
+    payload = json.loads(row["payload_json"] or "{}")
+    rollback_note = str(payload.get("rollback_note") or payload.get("rollback") or "").strip()
+    if not rollback_note:
+        rollback_note = "No rollback note supplied; review action result and create a follow-up if needed."
+    follow_up_required = 1 if final_status in {"failed", "blocked"} else 0
+    request = {
+        "action_id": row["id"],
+        "agent_task_id": row["agent_task_id"],
+        "action_type": row["action_type"],
+        "title": apply_privacy_filters(conn, row["title"]),
+        "payload": redact_obj(conn, payload),
+    }
+    cur = conn.execute(
+        """
+        INSERT INTO action_execution_receipts (
+            agent_action_id, agent_task_id, action_type, final_status, result,
+            approved, rollback_note, follow_up_required, request_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            row["id"],
+            row["agent_task_id"],
+            row["action_type"],
+            final_status,
+            apply_privacy_filters(conn, result or ""),
+            1 if approved else 0,
+            apply_privacy_filters(conn, rollback_note),
+            follow_up_required,
+            json.dumps(request, ensure_ascii=True)[:8000],
+        ),
+    )
+    receipt_id = int(cur.lastrowid)
+    if follow_up_required:
+        follow_up_text = (
+            f"Follow up on {final_status} action #{row['id']}: "
+            f"{row['title']} -- {result[:300]}"
+        )
+        follow_up_id = insert_inbox_item_dedup(
+            conn,
+            text=follow_up_text,
+            kind="task",
+            owner=None,
+            due_date=None,
+            confidence=0.85,
+            source="action_receipt",
+        )
+        event_type = "action_follow_up_created"
+        if follow_up_id is None:
+            existing = conn.execute(
+                """
+                SELECT id FROM inbox_items
+                WHERE text = ? AND kind = 'task' AND source = 'action_receipt'
+                ORDER BY id ASC
+                LIMIT 1
+                """,
+                (apply_privacy_filters(conn, follow_up_text).strip(),),
+            ).fetchone()
+            follow_up_id = int(existing["id"]) if existing else None
+            event_type = "action_follow_up_linked"
+        if follow_up_id is not None:
+            conn.execute(
+                "UPDATE action_execution_receipts SET follow_up_inbox_id = ? WHERE id = ?",
+                (follow_up_id, receipt_id),
+            )
+            append_event(
+                conn,
+                event_type,
+                "inbox_item",
+                follow_up_id,
+                json.dumps({"receipt_id": receipt_id, "agent_action_id": row["id"]}, ensure_ascii=True),
+            )
+
+
 def _execute_agent_action(conn, row) -> str:
     payload = json.loads(row["payload_json"] or "{}")
     action_type = row["action_type"]
@@ -388,6 +463,7 @@ def approve_and_execute(conn, action_id: int, *, do_approve: bool = True, execut
         """,
         (row["agent_task_id"], f"action #{action_id}: {result}"),
     )
+    _record_execution_receipt(conn, row, approved=approved, final_status=new_status, result=result)
     append_event(
         conn,
         "agent_action_executed",

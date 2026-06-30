@@ -10,17 +10,17 @@ The public repository currently provides:
 - Capture, triage, retrieval, sync, reports, policies, and approval queues.
 - Optional connectors for Jira, GitHub, Confluence, and Aha.
 - Conversation logging, privacy redaction, and lightweight context observations.
-- Basic graph tables and relationship commands.
-- Tests covering CLI flows, autonomy policy, context, redaction, connectors, and remediation behavior.
+- First-class intents, plans, review packets, retrieval evidence attachment, local agent-role runs, execution receipts, and daily operating loops.
+- SQLite-first graph tables, deterministic entity/relationship/claim extraction, entity-aware retrieval expansion, and persisted retrieval traces.
+- Backup/restore, migration verification, dependency checks, performance baselines, CI, and tag release validation.
+- Tests covering CLI flows, autonomy policy, context, redaction, connectors, GraphRAG primitives, and remediation behavior.
 
 It does not yet provide:
 
-- Real GraphRAG.
+- Full production GraphRAG with real embeddings, stronger reranking, and graph summaries.
 - A graph database backend.
 - Production embeddings or vector search.
-- CI/CD and release automation.
-- A fully repeatable first-run setup story.
-- A complete intent-to-execution workflow model.
+- A complete autonomous execution workflow with external mutation receipts and mature rollback automation.
 
 ## Phase 0: Public Baseline
 
@@ -70,7 +70,7 @@ New concepts:
 - `decisions`: durable choices with rationale and supersession history.
 - `risks`: impact, likelihood, mitigation, owner, deadline.
 
-Candidate commands:
+Implemented command shape:
 
 ```bash
 myos intent create "Ship customer escalation dashboard by Friday" \
@@ -78,9 +78,9 @@ myos intent create "Ship customer escalation dashboard by Friday" \
   --success "Dashboard passes smoke test and owner signs off"
 myos intent list
 myos intent show --id 1
-myos plan --intent 1
-myos evidence add --intent 1 --text "Customer needs daily status visibility"
-myos review-plan --intent 1
+myos plan create --intent 1
+myos evidence attach --intent 1 --retrieval-run 1
+myos review-packet --plan 1 --retrieval-run 1
 ```
 
 Exit criteria:
@@ -98,7 +98,7 @@ Data model additions:
 - `entities`: canonical people, projects, systems, documents, tickets, PRs, decisions, risks, requirements, APIs, services. Initial deterministic extraction exists for high-confidence identifiers and labeled names.
 - `entity_aliases`: alternate names and IDs. Initial SQLite persistence exists.
 - `relationships`: typed edges with source, confidence, timestamps, and provenance. Initial deterministic extraction exists for explicit relationship phrases.
-- `claims`: extracted facts with source spans and confidence.
+- `claims`: extracted facts with source and confidence. Initial deterministic storage exists.
 - `retrieval_runs`: query, selected sources, graph expansion, rerank scores, and final citations. Initial SQLite persistence exists for GraphRAG CLI surfaces.
 
 Retrieval pipeline:
@@ -118,7 +118,7 @@ Work items:
 - Extend deterministic entity extraction, then add provider-assisted extraction behind approval/policy.
 - Extend typed edge extraction across notes, conversations, tickets, and PRs.
 - Extend graph-backed why explanations beyond work items into plans, reviews, and assistant answers.
-- Extend retrieval traces from GraphRAG CLI surfaces and inspection into assistant answers and review packets.
+- Extend retrieval traces from GraphRAG CLI surfaces and inspection into assistant answers and review packets. Initial persistence exists.
 - Expand retrieval eval fixtures beyond the initial blocker, mitigation, and approval-evidence cases.
 
 Exit criteria:

@@ -2,8 +2,8 @@
 
 These functions are deliberately dependency-light (db + json only) so that
 ``providers`` and ``assistant`` can import them without creating an import
-cycle with ``cli``. Every proposed action -- regardless of which backend (Claude,
-Copilot, Cursor) produced it -- flows through :func:`enqueue_proposal` into the
+cycle with ``cli``. Every proposed action -- regardless of which backend produced
+it -- flows through :func:`enqueue_proposal` into the
 existing ``agent_actions`` approval queue, so propose-and-approve is enforced in
 one place.
 """

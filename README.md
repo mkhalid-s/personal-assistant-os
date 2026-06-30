@@ -6,9 +6,9 @@ Local-first CLI assistant for planning work, remembering context, triaging tasks
 
 ## Current Status
 
-This repository is an MVP public baseline. It is useful as a local CLI assistant, but it is not yet a production-stable application, a full GraphRAG system, or a graph database application.
+This repository is an MVP public baseline. It is useful as a local CLI assistant with reliability checks, durable plans, review packets, retrieval traces, and daily operating loops, but it is not yet a production-stable application, a full GraphRAG system, or a graph database application.
 
-The current graph support is SQLite-based and lightweight: `knowledge_nodes`, `knowledge_edges`, deterministic `entities`/`entity_aliases`, typed `relationships`, manual links, conversation-derived relationship hints, persisted retrieval traces for cited graph expansion, and fixture-based retrieval evals. Real GraphRAG is planned in stages. See `ARCHITECTURE.md` and `ROADMAP.md`.
+The current graph support is SQLite-based and lightweight: `knowledge_nodes`, `knowledge_edges`, deterministic `entities`/`entity_aliases`, typed `relationships`, `claims`, manual links, conversation-derived relationship hints, persisted retrieval traces for cited graph expansion, entity-aware retrieval expansion, and fixture-based retrieval evals. Deeper GraphRAG is planned in stages. See `ARCHITECTURE.md` and `ROADMAP.md`.
 
 ## Project Direction
 
@@ -26,13 +26,14 @@ The design is inspired by AI-native software-factory ideas: intent-first workflo
 - Syncs optional external context from configured connectors such as Jira, GitHub, Confluence, and Aha.
 - Ingests text, audio transcripts, images, meeting notes, and watched folders.
 - Builds searchable memory with provenance, deterministic entity and relationship extraction, graph links, hybrid retrieval, persisted retrieval traces, retrieval eval fixtures, and graph-aware "why" explanations.
-- Runs assistant workflows such as briefings, risk scans, delegation, autopilot, approvals, and weekly reviews.
+- Runs assistant workflows such as morning briefs, durable plans, review packets, agent role runs, risk scans, delegation, autopilot, approvals, and weekly reviews.
 - Redacts common PII and secrets before persistence and keeps private runtime data out of git.
 
 ## Design Docs
 
 - `ARCHITECTURE.md`: current architecture, target operating loop, and GraphRAG direction.
 - `ROADMAP.md`: surgical roadmap from MVP to stable app, intent layer, GraphRAG, and product hardening.
+- `CHANGELOG.md`: release notes for the current checkpoint and future tagged releases.
 
 ## Open Source Stack
 
@@ -59,6 +60,7 @@ The assistant is designed to propose before it mutates external systems.
 - Local capture and bookkeeping can run directly.
 - External updates are drafted into an approval queue.
 - Destructive or broad actions are blocked by policy.
+- Executed, failed, blocked, and no-op actions write execution receipts; failed or blocked receipts create follow-up inbox items.
 - Conversation logs, action payloads, and indexed text pass through privacy filters.
 - Runtime data lives under `data/`, which is ignored by git.
 
@@ -145,6 +147,7 @@ Common daily commands:
 
 - `myos capture <text> [--kind note|task|commitment|decision|risk] [--due YYYY-MM-DD] [--owner NAME]`
 - `myos triage`
+- `myos morning [--limit N] [--risk-threshold N]`
 - `myos today [--meeting-hours FLOAT]`
 - `myos brief [--meeting-hours FLOAT] [--top N] [--risk-threshold N]`
 - `myos risk-radar`
@@ -164,6 +167,8 @@ Ingestion and context:
 - `myos watch-scan [--limit N]`
 - `myos context <query> [--limit N] [--graph]`
 - `myos retrieval-run [list|show --id N]`
+- `myos claim extract --text TEXT [--source-type TYPE] [--source-id ID]`
+- `myos claim list [--source-type TYPE] [--limit N]`
 - `myos related --item N [--limit N]`
 - `myos why --item N [--graph]`
 - `myos reindex`
@@ -173,8 +178,15 @@ Assistant and automation:
 - `myos chat`
 - `myos voice [--text-reply]`
 - `myos delegate <objective> [--context TEXT] [--constraint TEXT] [--mode safe|balanced|aggressive]`
+- `myos plan create --intent N [--title TEXT] [--assumption TEXT]`
+- `myos plan show --id N`
+- `myos evidence attach --intent N --retrieval-run N`
+- `myos evidence sync-external --intent N [--connector all|jira|github|confluence|aha]`
+- `myos review-packet --plan N [--retrieval-run N]`
+- `myos agent-run --intent N --role planner|researcher|executor|reviewer|critic|summarizer [--plan N]`
 - `myos act [--task N] [--action N] [--list] [--approve] [--execute]`
 - `myos approve [--list] [--action N] [--execute]`
+- `myos execution-receipt [list|show --id N]`
 - `myos autopilot [--env-file PATH] [--once] [--interval-sec N]`
 - `myos autopilot-status [--limit N]`
 - `myos digest [--id N] [--title-only]`
@@ -185,6 +197,12 @@ Setup and operations:
 - `myos config-init [--path ./.env.myos] [--force]`
 - `myos setup-live [--apply] [--check] [--data-dir PATH] [--env-file PATH] [--db-path PATH] [--watch-dir PATH] [--force] [--install-launchd] [--load-launchd] [--autopilot-interval-sec N]`
 - `myos doctor [--strict]`
+- `myos backup [--output PATH]`
+- `myos restore --from PATH`
+- `myos migrations [verify|list] [--strict]`
+- `myos dependency-check [--strict]`
+- `myos performance-baseline [--query TEXT] [--limit N]`
+- `myos release-check [--strict] [--verbose]`
 - `myos health`
 - `myos dashboard [--host 127.0.0.1] [--port 8787] [--report-dir PATH]`
 - `myos sanity [--strict] [--report-dir PATH]`

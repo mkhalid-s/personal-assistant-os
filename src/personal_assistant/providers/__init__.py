@@ -1,8 +1,8 @@
 """Pluggable reasoning/execution backends.
 
 A *backend* is whatever agent does the thinking: ``claude`` (in-process Anthropic
-SDK), or an external agent CLI driven as a subprocess (``copilot``, ``cursor``, or
-a generic ``command``). They share one contract so the rest of the app never cares
+SDK), or an external agent CLI driven as a subprocess (``copilot`` or a generic
+``command``). They share one contract so the rest of the app never cares
 which one is active:
 
     request  = {"purpose", "objective", "context", "analogies", ...}
@@ -124,10 +124,6 @@ def get_backend(name: str | None = None):
         from .copilot import CopilotBackend
 
         return CopilotBackend()
-    if resolved == "cursor":
-        from .cursor import CursorBackend
-
-        return CursorBackend()
     if resolved in ("command", "cli"):
         from .agent_cli import AgentCliBackend
 
@@ -146,7 +142,7 @@ def get_backend(name: str | None = None):
 def available_backends() -> list[dict]:
     """Best-effort availability probe for ``myos doctor``."""
     out = []
-    for name in ("claude", "claude-sdk", "copilot", "cursor"):
+    for name in ("claude", "claude-sdk", "copilot", "command"):
         try:
             ok, detail = get_backend(name).available()
         except Exception as exc:  # pragma: no cover - defensive

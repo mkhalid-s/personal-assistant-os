@@ -58,6 +58,23 @@ def _chunk_for_work_item(conn: sqlite3.Connection, item_id: int) -> sqlite3.Row 
     ).fetchone()
 
 
+def _chunk_for_source(conn: sqlite3.Connection, source_type: str, source_id: str | int) -> sqlite3.Row | None:
+    try:
+        source_id_int = int(source_id)
+    except (TypeError, ValueError):
+        return None
+    return conn.execute(
+        """
+        SELECT id, source_type, source_id, content, provenance_id
+        FROM text_chunks
+        WHERE source_type = ? AND source_id = ?
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        """,
+        (source_type, source_id_int),
+    ).fetchone()
+
+
 def _direct_hits(conn: sqlite3.Connection, query: str, *, candidate_limit: int) -> list[RetrievalHit]:
     rows = conn.execute(
         """
@@ -86,6 +103,98 @@ def _direct_hits(conn: sqlite3.Connection, query: str, *, candidate_limit: int) 
                 reason=f"direct hybrid retrieval{provenance}",
             )
         )
+    return hits
+
+
+def _entity_hits(conn: sqlite3.Connection, query: str) -> list[RetrievalHit]:
+    query_lower = query.lower()
+    aliases = conn.execute(
+        """
+        SELECT ea.entity_id, ea.alias, ea.source_type, ea.source_id, ea.confidence, e.canonical_name
+        FROM entity_aliases ea
+        JOIN entities e ON e.id = ea.entity_id
+        WHERE ea.source_type IS NOT NULL AND ea.source_id IS NOT NULL
+        ORDER BY ea.confidence DESC, LENGTH(ea.alias) DESC, ea.id ASC
+        """
+    ).fetchall()
+    hits: list[RetrievalHit] = []
+    matched_entity_ids: list[int] = []
+    for alias in aliases:
+        alias_text = str(alias["alias"]).strip()
+        if not alias_text or alias_text.lower() not in query_lower:
+            continue
+        chunk = _chunk_for_source(conn, str(alias["source_type"]), alias["source_id"])
+        if chunk is None:
+            continue
+        matched_entity_ids.append(int(alias["entity_id"]))
+        source_type = str(chunk["source_type"])
+        source_id = int(chunk["source_id"])
+        score = max(hybrid_score(query, str(chunk["content"])), 0.2) + float(alias["confidence"] or 0.0) * 0.1
+        hits.append(
+            RetrievalHit(
+                source_type=source_type,
+                source_id=source_id,
+                content=str(chunk["content"]),
+                score=score,
+                citation=_citation(source_type, source_id),
+                reason=f"entity alias match: {alias_text}",
+            )
+        )
+
+    for entity_id in dict.fromkeys(matched_entity_ids):
+        related = conn.execute(
+            """
+            SELECT
+                r.relation_type,
+                'outbound' AS direction,
+                r.confidence AS relationship_confidence,
+                ea.source_type,
+                ea.source_id,
+                ea.confidence AS alias_confidence,
+                e.canonical_name
+            FROM relationships r
+            JOIN entities e ON e.id = r.to_entity_id
+            JOIN entity_aliases ea ON ea.entity_id = e.id
+            WHERE r.from_entity_id = ? AND ea.source_type IS NOT NULL AND ea.source_id IS NOT NULL
+            UNION ALL
+            SELECT
+                r.relation_type,
+                'inbound' AS direction,
+                r.confidence AS relationship_confidence,
+                ea.source_type,
+                ea.source_id,
+                ea.confidence AS alias_confidence,
+                e.canonical_name
+            FROM relationships r
+            JOIN entities e ON e.id = r.from_entity_id
+            JOIN entity_aliases ea ON ea.entity_id = e.id
+            WHERE r.to_entity_id = ? AND ea.source_type IS NOT NULL AND ea.source_id IS NOT NULL
+            ORDER BY 3 DESC, 6 DESC, 5 ASC
+            """,
+            (entity_id, entity_id),
+        ).fetchall()
+        for row in related:
+            chunk = _chunk_for_source(conn, str(row["source_type"]), row["source_id"])
+            if chunk is None:
+                continue
+            source_type = str(chunk["source_type"])
+            source_id = int(chunk["source_id"])
+            score = max(hybrid_score(query, str(chunk["content"])), 0.15) + float(row["alias_confidence"] or 0.0) * 0.05
+            hits.append(
+                RetrievalHit(
+                    source_type=source_type,
+                    source_id=source_id,
+                    content=str(chunk["content"]),
+                    score=score,
+                    citation=_citation(source_type, source_id),
+                    reason=f"entity {row['direction']} relationship expansion via {row['relation_type']}",
+                    graph_path=(
+                        f"entity#{entity_id}",
+                        f"{row['direction']}:{row['relation_type']}",
+                        str(row["canonical_name"]),
+                    ),
+                )
+            )
     return hits
 
 
@@ -203,6 +312,7 @@ def retrieve(
     direct = _direct_hits(conn, query, candidate_limit=candidate_limit)
     hits = list(direct)
     if graph_hops > 0:
+        hits.extend(_entity_hits(conn, query))
         for hit in direct:
             hits.extend(_expand_work_item_graph(conn, hit))
 
