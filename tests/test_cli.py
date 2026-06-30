@@ -67,6 +67,35 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("reason: graph expansion", out)
             self.assertIn("path: work_item#1 -> depends_on:0.80 -> work_item#2", out)
 
+    def test_why_graph_trace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
+
+            def run(*args: str) -> str:
+                out = subprocess.run(
+                    ["python", "-m", "personal_assistant.cli", *args],
+                    cwd=Path.cwd(),
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                return out.stdout
+
+            run("capture", "Launch dashboard tracks customer escalations")
+            run("capture", "Backend ingestion job supplies upstream metrics")
+            run("triage")
+            run("link", "--from-item", "1", "--to-item", "2", "--relation", "depends_on", "--weight", "0.8")
+
+            out = run("why", "--item", "1", "--graph")
+            self.assertIn("Work item #1: Launch dashboard tracks customer escalations", out)
+            self.assertIn("graph evidence:", out)
+            self.assertIn("work_item#2", out)
+            self.assertIn("reason: graph expansion", out)
+            self.assertIn("path: work_item#1 -> depends_on:0.80 -> work_item#2", out)
+
     def test_duplicate_capture_is_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()

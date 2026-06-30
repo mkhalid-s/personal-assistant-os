@@ -965,6 +965,24 @@ def cmd_why(args: argparse.Namespace) -> None:
         )
     if row["snippet"]:
         print(f"snippet: {row['snippet'][:180]}")
+    if getattr(args, "graph", False):
+        hits = graphrag.retrieve(conn, row["title"], limit=args.limit, graph_hops=args.graph_hops)
+        evidence = [
+            hit for hit in hits
+            if hit["graph_path"] or hit["source_type"] != "work_item" or int(hit["source_id"]) != int(row["id"])
+        ]
+        if not evidence:
+            print("graph: no related evidence found.")
+            return
+        print("graph evidence:")
+        for hit in evidence:
+            snippet = str(hit["content"]).strip().replace("\n", " ")
+            if len(snippet) > 120:
+                snippet = snippet[:117] + "..."
+            print(f"- ({hit['score']:.3f}) {hit['citation']}: {snippet}")
+            print(f"  reason: {hit['reason']}")
+            if hit["graph_path"]:
+                print(f"  path: {' -> '.join(hit['graph_path'])}")
 
 
 def cmd_at_risk(args: argparse.Namespace) -> None:
@@ -4181,6 +4199,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     why = sub.add_parser("why", help="Explain why a work item exists.")
     why.add_argument("--item", type=int, required=True)
+    why.add_argument("--graph", action="store_true", help="Include graph-related evidence and path explanations.")
+    why.add_argument("--limit", type=int, default=5)
+    why.add_argument("--graph-hops", type=int, default=1)
     why.set_defaults(func=cmd_why)
 
     at_risk = sub.add_parser("at-risk", help="Show at-risk work items.")

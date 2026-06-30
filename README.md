@@ -25,7 +25,7 @@ The design is inspired by AI-native software-factory ideas: intent-first workflo
 - Captures notes, tasks, commitments, decisions, risks, and daily logs.
 - Syncs optional external context from configured connectors such as Jira, GitHub, Confluence, and Aha.
 - Ingests text, audio transcripts, images, meeting notes, and watched folders.
-- Builds searchable memory with provenance, deterministic entity and relationship extraction, graph links, hybrid retrieval, and "why" explanations.
+- Builds searchable memory with provenance, deterministic entity and relationship extraction, graph links, hybrid retrieval, and graph-aware "why" explanations.
 - Runs assistant workflows such as briefings, risk scans, delegation, autopilot, approvals, and weekly reviews.
 - Redacts common PII and secrets before persistence and keeps private runtime data out of git.
 
@@ -135,7 +135,7 @@ myos transcribe /path/to/meeting.m4a --text "Decision: move freeze to Wednesday.
 myos ingest-image /path/to/whiteboard.png --text "Task: add canary checks. Risk: platform dependency."
 myos inbox-process
 myos at-risk
-myos why --item 1
+myos why --item 1 --graph
 myos close-day --mode hybrid --note "Meeting-heavy coordination day"
 ```
 
@@ -164,7 +164,7 @@ Ingestion and context:
 - `myos watch-scan [--limit N]`
 - `myos context <query> [--limit N] [--graph]`
 - `myos related --item N [--limit N]`
-- `myos why --item N`
+- `myos why --item N [--graph]`
 - `myos reindex`
 
 Assistant and automation:
