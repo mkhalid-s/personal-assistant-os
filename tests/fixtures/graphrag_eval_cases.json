@@ -1,0 +1,92 @@
+[
+  {
+    "name": "blocked_launch_dependency",
+    "query": "what is blocking the launch dashboard",
+    "work_items": [
+      {
+        "key": "launch",
+        "title": "Launch dashboard needs customer escalation visibility"
+      },
+      {
+        "key": "ingestion",
+        "title": "Backend ingestion dependency is blocking dashboard launch"
+      },
+      {
+        "key": "agenda",
+        "title": "Prepare weekly team agenda"
+      }
+    ],
+    "links": [
+      {
+        "from": "launch",
+        "to": "ingestion",
+        "relation": "blocked_by",
+        "weight": 0.95
+      }
+    ],
+    "expected_citations": ["launch", "ingestion"],
+    "expected_graph_paths": [
+      ["launch", "blocked_by:0.95", "ingestion"]
+    ]
+  },
+  {
+    "name": "production_risk_mitigation",
+    "query": "show mitigation for production dashboard risk",
+    "work_items": [
+      {
+        "key": "risk",
+        "title": "Production dashboard has release risk from missing smoke checks"
+      },
+      {
+        "key": "mitigation",
+        "title": "Mitigation plan adds smoke checks and rollback owner"
+      },
+      {
+        "key": "notes",
+        "title": "Summarize notes from design reading group"
+      }
+    ],
+    "links": [
+      {
+        "from": "risk",
+        "to": "mitigation",
+        "relation": "mitigated_by",
+        "weight": 0.9
+      }
+    ],
+    "expected_citations": ["risk", "mitigation"],
+    "expected_graph_paths": [
+      ["risk", "mitigated_by:0.90", "mitigation"]
+    ]
+  },
+  {
+    "name": "approval_evidence",
+    "query": "which evidence supports approval readiness",
+    "work_items": [
+      {
+        "key": "approval",
+        "title": "Approval readiness requires cited validation evidence"
+      },
+      {
+        "key": "validation",
+        "title": "Validation evidence confirms smoke tests and owner signoff"
+      },
+      {
+        "key": "cleanup",
+        "title": "Clean obsolete dashboard filters"
+      }
+    ],
+    "links": [
+      {
+        "from": "approval",
+        "to": "validation",
+        "relation": "supported_by",
+        "weight": 0.85
+      }
+    ],
+    "expected_citations": ["approval", "validation"],
+    "expected_graph_paths": [
+      ["approval", "supported_by:0.85", "validation"]
+    ]
+  }
+]

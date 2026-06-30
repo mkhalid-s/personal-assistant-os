@@ -101,6 +101,7 @@ GraphRAG should be added deliberately, not implied by the current graph tables.
 - `related`, `context`, and `why` commands that expose some relationship context.
 - `retrieval_runs` and `retrieval_run_sources` tables that persist selected sources, scores, citations, and graph paths for graph-backed retrieval.
 - A SQLite-first retrieval trace contract in `graphrag.py` surfaced through `myos context --graph` and `myos why --graph`, returning cited chunks and one-hop relationship explanations.
+- Fixture-based GraphRAG eval cases for common assistant questions such as blockers, mitigation, and approval evidence.
 
 ### What Is Missing
 

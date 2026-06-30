@@ -8,7 +8,7 @@ Local-first CLI assistant for planning work, remembering context, triaging tasks
 
 This repository is an MVP public baseline. It is useful as a local CLI assistant, but it is not yet a production-stable application, a full GraphRAG system, or a graph database application.
 
-The current graph support is SQLite-based and lightweight: `knowledge_nodes`, `knowledge_edges`, deterministic `entities`/`entity_aliases`, typed `relationships`, manual links, conversation-derived relationship hints, and persisted retrieval traces for cited graph expansion. Real GraphRAG is planned in stages. See `ARCHITECTURE.md` and `ROADMAP.md`.
+The current graph support is SQLite-based and lightweight: `knowledge_nodes`, `knowledge_edges`, deterministic `entities`/`entity_aliases`, typed `relationships`, manual links, conversation-derived relationship hints, persisted retrieval traces for cited graph expansion, and fixture-based retrieval evals. Real GraphRAG is planned in stages. See `ARCHITECTURE.md` and `ROADMAP.md`.
 
 ## Project Direction
 
@@ -25,7 +25,7 @@ The design is inspired by AI-native software-factory ideas: intent-first workflo
 - Captures notes, tasks, commitments, decisions, risks, and daily logs.
 - Syncs optional external context from configured connectors such as Jira, GitHub, Confluence, and Aha.
 - Ingests text, audio transcripts, images, meeting notes, and watched folders.
-- Builds searchable memory with provenance, deterministic entity and relationship extraction, graph links, hybrid retrieval, persisted retrieval traces, and graph-aware "why" explanations.
+- Builds searchable memory with provenance, deterministic entity and relationship extraction, graph links, hybrid retrieval, persisted retrieval traces, retrieval eval fixtures, and graph-aware "why" explanations.
 - Runs assistant workflows such as briefings, risk scans, delegation, autopilot, approvals, and weekly reviews.
 - Redacts common PII and secrets before persistence and keeps private runtime data out of git.
 

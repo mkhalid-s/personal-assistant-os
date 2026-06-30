@@ -119,7 +119,7 @@ Work items:
 - Extend typed edge extraction across notes, conversations, tickets, and PRs.
 - Extend graph-backed why explanations beyond work items into plans, reviews, and assistant answers.
 - Extend retrieval traces from GraphRAG CLI surfaces into assistant answers and review packets.
-- Add retrieval eval fixtures for common assistant questions.
+- Expand retrieval eval fixtures beyond the initial blocker, mitigation, and approval-evidence cases.
 
 Exit criteria:
 
