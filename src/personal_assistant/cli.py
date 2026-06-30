@@ -572,6 +572,73 @@ def cmd_context(args: argparse.Namespace) -> None:
         )
 
 
+def cmd_retrieval_run(args: argparse.Namespace) -> None:
+    conn = get_connection()
+    action = getattr(args, "retrieval_run_action", "list") or "list"
+    if action == "show":
+        if args.id is None:
+            print("Usage: myos retrieval-run show --id N")
+            raise SystemExit(1)
+        run = conn.execute(
+            """
+            SELECT id, query, mode, limit_requested, graph_hops, candidate_limit, selected_count, created_at
+            FROM retrieval_runs
+            WHERE id = ?
+            """,
+            (args.id,),
+        ).fetchone()
+        if not run:
+            print("Retrieval run not found.")
+            return
+        print(f"Retrieval run #{run['id']} [{run['mode']}]")
+        print(f"query: {run['query']}")
+        print(
+            f"requested: limit={run['limit_requested']} graph_hops={run['graph_hops']} "
+            f"candidates={run['candidate_limit']} selected={run['selected_count']}"
+        )
+        print(f"created: {run['created_at']}")
+        sources = conn.execute(
+            """
+            SELECT rank, citation, score, reason, graph_path_json, content_preview
+            FROM retrieval_run_sources
+            WHERE retrieval_run_id = ?
+            ORDER BY rank ASC
+            """,
+            (run["id"],),
+        ).fetchall()
+        if not sources:
+            print("sources: none")
+            return
+        print("sources:")
+        for source in sources:
+            preview = source["content_preview"] or ""
+            print(f"{source['rank']}. ({source['score']:.3f}) {source['citation']}: {preview}")
+            print(f"   reason: {source['reason']}")
+            path = json.loads(source["graph_path_json"] or "[]")
+            if path:
+                print(f"   path: {' -> '.join(path)}")
+        return
+
+    rows = conn.execute(
+        """
+        SELECT id, query, mode, selected_count, created_at
+        FROM retrieval_runs
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (args.limit,),
+    ).fetchall()
+    if not rows:
+        print("No retrieval runs recorded.")
+        return
+    print("Retrieval runs:")
+    for row in rows:
+        print(
+            f"- #{row['id']} [{row['mode']}] {row['query']} "
+            f"(sources={row['selected_count']}, created={row['created_at']})"
+        )
+
+
 def cmd_recall(args: argparse.Namespace) -> None:
     """Scored recall over the conversation memory: relevance + recency + importance."""
     conn = get_connection()
@@ -4153,6 +4220,12 @@ def build_parser() -> argparse.ArgumentParser:
     context.add_argument("--graph", action="store_true", help="Use SQLite GraphRAG retrieval trace.")
     context.add_argument("--graph-hops", type=int, default=1)
     context.set_defaults(func=cmd_context)
+
+    retrieval_run = sub.add_parser("retrieval-run", help="Inspect persisted retrieval traces.")
+    retrieval_run.add_argument("retrieval_run_action", nargs="?", choices=["list", "show"], default="list")
+    retrieval_run.add_argument("--id", type=int)
+    retrieval_run.add_argument("--limit", type=int, default=10)
+    retrieval_run.set_defaults(func=cmd_retrieval_run)
 
     recall = sub.add_parser("recall", help="Scored recall over conversation memory (relevance+recency+importance).")
     recall.add_argument("query", help="What to recall.")

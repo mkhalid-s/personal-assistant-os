@@ -163,6 +163,7 @@ Ingestion and context:
 - `myos watch-dir add <path> [--label TEXT]`
 - `myos watch-scan [--limit N]`
 - `myos context <query> [--limit N] [--graph]`
+- `myos retrieval-run [list|show --id N]`
 - `myos related --item N [--limit N]`
 - `myos why --item N [--graph]`
 - `myos reindex`
