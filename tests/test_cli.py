@@ -62,6 +62,7 @@ class CliFlowTest(unittest.TestCase):
 
             out = run("context", "customer escalation dashboard", "--graph")
             self.assertIn("Graph context results for: customer escalation dashboard", out)
+            self.assertIn("retrieval run: #", out)
             self.assertIn("work_item#1", out)
             self.assertIn("work_item#2", out)
             self.assertIn("reason: graph expansion", out)
@@ -91,6 +92,7 @@ class CliFlowTest(unittest.TestCase):
 
             out = run("why", "--item", "1", "--graph")
             self.assertIn("Work item #1: Launch dashboard tracks customer escalations", out)
+            self.assertIn("retrieval run: #", out)
             self.assertIn("graph evidence:", out)
             self.assertIn("work_item#2", out)
             self.assertIn("reason: graph expansion", out)

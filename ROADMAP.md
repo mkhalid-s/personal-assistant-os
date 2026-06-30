@@ -99,7 +99,7 @@ Data model additions:
 - `entity_aliases`: alternate names and IDs. Initial SQLite persistence exists.
 - `relationships`: typed edges with source, confidence, timestamps, and provenance. Initial deterministic extraction exists for explicit relationship phrases.
 - `claims`: extracted facts with source spans and confidence.
-- `retrieval_runs`: query, selected sources, graph expansion, rerank scores, and final citations.
+- `retrieval_runs`: query, selected sources, graph expansion, rerank scores, and final citations. Initial SQLite persistence exists for GraphRAG CLI surfaces.
 
 Retrieval pipeline:
 
@@ -118,7 +118,7 @@ Work items:
 - Extend deterministic entity extraction, then add provider-assisted extraction behind approval/policy.
 - Extend typed edge extraction across notes, conversations, tickets, and PRs.
 - Extend graph-backed why explanations beyond work items into plans, reviews, and assistant answers.
-- Extend retrieval traces so every answer can show why sources were chosen.
+- Extend retrieval traces from GraphRAG CLI surfaces into assistant answers and review packets.
 - Add retrieval eval fixtures for common assistant questions.
 
 Exit criteria:

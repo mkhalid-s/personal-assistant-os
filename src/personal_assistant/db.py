@@ -1043,6 +1043,46 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             (23, "add_typed_entity_relationships"),
         )
 
+    if current < 24:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS retrieval_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                query TEXT NOT NULL,
+                mode TEXT NOT NULL DEFAULT 'graph',
+                limit_requested INTEGER NOT NULL DEFAULT 5,
+                graph_hops INTEGER NOT NULL DEFAULT 1,
+                candidate_limit INTEGER NOT NULL DEFAULT 400,
+                selected_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS retrieval_run_sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                retrieval_run_id INTEGER NOT NULL,
+                rank INTEGER NOT NULL,
+                source_type TEXT NOT NULL,
+                source_id INTEGER NOT NULL,
+                citation TEXT NOT NULL,
+                score REAL NOT NULL,
+                reason TEXT NOT NULL,
+                graph_path_json TEXT NOT NULL DEFAULT '[]',
+                content_preview TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(retrieval_run_id) REFERENCES retrieval_runs(id),
+                UNIQUE(retrieval_run_id, rank)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_retrieval_runs_time ON retrieval_runs(created_at, mode);
+            CREATE INDEX IF NOT EXISTS idx_retrieval_sources_run ON retrieval_run_sources(retrieval_run_id, rank);
+            CREATE INDEX IF NOT EXISTS idx_retrieval_sources_source ON retrieval_run_sources(source_type, source_id);
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (24, "add_retrieval_run_traces"),
+        )
+
     _ensure_fts5(conn)  # self-heal: build the FTS index if a no-FTS5 run stranded migration 17
     conn.commit()
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import sqlite3
 from typing import Any
 
@@ -135,6 +136,51 @@ def _expand_work_item_graph(conn: sqlite3.Connection, hit: RetrievalHit) -> list
     return expanded
 
 
+def _record_retrieval_run(
+    conn: sqlite3.Connection,
+    query: str,
+    hits: list[dict[str, Any]],
+    *,
+    mode: str,
+    limit: int,
+    graph_hops: int,
+    candidate_limit: int,
+) -> int:
+    cur = conn.execute(
+        """
+        INSERT INTO retrieval_runs (
+            query, mode, limit_requested, graph_hops, candidate_limit, selected_count
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (query, mode, int(limit), int(graph_hops), int(candidate_limit), len(hits)),
+    )
+    run_id = int(cur.lastrowid)
+    for rank, hit in enumerate(hits, start=1):
+        preview = str(hit["content"]).strip().replace("\n", " ")
+        if len(preview) > 240:
+            preview = preview[:237] + "..."
+        conn.execute(
+            """
+            INSERT INTO retrieval_run_sources (
+                retrieval_run_id, rank, source_type, source_id, citation, score,
+                reason, graph_path_json, content_preview
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                rank,
+                hit["source_type"],
+                int(hit["source_id"]),
+                hit["citation"],
+                float(hit["score"]),
+                hit["reason"],
+                json.dumps(hit["graph_path"], ensure_ascii=True),
+                preview,
+            ),
+        )
+    return run_id
+
+
 def retrieve(
     conn: sqlite3.Connection,
     query: str,
@@ -142,6 +188,8 @@ def retrieve(
     limit: int = 5,
     graph_hops: int = 1,
     candidate_limit: int = 400,
+    record_run: bool = False,
+    mode: str = "graph",
 ) -> list[dict[str, Any]]:
     """SQLite-first GraphRAG retrieval trace over existing chunks and graph edges.
 
@@ -170,4 +218,18 @@ def retrieve(
         key=lambda h: (h.score, 1 if h.graph_path else 0, h.source_type, h.source_id),
         reverse=True,
     )
-    return [hit.as_dict() for hit in ordered[:limit]]
+    result = [hit.as_dict() for hit in ordered[:limit]]
+    if record_run:
+        run_id = _record_retrieval_run(
+            conn,
+            query,
+            result,
+            mode=mode,
+            limit=limit,
+            graph_hops=graph_hops,
+            candidate_limit=candidate_limit,
+        )
+        for rank, hit in enumerate(result, start=1):
+            hit["retrieval_run_id"] = run_id
+            hit["retrieval_rank"] = rank
+    return result

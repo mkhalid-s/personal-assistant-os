@@ -29,7 +29,7 @@ class GraphRAGDesignTest(unittest.TestCase):
         index_chunk(conn, "work_item", item_id, title)
         return item_id
 
-    def test_retrieve_returns_citations_without_claim_or_run_storage(self) -> None:
+    def test_retrieve_returns_citations_without_claim_storage(self) -> None:
         conn = self._conn()
         try:
             item_id = self._work_item(conn, "Customer escalation dashboard needs daily visibility")
@@ -48,8 +48,9 @@ class GraphRAGDesignTest(unittest.TestCase):
             self.assertIn("knowledge_nodes", tables)
             self.assertIn("knowledge_edges", tables)
             self.assertIn("entities", tables)
+            self.assertIn("retrieval_runs", tables)
+            self.assertIn("retrieval_run_sources", tables)
             self.assertNotIn("claims", tables)
-            self.assertNotIn("retrieval_runs", tables)
         finally:
             conn.close()
 
@@ -93,6 +94,53 @@ class GraphRAGDesignTest(unittest.TestCase):
             self.assertEqual(first, second)
             self.assertEqual(first[0]["citation"], f"work_item#{source_id}")
             self.assertTrue(any(hit["graph_path"] for hit in first))
+        finally:
+            conn.close()
+
+    def test_recorded_retrieval_run_persists_sources_and_paths(self) -> None:
+        conn = self._conn()
+        try:
+            source_id = self._work_item(conn, "Launch dashboard tracks customer escalations")
+            related_id = self._work_item(conn, "Backend ingestion job supplies upstream metrics")
+            connect_work_items(conn, source_id, related_id, "depends_on", 0.8)
+            conn.commit()
+
+            hits = graphrag.retrieve(
+                conn,
+                "customer escalation dashboard",
+                limit=5,
+                record_run=True,
+                mode="test_graph",
+            )
+
+            run_id = hits[0]["retrieval_run_id"]
+            run = conn.execute(
+                "SELECT query, mode, selected_count FROM retrieval_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            self.assertEqual(run["query"], "customer escalation dashboard")
+            self.assertEqual(run["mode"], "test_graph")
+            self.assertEqual(run["selected_count"], len(hits))
+
+            rows = conn.execute(
+                """
+                SELECT rank, citation, reason, graph_path_json
+                FROM retrieval_run_sources
+                WHERE retrieval_run_id = ?
+                ORDER BY rank ASC
+                """,
+                (run_id,),
+            ).fetchall()
+            self.assertEqual(len(rows), len(hits))
+            self.assertEqual(rows[0]["citation"], f"work_item#{source_id}")
+            self.assertTrue(
+                any(
+                    row["citation"] == f"work_item#{related_id}"
+                    and "graph expansion" in row["reason"]
+                    and f"work_item#{source_id}" in row["graph_path_json"]
+                    for row in rows
+                )
+            )
         finally:
             conn.close()
 
