@@ -75,6 +75,7 @@ def log_turn(
     surface: str = "chat",
     backend: str | None = None,
     proposed_action_ids: list | None = None,
+    retrieval_run_ids: list | None = None,
     latency_ms: int | None = None,
     extract: bool = True,
 ) -> dict:
@@ -102,8 +103,11 @@ def log_turn(
     conn.execute(
         """
         INSERT INTO conversation_turns
-            (conversation_id, turn_index, user_text, assistant_text, backend, proposed_action_ids, latency_ms)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+            (
+                conversation_id, turn_index, user_text, assistant_text, backend,
+                proposed_action_ids, retrieval_run_ids, latency_ms
+            )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             conversation_id,
@@ -112,6 +116,7 @@ def log_turn(
             asst_clean,
             backend,
             json.dumps(list(proposed_action_ids or []), ensure_ascii=True),
+            json.dumps(list(retrieval_run_ids or []), ensure_ascii=True),
             latency_ms,
         ),
     )

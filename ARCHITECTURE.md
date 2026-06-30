@@ -2,7 +2,7 @@
 
 Personal Assistant OS is intended to become a local-first AI control plane: a system that turns intent into planned, reviewable, approval-gated work while preserving context, provenance, and auditability.
 
-The current implementation is an MVP. It has a local SQLite store, CLI workflows, connector ingestion, lightweight graph tables, privacy filters, retrieval helpers, and approval queues. It is not yet a full GraphRAG system, graph database application, or production-grade software factory.
+The current implementation is an MVP. It has a local SQLite store, CLI workflows, reliability checks, connector ingestion, durable intents/plans/review packets, lightweight graph tables, privacy filters, retrieval traces, local agent-role runs, and approval queues. It is not yet a full GraphRAG system, graph database application, or production-grade software factory.
 
 ## Operating Loop
 
@@ -28,11 +28,11 @@ Each stage should leave durable evidence:
 
 ### CLI Surface
 
-`myos` is the main interface. It supports capture, triage, sync, retrieval, daily planning, risk scans, assistant delegation, approval queues, autopilot, reports, policies, and local launchd setup.
+`myos` is the main interface. It supports capture, triage, sync, retrieval, daily planning, durable plans, review packets, agent-role runs, risk scans, assistant delegation, approval queues, autopilot, reports, policies, backup/restore, migration verification, and local launchd setup.
 
 ### Local Store
 
-SQLite is the canonical store. It holds work items, external items, media metadata, text chunks, graph tables, conversations, observations, insights, policies, agent tasks, proposed actions, and event logs.
+SQLite is the canonical store. It holds work items, external items, media metadata, text chunks, graph tables, claims, intents, plans, review packets, conversations, observations, insights, policies, agent tasks, proposed actions, execution receipts, retrieval traces, and event logs.
 
 ### Ingestion
 
@@ -55,7 +55,7 @@ Agent outputs flow through proposed actions and approval gates. The policy layer
 
 ### Audit and Privacy
 
-Events, proposed actions, provider calls, conversation turns, and context observations are persisted. Privacy filters redact common PII and secret patterns before data is stored or indexed.
+Events, proposed actions, execution receipts, provider calls, conversation turns, and context observations are persisted. Failed or blocked execution receipts create follow-up inbox items so failures do not disappear. Privacy filters redact common PII and secret patterns before data is stored or indexed.
 
 ## Target Architecture
 
@@ -96,21 +96,22 @@ GraphRAG should be added deliberately, not implied by the current graph tables.
 - `knowledge_nodes` and `knowledge_edges` tables in SQLite.
 - `entities` and `entity_aliases` tables populated by conservative deterministic extraction.
 - `relationships` table populated by conservative deterministic typed edge extraction.
+- `claims` table for deterministic fact storage.
 - Manual links between work items.
 - Conversation-derived co-mention edges.
 - `related`, `context`, and `why` commands that expose some relationship context.
 - `retrieval_runs` and `retrieval_run_sources` tables that persist selected sources, scores, citations, and graph paths for graph-backed retrieval.
 - `retrieval-run` CLI inspection for persisted retrieval traces.
-- A SQLite-first retrieval trace contract in `graphrag.py` surfaced through `myos context --graph` and `myos why --graph`, returning cited chunks and one-hop relationship explanations.
+- A SQLite-first retrieval trace contract in `graphrag.py` surfaced through `myos context --graph`, `myos why --graph`, chat logging, and review packets, returning cited chunks and relationship explanations.
+- Entity-aware retrieval expansion from matched aliases through typed relationships.
 - Fixture-based GraphRAG eval cases for common assistant questions such as blockers, mitigation, and approval evidence.
 
 ### What Is Missing
 
 - Robust entity canonicalization beyond conservative identifier and labeled-name extraction.
 - Broader typed relationship extraction from documents, conversations, tickets, and PRs.
-- Entity-aware retrieval that expands from canonical entities to broader neighborhoods.
 - Real embeddings and vector search.
-- Reranking and citation quality checks.
+- Stronger reranking and citation quality checks.
 - Graph summaries or community-level memory.
 - A graph database backend or embedded graph engine.
 

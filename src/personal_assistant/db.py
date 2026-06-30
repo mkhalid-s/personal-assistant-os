@@ -4,6 +4,9 @@ import sqlite3
 import os
 from pathlib import Path
 
+EXPECTED_SCHEMA_VERSION = 28
+
+
 def resolve_db_path() -> Path:
     raw = os.getenv("MYOS_DB_PATH")
     if raw:
@@ -1083,6 +1086,144 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             (24, "add_retrieval_run_traces"),
         )
 
+    if current < 25:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS plans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                intent_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                summary TEXT,
+                assumptions_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'draft',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(intent_id) REFERENCES intents(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS plan_steps (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                plan_id INTEGER NOT NULL,
+                step_index INTEGER NOT NULL,
+                description TEXT NOT NULL,
+                owner TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                validation TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(plan_id) REFERENCES plans(id),
+                UNIQUE(plan_id, step_index)
+            );
+
+            CREATE TABLE IF NOT EXISTS plan_risks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                plan_id INTEGER NOT NULL,
+                risk TEXT NOT NULL,
+                mitigation TEXT,
+                severity TEXT NOT NULL DEFAULT 'medium',
+                status TEXT NOT NULL DEFAULT 'open',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(plan_id) REFERENCES plans(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS plan_validations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                plan_id INTEGER NOT NULL,
+                check_name TEXT NOT NULL,
+                command TEXT,
+                expected TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(plan_id) REFERENCES plans(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS review_packets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                plan_id INTEGER NOT NULL,
+                intent_id INTEGER NOT NULL,
+                retrieval_run_id INTEGER,
+                summary TEXT NOT NULL,
+                packet_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'draft',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(plan_id) REFERENCES plans(id),
+                FOREIGN KEY(intent_id) REFERENCES intents(id),
+                FOREIGN KEY(retrieval_run_id) REFERENCES retrieval_runs(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_plans_intent ON plans(intent_id, status, created_at);
+            CREATE INDEX IF NOT EXISTS idx_plan_steps_plan ON plan_steps(plan_id, step_index);
+            CREATE INDEX IF NOT EXISTS idx_plan_risks_plan ON plan_risks(plan_id, status);
+            CREATE INDEX IF NOT EXISTS idx_plan_validations_plan ON plan_validations(plan_id, status);
+            CREATE INDEX IF NOT EXISTS idx_review_packets_plan ON review_packets(plan_id, created_at);
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (25, "add_plans_and_review_packets"),
+        )
+
+    if current < 26:
+        columns = conn.execute("PRAGMA table_info(conversation_turns)").fetchall()
+        names = {row["name"] for row in columns}
+        if "retrieval_run_ids" not in names:
+            conn.execute("ALTER TABLE conversation_turns ADD COLUMN retrieval_run_ids TEXT")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (26, "add_conversation_turn_retrieval_traces"),
+        )
+
+    if current < 27:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS claims (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                claim_text TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                source_id TEXT,
+                confidence REAL NOT NULL DEFAULT 0.7,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(claim_text, source_type, source_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_claims_source ON claims(source_type, source_id);
+            CREATE INDEX IF NOT EXISTS idx_claims_created ON claims(created_at);
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (27, "add_claims"),
+        )
+
+    if current < 28:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS action_execution_receipts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_action_id INTEGER NOT NULL,
+                agent_task_id INTEGER NOT NULL,
+                action_type TEXT NOT NULL,
+                final_status TEXT NOT NULL,
+                result TEXT,
+                approved INTEGER NOT NULL DEFAULT 0,
+                rollback_note TEXT,
+                follow_up_required INTEGER NOT NULL DEFAULT 0,
+                follow_up_inbox_id INTEGER,
+                request_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(agent_action_id) REFERENCES agent_actions(id),
+                FOREIGN KEY(agent_task_id) REFERENCES agent_tasks(id),
+                FOREIGN KEY(follow_up_inbox_id) REFERENCES inbox_items(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_action_receipts_action ON action_execution_receipts(agent_action_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_action_receipts_status ON action_execution_receipts(final_status, created_at);
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (28, "add_action_execution_receipts"),
+        )
+
     _ensure_fts5(conn)  # self-heal: build the FTS index if a no-FTS5 run stranded migration 17
     conn.commit()
 
@@ -1128,6 +1269,56 @@ def _ensure_fts5(conn: sqlite3.Connection) -> None:
         conn.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (19, 'fix_fts_au_trigger')")
     except sqlite3.OperationalError:
         pass  # FTS5 not compiled in — retrieval falls back to the brute-force scan
+
+
+def verify_schema(conn: sqlite3.Connection) -> dict[str, object]:
+    """Return a compact readiness report for migration and storage health."""
+    rows = conn.execute("SELECT version FROM schema_migrations ORDER BY version ASC").fetchall()
+    applied = {int(row["version"]) for row in rows}
+    required_tables = {
+        "schema_migrations",
+        "inbox_items",
+        "work_items",
+        "text_chunks",
+        "knowledge_nodes",
+        "knowledge_edges",
+        "intents",
+        "entities",
+        "relationships",
+        "retrieval_runs",
+        "retrieval_run_sources",
+        "plans",
+        "plan_steps",
+        "plan_risks",
+        "plan_validations",
+        "review_packets",
+        "claims",
+        "action_execution_receipts",
+    }
+    existing_tables = {
+        row["name"]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'virtual table')").fetchall()
+    }
+    quick_check = conn.execute("PRAGMA quick_check").fetchone()[0]
+    foreign_keys = conn.execute("PRAGMA foreign_key_check").fetchall()
+    missing_versions = [version for version in range(1, EXPECTED_SCHEMA_VERSION + 1) if version not in applied]
+    missing_tables = sorted(required_tables - existing_tables)
+    ok = (
+        not missing_versions
+        and not missing_tables
+        and quick_check == "ok"
+        and not foreign_keys
+        and (max(applied) if applied else 0) >= EXPECTED_SCHEMA_VERSION
+    )
+    return {
+        "ok": ok,
+        "expected_version": EXPECTED_SCHEMA_VERSION,
+        "current_version": max(applied) if applied else 0,
+        "missing_versions": missing_versions,
+        "missing_tables": missing_tables,
+        "quick_check": quick_check,
+        "foreign_key_violations": len(foreign_keys),
+    }
 
 
 def append_event(

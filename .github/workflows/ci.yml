@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
@@ -50,7 +51,7 @@ jobs:
 
       - name: Scan for private references
         run: |
-          patterns=("Guide""wire" "GW Bed""rock" "/Users/mshaikh/Documents/""GW")
+          patterns=("Guide""wire" "GW Bed""rock" "/Users/""mshaikh/Documents/""GW")
           for pattern in "${patterns[@]}"; do
             if git grep -n -F "$pattern" -- ':!*.lock'; then
               echo "Found private reference: $pattern"
@@ -66,3 +67,25 @@ jobs:
       - name: Verify local-only artifacts are not tracked
         run: |
           ! git ls-files | grep -E '(^|/)(\.env|\.DS_Store|\.cursor|\.claude)(/|$)|\.(db|sqlite|sqlite3|log)$'
+
+  release-readiness:
+    name: Release Readiness
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Run release readiness gate
+        env:
+          PYTHONPATH: src
+        run: myos release-check --strict

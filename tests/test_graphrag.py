@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 import unittest
 
-from personal_assistant import graphrag
+from personal_assistant import claims, entities, graphrag, relationships
 from personal_assistant.db import initialize_schema
 from personal_assistant.graph import connect_work_items
 from personal_assistant.inbox import ensure_work_item_node, index_chunk
@@ -29,7 +29,7 @@ class GraphRAGDesignTest(unittest.TestCase):
         index_chunk(conn, "work_item", item_id, title)
         return item_id
 
-    def test_retrieve_returns_citations_without_claim_storage(self) -> None:
+    def test_retrieve_returns_citations_with_claim_storage_available(self) -> None:
         conn = self._conn()
         try:
             item_id = self._work_item(conn, "Customer escalation dashboard needs daily visibility")
@@ -50,7 +50,7 @@ class GraphRAGDesignTest(unittest.TestCase):
             self.assertIn("entities", tables)
             self.assertIn("retrieval_runs", tables)
             self.assertIn("retrieval_run_sources", tables)
-            self.assertNotIn("claims", tables)
+            self.assertIn("claims", tables)
         finally:
             conn.close()
 
@@ -141,6 +141,96 @@ class GraphRAGDesignTest(unittest.TestCase):
                     for row in rows
                 )
             )
+        finally:
+            conn.close()
+
+    def test_entity_relationship_expansion_adds_related_sources(self) -> None:
+        conn = self._conn()
+        try:
+            source_id = self._work_item(conn, "Project Atlas needs launch visibility")
+            related_id = self._work_item(conn, "Service Billing API supplies upstream metrics")
+            relationships.record_relationships(
+                conn,
+                "Project Atlas depends on Service Billing API.",
+                source_type="note",
+                source_id="relationship-fixture",
+            )
+            entities.record_entities(
+                conn,
+                "Project Atlas needs launch visibility",
+                source_type="work_item",
+                source_id=source_id,
+            )
+            entities.record_entities(
+                conn,
+                "Service Billing API supplies upstream metrics",
+                source_type="work_item",
+                source_id=related_id,
+            )
+            conn.commit()
+
+            hits = graphrag.retrieve(conn, "Project Atlas launch", limit=5)
+            by_citation = {hit["citation"]: hit for hit in hits}
+
+            self.assertIn(f"work_item#{source_id}", by_citation)
+            self.assertIn(f"work_item#{related_id}", by_citation)
+            self.assertIn("entity outbound relationship expansion", by_citation[f"work_item#{related_id}"]["reason"])
+            self.assertTrue(by_citation[f"work_item#{related_id}"]["graph_path"])
+        finally:
+            conn.close()
+
+    def test_entity_relationship_expansion_works_inbound(self) -> None:
+        conn = self._conn()
+        try:
+            project_id = self._work_item(conn, "Project Atlas needs launch visibility")
+            service_id = self._work_item(conn, "Service Billing API supplies upstream metrics")
+            relationships.record_relationships(
+                conn,
+                "Project Atlas depends on Service Billing API.",
+                source_type="note",
+                source_id="relationship-fixture",
+            )
+            entities.record_entities(
+                conn,
+                "Project Atlas needs launch visibility",
+                source_type="work_item",
+                source_id=project_id,
+            )
+            entities.record_entities(
+                conn,
+                "Service Billing API supplies upstream metrics",
+                source_type="work_item",
+                source_id=service_id,
+            )
+            conn.commit()
+
+            hits = graphrag.retrieve(conn, "Service Billing API metrics", limit=5)
+            by_citation = {hit["citation"]: hit for hit in hits}
+
+            self.assertIn(f"work_item#{service_id}", by_citation)
+            self.assertIn(f"work_item#{project_id}", by_citation)
+            project_hit = by_citation[f"work_item#{project_id}"]
+            self.assertIn("entity inbound relationship expansion", project_hit["reason"])
+            self.assertIn("inbound:depends_on", project_hit["graph_path"])
+        finally:
+            conn.close()
+
+    def test_claims_can_be_persisted_and_listed(self) -> None:
+        conn = self._conn()
+        try:
+            recorded = claims.record_claims(
+                conn,
+                "Project Atlas requires Service Billing API. Random fragment without claim.",
+                source_type="work_item",
+                source_id=7,
+            )
+            conn.commit()
+
+            self.assertEqual(len(recorded), 1)
+            rows = claims.list_claims(conn)
+            self.assertEqual(rows[0]["claim_text"], "Project Atlas requires Service Billing API")
+            self.assertEqual(rows[0]["source_type"], "work_item")
+            self.assertEqual(rows[0]["source_id"], "7")
         finally:
             conn.close()
 

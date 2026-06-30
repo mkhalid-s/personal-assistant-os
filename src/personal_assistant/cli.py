@@ -17,14 +17,14 @@ import subprocess
 
 from .connectors import AhaConnector, ConfluenceConnector, GitHubConnector, JiraConnector
 from .dashboard import render_dashboard_html, serve_dashboard
-from .db import append_event, get_connection, resolve_db_path
+from .db import append_event, get_connection, resolve_db_path, verify_schema
 from .extraction import extract_suggestions
 from .graph import connect_work_items
 from .ingest.audio import transcribe_audio
 from .ingest.image import extract_image_text
 from .pulse import detect_mode, run_cycle
 from .retrieval import hybrid_score
-from . import assistant, autonomy, context as ctx, em, entities, graphrag, intents, providers, queries, relationships, watch
+from . import assistant, autonomy, claims, context as ctx, em, entities, graphrag, intents, plans, providers, queries, relationships, watch
 # Helpers extracted out of this module (refactor #12) — re-imported so existing
 # call sites (and tests importing them from cli) keep working unchanged.
 from .inbox import (
@@ -347,6 +347,10 @@ def cmd_close_day(args: argparse.Namespace) -> None:
     high_risk = conn.execute(
         "SELECT COUNT(*) AS c FROM work_items WHERE status = 'open' AND risk_score >= 60"
     ).fetchone()["c"]
+    open_intents = conn.execute("SELECT COUNT(*) AS c FROM intents WHERE status = 'open'").fetchone()["c"]
+    pending_approvals = conn.execute(
+        "SELECT COUNT(*) AS c FROM agent_actions WHERE status = 'proposed'"
+    ).fetchone()["c"]
 
     mode = args.mode
     summary = (
@@ -363,14 +367,101 @@ def cmd_close_day(args: argparse.Namespace) -> None:
         "close_day",
         "daily_log",
         None,
-        json.dumps({"mode": mode, "open_items": open_count, "high_risk": high_risk}, ensure_ascii=True),
+        json.dumps(
+            {
+                "mode": mode,
+                "open_items": open_count,
+                "high_risk": high_risk,
+                "open_intents": open_intents,
+                "pending_approvals": pending_approvals,
+            },
+            ensure_ascii=True,
+        ),
     )
     conn.commit()
 
     print("Day closed.")
     print(summary)
+    print(f"Open intents: {open_intents}")
+    print(f"Pending approvals: {pending_approvals}")
     if args.note:
         print(f"Note: {args.note}")
+
+
+def cmd_morning_brief(args: argparse.Namespace) -> None:
+    conn = get_connection()
+    print("Morning brief:")
+    intents_rows = conn.execute(
+        """
+        SELECT id, objective, priority
+        FROM intents
+        WHERE status = 'open'
+        ORDER BY priority ASC, id DESC
+        LIMIT ?
+        """,
+        (args.limit,),
+    ).fetchall()
+    print("Priorities:")
+    if intents_rows:
+        for row in intents_rows:
+            print(f"- intent #{row['id']} priority={row['priority']} {row['objective']}")
+    else:
+        print("- none")
+
+    risks = conn.execute(
+        """
+        SELECT id, title, risk_score, due_date
+        FROM work_items
+        WHERE status = 'open' AND risk_score >= ?
+        ORDER BY risk_score DESC, id DESC
+        LIMIT ?
+        """,
+        (args.risk_threshold, args.limit),
+    ).fetchall()
+    print("Risks:")
+    if risks:
+        for row in risks:
+            due = row["due_date"] or "no due date"
+            print(f"- work_item #{row['id']} risk={row['risk_score']} due={due} {row['title']}")
+    else:
+        print("- none")
+
+    approvals = conn.execute(
+        """
+        SELECT id, title, action_type
+        FROM agent_actions
+        WHERE status = 'proposed'
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?
+        """,
+        (args.limit,),
+    ).fetchall()
+    print("Pending approvals:")
+    if approvals:
+        for row in approvals:
+            print(f"- action #{row['id']} [{row['action_type']}] {row['title']}")
+    else:
+        print("- none")
+
+    evidence_gaps = conn.execute(
+        """
+        SELECT i.id, i.objective
+        FROM intents i
+        LEFT JOIN intent_evidence e ON e.intent_id = i.id
+        WHERE i.status = 'open'
+        GROUP BY i.id
+        HAVING COUNT(e.id) = 0
+        ORDER BY i.priority ASC, i.id DESC
+        LIMIT ?
+        """,
+        (args.limit,),
+    ).fetchall()
+    print("Evidence gaps:")
+    if evidence_gaps:
+        for row in evidence_gaps:
+            print(f"- intent #{row['id']} needs evidence: {row['objective']}")
+    else:
+        print("- none")
 
 
 def cmd_transcribe(args: argparse.Namespace) -> None:
@@ -815,6 +906,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     db_path = resolve_db_path()
     db_parent = db_path.expanduser().parent
     fts_ok, fts_detail = _sqlite_fts5_available(conn)
+    schema_status = verify_schema(conn)
     gitignore_text = _repo_file(".gitignore").read_text() if _repo_file(".gitignore").exists() else ""
 
     core_checks.extend(
@@ -836,6 +928,11 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                 str(db_parent),
             ),
             ("sqlite_fts5", fts_ok, fts_detail),
+            (
+                "schema_migrations",
+                bool(schema_status["ok"]),
+                f"current={schema_status['current_version']} expected={schema_status['expected_version']}",
+            ),
             ("env_example", _repo_file(".env.example").exists(), str(_repo_file(".env.example"))),
             (
                 "local_artifacts_ignored",
@@ -909,6 +1006,294 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         raise SystemExit(1)
     if args.strict:
         print("Doctor strict: core checks passed.")
+
+
+def _check_sqlite_file(path: Path) -> tuple[bool, str]:
+    if not path.exists():
+        return False, f"missing {path}"
+    try:
+        conn = sqlite3.connect(path)
+        quick_check = conn.execute("PRAGMA quick_check").fetchone()[0]
+        has_migrations = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
+        ).fetchone()
+        conn.close()
+    except sqlite3.Error as exc:
+        return False, f"sqlite error: {exc}"
+    if quick_check != "ok":
+        return False, f"quick_check={quick_check}"
+    if not has_migrations:
+        return False, "schema_migrations table missing"
+    return True, "ok"
+
+
+def cmd_migrations(args: argparse.Namespace) -> None:
+    conn = get_connection()
+    action = getattr(args, "migrations_action", "verify") or "verify"
+    if action == "list":
+        rows = conn.execute(
+            """
+            SELECT version, name, applied_at
+            FROM schema_migrations
+            ORDER BY version ASC
+            """
+        ).fetchall()
+        print("Schema migrations:")
+        for row in rows:
+            print(f"- {row['version']:02d} {row['name']} applied_at={row['applied_at']}")
+        status = verify_schema(conn)
+        print(f"Current version: {status['current_version']} / expected {status['expected_version']}")
+        return
+
+    status = verify_schema(conn)
+    print("Migration verification:")
+    print(f"- current_version={status['current_version']} expected={status['expected_version']}")
+    print(f"- quick_check={status['quick_check']}")
+    print(f"- foreign_key_violations={status['foreign_key_violations']}")
+    missing_versions = status["missing_versions"]
+    missing_tables = status["missing_tables"]
+    print(f"- missing_versions={missing_versions if missing_versions else 'none'}")
+    print(f"- missing_tables={missing_tables if missing_tables else 'none'}")
+    if not status["ok"]:
+        print("Schema migrations verification failed.")
+        if getattr(args, "strict", False):
+            raise SystemExit(1)
+        return
+    print("Schema migrations verified.")
+
+
+def cmd_backup(args: argparse.Namespace) -> None:
+    source = resolve_db_path()
+    conn = get_connection()
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    output = Path(args.output).expanduser() if args.output else source.parent / "backups" / f"assistant-{timestamp}.db"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    dest = sqlite3.connect(output)
+    try:
+        conn.backup(dest)
+    finally:
+        dest.close()
+        conn.close()
+    print(f"Backup created: {output}")
+
+
+def cmd_restore(args: argparse.Namespace) -> None:
+    source = Path(args.source).expanduser()
+    ok, detail = _check_sqlite_file(source)
+    if not ok:
+        print(f"Restore refused: {detail}")
+        raise SystemExit(1)
+
+    target = resolve_db_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        safety_backup = target.parent / "backups" / f"pre-restore-{timestamp}.db"
+        safety_backup.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(target, safety_backup)
+        print(f"Current database backed up: {safety_backup}")
+    shutil.copy2(source, target)
+    for sidecar in (target.with_name(target.name + "-wal"), target.with_name(target.name + "-shm")):
+        if sidecar.exists():
+            sidecar.unlink()
+
+    conn = get_connection()
+    status = verify_schema(conn)
+    conn.close()
+    if not status["ok"]:
+        print("Restore completed, but schema verification failed.")
+        raise SystemExit(1)
+    print(f"Database restored from: {source}")
+    print("Schema migrations verified.")
+
+
+def _pyproject_dependencies(pyproject: Path) -> list[str]:
+    if not pyproject.exists():
+        return []
+    deps: list[str] = []
+    in_deps = False
+    for line in pyproject.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("dependencies"):
+            if "[" in stripped and "]" in stripped:
+                raw = stripped.split("[", 1)[1].rsplit("]", 1)[0]
+                return [
+                    item.strip().strip("'").strip('"')
+                    for item in raw.split(",")
+                    if item.strip().strip("'").strip('"')
+                ]
+            in_deps = True
+            continue
+        if in_deps and stripped.startswith("]"):
+            break
+        if in_deps:
+            value = stripped.strip(",").strip("'").strip('"')
+            if value:
+                deps.append(value)
+    return deps
+
+
+def cmd_dependency_check(args: argparse.Namespace) -> None:
+    root = Path(__file__).resolve().parents[2]
+    pyproject = root / "pyproject.toml"
+    license_file = root / "LICENSE"
+    text = pyproject.read_text() if pyproject.exists() else ""
+    deps = _pyproject_dependencies(pyproject)
+    checks = [
+        ("pyproject", pyproject.exists(), str(pyproject)),
+        ("license_metadata", "Apache-2.0" in text, "Apache-2.0 in pyproject"),
+        ("license_file", license_file.exists() and "Apache License" in license_file.read_text(), str(license_file)),
+    ]
+    print("Dependency and license check:")
+    ok = True
+    for name, passed, detail in checks:
+        ok = ok and passed
+        print(f"- {'PASS' if passed else 'FAIL'} {name}: {detail}")
+    print(f"- dependencies={len(deps)}")
+    for dep in deps:
+        print(f"  - {dep}")
+    if args.strict and not ok:
+        raise SystemExit(1)
+
+
+def cmd_performance_baseline(args: argparse.Namespace) -> None:
+    conn = get_connection()
+    start = time.monotonic()
+    hits = graphrag.retrieve(conn, args.query, limit=args.limit)
+    retrieval_ms = int((time.monotonic() - start) * 1000)
+
+    start = time.monotonic()
+    counts = conn.execute(
+        """
+        SELECT
+          (SELECT COUNT(*) FROM intents WHERE status='open') AS open_intents,
+          (SELECT COUNT(*) FROM work_items WHERE status='open') AS open_work,
+          (SELECT COUNT(*) FROM agent_actions WHERE status='proposed') AS pending_approvals,
+          (SELECT COUNT(*) FROM retrieval_runs) AS retrieval_runs
+        """
+    ).fetchone()
+    summary_ms = int((time.monotonic() - start) * 1000)
+
+    print("Performance baseline:")
+    print(f"- retrieval_ms={retrieval_ms} query={args.query!r} hits={len(hits)}")
+    print(
+        f"- readiness_query_ms={summary_ms} open_intents={counts['open_intents']} "
+        f"open_work={counts['open_work']} pending_approvals={counts['pending_approvals']} "
+        f"retrieval_runs={counts['retrieval_runs']}"
+    )
+
+
+def _release_scan_files(root: Path) -> list[Path]:
+    scan_roots = [
+        "README.md",
+        "ARCHITECTURE.md",
+        "ROADMAP.md",
+        "pyproject.toml",
+        "src",
+        "tests",
+        "docs",
+        ".github",
+    ]
+    files: list[Path] = []
+    for rel in scan_roots:
+        path = root / rel
+        if path.is_file():
+            files.append(path)
+        elif path.exists():
+            files.extend(
+                p for p in path.rglob("*")
+                if p.is_file() and "__pycache__" not in p.parts
+            )
+    return files
+
+
+def _release_hygiene_findings(root: Path) -> list[str]:
+    patterns = [
+        "Guide" + "wire",
+        "GW Bed" + "rock",
+        "Co-authored-" + "by",
+        "Cur" + "sor",
+        "/Users/" + "mshaikh",
+        "Documents/" + "GW",
+        "personal-assistant-os-" + "public",
+    ]
+    findings: list[str] = []
+    for path in _release_scan_files(root):
+        try:
+            text = path.read_text(errors="ignore")
+        except OSError:
+            continue
+        for line_no, line in enumerate(text.splitlines(), start=1):
+            for pattern in patterns:
+                if pattern in line:
+                    findings.append(f"{path.relative_to(root)}:{line_no}: {pattern}")
+    return findings
+
+
+def _tracked_local_artifacts(root: Path) -> list[str]:
+    try:
+        proc = subprocess.run(
+            ["git", "ls-files"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return []
+    if proc.returncode != 0:
+        return []
+    blocked: list[str] = []
+    for raw in proc.stdout.splitlines():
+        path = raw.strip()
+        name = Path(path).name
+        if (
+            name in {".env", ".DS_Store"}
+            or path.startswith((".cursor/", ".claude/"))
+            or Path(path).suffix in {".db", ".sqlite", ".sqlite3", ".log"}
+        ):
+            blocked.append(path)
+    return blocked
+
+
+def cmd_release_check(args: argparse.Namespace) -> None:
+    root = Path(__file__).resolve().parents[2]
+    conn = get_connection()
+    schema = verify_schema(conn)
+    hygiene = _release_hygiene_findings(root)
+    artifacts = _tracked_local_artifacts(root)
+    required_files = [
+        root / "LICENSE",
+        root / "README.md",
+        root / "CHANGELOG.md",
+        root / "docs" / "MIGRATIONS.md",
+        root / "docs" / "RECOVERY.md",
+        root / ".github" / "workflows" / "ci.yml",
+        root / ".github" / "workflows" / "release.yml",
+    ]
+    dependency_ok = "Apache-2.0" in (root / "pyproject.toml").read_text(errors="ignore")
+    checks = [
+        ("schema", bool(schema["ok"]), f"current={schema['current_version']} expected={schema['expected_version']}"),
+        ("dependency_license", dependency_ok, "Apache-2.0 metadata"),
+        ("required_files", all(path.exists() for path in required_files), "docs, changelog, license, workflows"),
+        ("public_hygiene", not hygiene, f"{len(hygiene)} finding(s)"),
+        ("local_artifacts", not artifacts, f"{len(artifacts)} tracked local artifact(s)"),
+    ]
+    print("Release readiness check:")
+    ok = True
+    for name, passed, detail in checks:
+        ok = ok and passed
+        print(f"- {'PASS' if passed else 'FAIL'} {name}: {detail}")
+    if hygiene and args.verbose:
+        print("Hygiene findings:")
+        for finding in hygiene[:20]:
+            print(f"- {finding}")
+    if artifacts and args.verbose:
+        print("Tracked local artifacts:")
+        for artifact in artifacts[:20]:
+            print(f"- {artifact}")
+    if args.strict and not ok:
+        raise SystemExit(1)
 
 
 def cmd_ingest_external(args: argparse.Namespace) -> None:
@@ -2027,6 +2412,15 @@ def cmd_weekly_review(args: argparse.Namespace) -> None:
         "SELECT COUNT(*) AS c FROM review_evidence WHERE created_at >= datetime('now', ?)",
         (f"-{args.days} days",),
     ).fetchone()["c"]
+    intent_count = conn.execute("SELECT COUNT(*) AS c FROM intents WHERE status='open'").fetchone()["c"]
+    evidence_gap_count = conn.execute(
+        """
+        SELECT COUNT(*) AS c
+        FROM intents i
+        WHERE i.status = 'open'
+          AND NOT EXISTS (SELECT 1 FROM intent_evidence e WHERE e.intent_id = i.id)
+        """
+    ).fetchone()["c"]
     commitment = conn.execute(
         """
         SELECT
@@ -2039,6 +2433,7 @@ def cmd_weekly_review(args: argparse.Namespace) -> None:
     ).fetchone()
     print(f"Weekly review ({args.days}d window):")
     print(f"- open={open_count} done={done_count} at_risk={risk_count}")
+    print(f"- open_intents={intent_count} evidence_gaps={evidence_gap_count}")
     print(
         f"- commitments on_time={commitment['on_time'] or 0} "
         f"late={commitment['late'] or 0} missed={commitment['missed'] or 0} open={commitment['open_c'] or 0}"
@@ -2577,6 +2972,9 @@ def cmd_snapshot(args: argparse.Namespace) -> None:
 
 
 def cmd_morning(args: argparse.Namespace) -> None:
+    if not getattr(args, "run_day", False) and not getattr(args, "env_file", ""):
+        cmd_morning_brief(args)
+        return
     cmd_run_day(
         argparse.Namespace(
             env_file=args.env_file,
@@ -3909,6 +4307,299 @@ def cmd_intent(args: argparse.Namespace) -> None:
     raise SystemExit("Unknown intent command.")
 
 
+def cmd_plan(args: argparse.Namespace) -> None:
+    conn = get_connection()
+    action = getattr(args, "plan_action", "")
+    if action == "create":
+        try:
+            plan_id = plans.create_plan(
+                conn,
+                intent_id=args.intent,
+                title=args.title,
+                assumptions=args.assumption,
+            )
+        except ValueError as exc:
+            print(str(exc))
+            raise SystemExit(1) from exc
+        conn.commit()
+        plan = plans.get_plan(conn, plan_id)
+        print(f"Created plan #{plan_id} for intent #{args.intent}: {plan['title'] if plan else args.title}")
+        return
+
+    if action == "show":
+        plan = plans.get_plan(conn, args.id)
+        if plan is None:
+            print(f"Plan #{args.id} not found.")
+            raise SystemExit(1)
+        print(f"Plan #{plan['id']} intent={plan['intent_id']} status={plan['status']}")
+        print(f"Title: {plan['title']}")
+        if plan.get("summary"):
+            print(f"Summary: {plan['summary']}")
+        if plan.get("assumptions"):
+            print("Assumptions:")
+            for assumption in plan["assumptions"]:
+                print(f"- {assumption}")
+        print("Steps:")
+        for step in plan["steps"]:
+            print(f"{step['step_index']}. {step['description']} [{step['status']}]")
+            if step["validation"]:
+                print(f"   validation: {step['validation']}")
+        print("Risks:")
+        for risk in plan["risks"]:
+            print(f"- [{risk['severity']}] {risk['risk']} -> {risk['mitigation']}")
+        print("Validations:")
+        for validation in plan["validations"]:
+            command = f" command={validation['command']}" if validation["command"] else ""
+            print(f"- {validation['check_name']} [{validation['status']}]{command}")
+        return
+
+    raise SystemExit("Unknown plan command.")
+
+
+def cmd_evidence(args: argparse.Namespace) -> None:
+    conn = get_connection()
+    action = getattr(args, "evidence_action", "")
+    if action == "attach":
+        try:
+            evidence_id = plans.attach_retrieval_run_evidence(
+                conn,
+                intent_id=args.intent,
+                retrieval_run_id=args.retrieval_run,
+            )
+        except ValueError as exc:
+            print(str(exc))
+            raise SystemExit(1) from exc
+        conn.commit()
+        print(f"Attached retrieval run #{args.retrieval_run} as evidence #{evidence_id} to intent #{args.intent}.")
+        return
+    if action == "sync-external":
+        intent = intents.get_intent(conn, args.intent)
+        if intent is None:
+            print(f"Intent #{args.intent} not found.")
+            raise SystemExit(1)
+        objective_terms = {
+            term.strip(".,:;!?()[]{}").lower()
+            for term in str(intent["objective"]).split()
+            if len(term.strip(".,:;!?()[]{}")) >= 4
+        }
+        connector_clause = "" if args.connector == "all" else "WHERE connector = ?"
+        params: tuple[object, ...] = (int(args.limit),) if args.connector == "all" else (args.connector, int(args.limit))
+        rows = conn.execute(
+            f"""
+            SELECT id, connector, external_id, item_type, title, body, url
+            FROM external_items
+            {connector_clause}
+            ORDER BY fetched_at DESC, id DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+        attached = 0
+        for row in rows:
+            haystack = f"{row['title']} {row['body'] or ''}".lower()
+            if objective_terms and not any(term in haystack for term in objective_terms):
+                continue
+            source_id = str(row["id"])
+            exists = conn.execute(
+                """
+                SELECT 1 FROM intent_evidence
+                WHERE intent_id = ? AND source_type = 'external_item' AND source_id = ?
+                LIMIT 1
+                """,
+                (int(args.intent), source_id),
+            ).fetchone()
+            if exists:
+                continue
+            content_parts = [
+                f"{row['connector']}:{row['external_id']} ({row['item_type']})",
+                row["title"],
+            ]
+            if row["body"]:
+                content_parts.append(str(row["body"])[:1000])
+            if row["url"]:
+                content_parts.append(str(row["url"]))
+            intents.add_evidence(
+                conn,
+                intent_id=args.intent,
+                content="\n".join(content_parts),
+                source_type="external_item",
+                source_id=source_id,
+                summary=f"{row['connector']} {row['item_type']}: {row['title']}",
+                confidence=0.75,
+            )
+            attached += 1
+        append_event(
+            conn,
+            "connector_evidence_synced",
+            "intent",
+            int(args.intent),
+            json.dumps({"connector": args.connector, "attached": attached}, ensure_ascii=True),
+        )
+        conn.commit()
+        print(f"Attached {attached} external evidence item(s) to intent #{args.intent}.")
+        return
+    raise SystemExit("Unknown evidence command.")
+
+
+def cmd_review_packet(args: argparse.Namespace) -> None:
+    conn = get_connection()
+    try:
+        packet_id = plans.create_review_packet(
+            conn,
+            plan_id=args.plan,
+            retrieval_run_id=args.retrieval_run,
+        )
+    except ValueError as exc:
+        print(str(exc))
+        raise SystemExit(1) from exc
+    conn.commit()
+    packet = plans.get_review_packet(conn, packet_id)
+    print(f"Review packet #{packet_id} for plan #{args.plan}")
+    if packet:
+        body = packet["packet"]
+        print(f"Summary: {packet['summary']}")
+        print(f"Intent: #{body['intent']['id']} {body['intent']['objective']}")
+        print("Steps:")
+        for step in body["plan"]["steps"]:
+            print(f"- {step['description']}")
+        print("Risks:")
+        for risk in body["plan"]["risks"]:
+            print(f"- {risk['risk']} -> {risk['mitigation']}")
+        print("Evidence:")
+        if body["evidence"]:
+            for evidence in body["evidence"]:
+                source_id = f":{evidence['source_id']}" if evidence["source_id"] is not None else ""
+                print(f"- {evidence['source_type']}{source_id}: {evidence['summary'] or evidence['content'][:80]}")
+        else:
+            print("- none")
+        if body["retrieval_sources"]:
+            print("Retrieval sources:")
+            for source in body["retrieval_sources"]:
+                print(f"- {source['citation']} score={source['score']:.3f} reason={source['reason']}")
+        print(f"Approval required: {body['approval_required']}")
+        print(f"Rollback: {body['rollback_note']}")
+
+
+def cmd_execution_receipt(args: argparse.Namespace) -> None:
+    conn = get_connection()
+    action = getattr(args, "receipt_action", "list") or "list"
+    if action == "show":
+        if not args.id:
+            print("--id is required for receipt show.")
+            raise SystemExit(1)
+        row = conn.execute(
+            """
+            SELECT r.*, a.title
+            FROM action_execution_receipts r
+            JOIN agent_actions a ON a.id = r.agent_action_id
+            WHERE r.id = ?
+            """,
+            (int(args.id),),
+        ).fetchone()
+        if not row:
+            print(f"Execution receipt #{args.id} not found.")
+            raise SystemExit(1)
+        print(f"Execution receipt #{row['id']} action=#{row['agent_action_id']} status={row['final_status']}")
+        print(f"Type: {row['action_type']}")
+        print(f"Title: {row['title']}")
+        print(f"Approved: {bool(row['approved'])}")
+        print(f"Follow-up required: {bool(row['follow_up_required'])}")
+        if row["follow_up_inbox_id"]:
+            print(f"Follow-up inbox item: #{row['follow_up_inbox_id']}")
+        print(f"Result: {row['result']}")
+        print(f"Rollback: {row['rollback_note']}")
+        return
+
+    rows = conn.execute(
+        """
+        SELECT id, agent_action_id, action_type, final_status, approved, follow_up_required, follow_up_inbox_id, created_at
+        FROM action_execution_receipts
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?
+        """,
+        (int(args.limit),),
+    ).fetchall()
+    if not rows:
+        print("No execution receipts found.")
+        return
+    print("Execution receipts:")
+    for row in rows:
+        follow_up = " follow_up_required" if row["follow_up_required"] else ""
+        follow_up_id = f" follow_up=#{row['follow_up_inbox_id']}" if row["follow_up_inbox_id"] else ""
+        print(
+            f"- #{row['id']} action=#{row['agent_action_id']} [{row['action_type']}] "
+            f"status={row['final_status']} approved={bool(row['approved'])}{follow_up}{follow_up_id}"
+        )
+
+
+def cmd_agent_run(args: argparse.Namespace) -> None:
+    conn = get_connection()
+    intent = intents.get_intent(conn, args.intent)
+    if intent is None:
+        print(f"Intent #{args.intent} not found.")
+        raise SystemExit(1)
+    plan = plans.get_plan(conn, args.plan) if args.plan else None
+    if args.plan and plan is None:
+        print(f"Plan #{args.plan} not found.")
+        raise SystemExit(1)
+    role = args.role
+    objective = f"{role}: {intent['objective']}"
+    conn.execute(
+        """
+        INSERT INTO agent_tasks (objective, context, constraints_json, priority, status)
+        VALUES (?, ?, ?, ?, 'open')
+        """,
+        (
+            objective,
+            intent.get("context") or "",
+            json.dumps(intent.get("constraints", []), ensure_ascii=True),
+            int(intent.get("priority") or 2),
+        ),
+    )
+    task_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+    role_packet = {
+        "role": role,
+        "intent_id": int(args.intent),
+        "plan_id": int(args.plan) if args.plan else None,
+        "retrieval_run_id": int(args.retrieval_run) if args.retrieval_run else None,
+        "objective": intent["objective"],
+        "responsibilities": {
+            "planner": "Turn intent into a bounded plan with assumptions and validation gates.",
+            "researcher": "Gather cited evidence and identify missing context.",
+            "executor": "Draft only policy-allowed actions and never bypass approval.",
+            "reviewer": "Check plan completeness, evidence, risks, and rollback notes.",
+            "critic": "Find failure modes, stale assumptions, and unsafe actions.",
+            "summarizer": "Produce a concise status summary with citations and next steps.",
+        }[role],
+        "approval_gate": role in {"reviewer", "critic", "executor"},
+    }
+    summary = (
+        f"{role} run for intent #{args.intent}"
+        + (f" plan #{args.plan}" if args.plan else "")
+        + (f" retrieval_run #{args.retrieval_run}" if args.retrieval_run else "")
+    )
+    conn.execute(
+        """
+        INSERT INTO agent_runs (agent_task_id, agent_name, provider, status, plan_json, summary, finished_at)
+        VALUES (?, ?, 'local', 'completed', ?, ?, CURRENT_TIMESTAMP)
+        """,
+        (task_id, role, json.dumps(role_packet, ensure_ascii=True), summary),
+    )
+    run_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+    append_event(
+        conn,
+        "agent_role_run_completed",
+        "agent_run",
+        run_id,
+        json.dumps({"intent_id": int(args.intent), "role": role, "plan_id": args.plan}, ensure_ascii=True),
+    )
+    conn.commit()
+    print(f"Agent run #{run_id} [{role}] for intent #{args.intent}")
+    print(f"task: #{task_id}")
+    print(f"summary: {summary}")
+    print(f"approval_gate: {role_packet['approval_gate']}")
+
+
 def cmd_entity(args: argparse.Namespace) -> None:
     conn = get_connection()
     action = getattr(args, "entity_action", "")
@@ -3985,6 +4676,42 @@ def cmd_relationship(args: argparse.Namespace) -> None:
         return
 
     raise SystemExit("Unknown relationship command.")
+
+
+def cmd_claim(args: argparse.Namespace) -> None:
+    conn = get_connection()
+    action = getattr(args, "claim_action", "")
+    if action == "extract":
+        recorded = claims.record_claims(
+            conn,
+            args.text,
+            source_type=args.source_type,
+            source_id=args.source_id,
+        )
+        conn.commit()
+        if not recorded:
+            print("No high-confidence claims found.")
+            return
+        print(f"Recorded {len(recorded)} claim(s):")
+        for claim in recorded:
+            print(f"- #{claim['id']} ({claim['confidence']:.2f}) {claim['claim_text']}")
+        return
+
+    if action == "list":
+        rows = claims.list_claims(conn, source_type=args.source_type, limit=args.limit)
+        if not rows:
+            print("No claims recorded.")
+            return
+        print("Claims:")
+        for row in rows:
+            source_id = f":{row['source_id']}" if row["source_id"] else ""
+            print(
+                f"- #{row['id']} source={row['source_type']}{source_id} "
+                f"confidence={row['confidence']:.2f} {row['claim_text']}"
+            )
+        return
+
+    raise SystemExit("Unknown claim command.")
 
 
 def cmd_pulse(args: argparse.Namespace) -> None:
@@ -4278,6 +5005,33 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--strict", action="store_true", help="Exit non-zero if core local checks fail.")
     doctor.set_defaults(func=cmd_doctor)
 
+    backup = sub.add_parser("backup", help="Create a verified SQLite database backup.")
+    backup.add_argument("--output", default="", help="Destination .db file. Defaults to data/backups timestamp.")
+    backup.set_defaults(func=cmd_backup)
+
+    restore = sub.add_parser("restore", help="Restore the SQLite database from a backup.")
+    restore.add_argument("--from", dest="source", required=True, help="Backup .db file to restore from.")
+    restore.set_defaults(func=cmd_restore)
+
+    migrations = sub.add_parser("migrations", help="Inspect and verify schema migration health.")
+    migrations.add_argument("migrations_action", nargs="?", choices=["verify", "list"], default="verify")
+    migrations.add_argument("--strict", action="store_true", help="Exit non-zero if verification fails.")
+    migrations.set_defaults(func=cmd_migrations)
+
+    dependency_check = sub.add_parser("dependency-check", help="Check local dependency and license hygiene.")
+    dependency_check.add_argument("--strict", action="store_true")
+    dependency_check.set_defaults(func=cmd_dependency_check)
+
+    perf = sub.add_parser("performance-baseline", help="Measure retrieval and readiness query timing.")
+    perf.add_argument("--query", default="daily priorities risks approvals")
+    perf.add_argument("--limit", type=int, default=5)
+    perf.set_defaults(func=cmd_performance_baseline)
+
+    release_check = sub.add_parser("release-check", help="Run local release readiness checks.")
+    release_check.add_argument("--strict", action="store_true")
+    release_check.add_argument("--verbose", action="store_true")
+    release_check.set_defaults(func=cmd_release_check)
+
     ingest_external = sub.add_parser("ingest-external", help="Ingest synced external items into inbox.")
     ingest_external.add_argument("--limit", type=int, default=100)
     ingest_external.add_argument("--min-risk", type=int, default=55)
@@ -4533,6 +5287,18 @@ def build_parser() -> argparse.ArgumentParser:
     relationship_list.add_argument("--limit", type=int, default=50)
     relationship_list.set_defaults(func=cmd_relationship)
 
+    claim = sub.add_parser("claim", help="Extract and list deterministic claims.")
+    claim_sub = claim.add_subparsers(dest="claim_action", required=True)
+    claim_extract = claim_sub.add_parser("extract", help="Extract claims from text and persist them.")
+    claim_extract.add_argument("--text", required=True)
+    claim_extract.add_argument("--source-type", default="note")
+    claim_extract.add_argument("--source-id")
+    claim_extract.set_defaults(func=cmd_claim)
+    claim_list = claim_sub.add_parser("list", help="List extracted claims.")
+    claim_list.add_argument("--source-type", default="")
+    claim_list.add_argument("--limit", type=int, default=50)
+    claim_list.set_defaults(func=cmd_claim)
+
     intent = sub.add_parser("intent", help="Manage first-class assistant intents.")
     intent_sub = intent.add_subparsers(dest="intent_action", required=True)
     intent_create = intent_sub.add_parser("create", help="Create an intent objective.")
@@ -4560,6 +5326,34 @@ def build_parser() -> argparse.ArgumentParser:
     evidence_add.add_argument("--confidence", type=float, default=0.7)
     evidence_add.set_defaults(func=cmd_intent)
 
+    plan = sub.add_parser("plan", help="Create and inspect intent-tied plans.")
+    plan_sub = plan.add_subparsers(dest="plan_action", required=True)
+    plan_create = plan_sub.add_parser("create", help="Create a draft plan for an intent.")
+    plan_create.add_argument("--intent", type=int, required=True)
+    plan_create.add_argument("--title", default="")
+    plan_create.add_argument("--assumption", action="append", default=[])
+    plan_create.set_defaults(func=cmd_plan)
+    plan_show = plan_sub.add_parser("show", help="Show a draft plan with steps, risks, and validations.")
+    plan_show.add_argument("--id", type=int, required=True)
+    plan_show.set_defaults(func=cmd_plan)
+
+    evidence = sub.add_parser("evidence", help="Attach evidence artifacts to intents.")
+    evidence_sub = evidence.add_subparsers(dest="evidence_action", required=True)
+    evidence_attach = evidence_sub.add_parser("attach", help="Attach a retrieval run to an intent.")
+    evidence_attach.add_argument("--intent", type=int, required=True)
+    evidence_attach.add_argument("--retrieval-run", type=int, required=True)
+    evidence_attach.set_defaults(func=cmd_evidence)
+    evidence_sync = evidence_sub.add_parser("sync-external", help="Map synced external items into intent evidence.")
+    evidence_sync.add_argument("--intent", type=int, required=True)
+    evidence_sync.add_argument("--connector", choices=["all", "jira", "github", "confluence", "aha"], default="all")
+    evidence_sync.add_argument("--limit", type=int, default=50)
+    evidence_sync.set_defaults(func=cmd_evidence)
+
+    review_packet = sub.add_parser("review-packet", help="Build a review packet for a plan.")
+    review_packet.add_argument("--plan", type=int, required=True)
+    review_packet.add_argument("--retrieval-run", type=int)
+    review_packet.set_defaults(func=cmd_review_packet)
+
     delegate = sub.add_parser("delegate", help="Delegate an objective to the autonomous assistant core.")
     delegate.add_argument("objective", help="Outcome or task objective for the assistant.")
     delegate.add_argument("--context", default="", help="Additional context, transcript snippet, or constraints.")
@@ -4568,7 +5362,7 @@ def build_parser() -> argparse.ArgumentParser:
     delegate.add_argument("--priority", type=int, default=2)
     delegate.add_argument("--max-actions", type=int, default=5)
     delegate.add_argument("--analogy-limit", type=int, default=5)
-    delegate.add_argument("--to", default="", help="Harness an external agent CLI (copilot|cursor|claude) to execute this objective.")
+    delegate.add_argument("--to", default="", help="Harness an external agent CLI (copilot|command|claude) to execute this objective.")
     delegate.set_defaults(func=cmd_delegate)
 
     act = sub.add_parser("act", help="List, approve, and execute assistant-proposed actions.")
@@ -4591,6 +5385,13 @@ def build_parser() -> argparse.ArgumentParser:
     coach.add_argument("query", help="Situation or decision you want help with.")
     coach.add_argument("--limit", type=int, default=5)
     coach.set_defaults(func=cmd_coach)
+
+    agent_run = sub.add_parser("agent-run", help="Run a local bounded agent role for an intent.")
+    agent_run.add_argument("--intent", type=int, required=True)
+    agent_run.add_argument("--role", choices=["planner", "researcher", "executor", "reviewer", "critic", "summarizer"], required=True)
+    agent_run.add_argument("--plan", type=int)
+    agent_run.add_argument("--retrieval-run", type=int)
+    agent_run.set_defaults(func=cmd_agent_run)
 
     agent_status = sub.add_parser("agent-status", help="Show assistant tasks, actions, and observations.")
     agent_status.add_argument("--task", type=int)
@@ -4625,6 +5426,12 @@ def build_parser() -> argparse.ArgumentParser:
     approve.add_argument("--execute", action="store_true")
     approve.add_argument("--limit", type=int, default=20)
     approve.set_defaults(func=cmd_approve)
+
+    receipt = sub.add_parser("execution-receipt", help="Inspect action execution receipts.")
+    receipt.add_argument("receipt_action", nargs="?", choices=["list", "show"], default="list")
+    receipt.add_argument("--id", type=int)
+    receipt.add_argument("--limit", type=int, default=20)
+    receipt.set_defaults(func=cmd_execution_receipt)
 
     autopilot_status = sub.add_parser("autopilot-status", help="Show autopilot runs and pending approvals.")
     autopilot_status.add_argument("--limit", type=int, default=10)
@@ -4681,9 +5488,12 @@ def build_parser() -> argparse.ArgumentParser:
     watch_scan.add_argument("--min-confidence", type=float, default=0.65)
     watch_scan.set_defaults(func=cmd_watch_scan)
 
-    morning = sub.add_parser("morning", help="Simple start of day flow.")
+    morning = sub.add_parser("morning", help="Show start-of-day priorities, risks, approvals, and evidence gaps.")
     morning.add_argument("--env-file", default="")
     morning.add_argument("--meeting-hours", type=float, default=0.0)
+    morning.add_argument("--limit", type=int, default=5)
+    morning.add_argument("--risk-threshold", type=int, default=60)
+    morning.add_argument("--run-day", action="store_true", help="Run the older full run-day workflow instead of the brief.")
     morning.set_defaults(func=cmd_morning)
 
     now = sub.add_parser("now", help="Get one next action now.")
