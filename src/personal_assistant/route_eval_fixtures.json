@@ -1,0 +1,86 @@
+[
+  {
+    "id": "daily_today",
+    "text": "what should I work on today?",
+    "expected_intent": "daily_brief",
+    "expected_workflow_pack": "daily_ops",
+    "category": "daily"
+  },
+  {
+    "id": "daily_prioritize",
+    "text": "prioritize my next action for the morning",
+    "expected_intent": "daily_brief",
+    "expected_workflow_pack": "daily_ops",
+    "category": "daily"
+  },
+  {
+    "id": "workflow_plan",
+    "text": "create a plan for improving release readiness",
+    "expected_intent": "plan_intent",
+    "expected_workflow_pack": "",
+    "category": "workflow"
+  },
+  {
+    "id": "workflow_factory",
+    "text": "run this through the factory workflow",
+    "expected_intent": "factory_run",
+    "expected_workflow_pack": "intent_execution",
+    "category": "workflow"
+  },
+  {
+    "id": "connector_jira",
+    "text": "draft a Jira update for the launch blocker",
+    "expected_intent": "connector_update",
+    "expected_workflow_pack": "connector_ops",
+    "category": "connector"
+  },
+  {
+    "id": "connector_confluence",
+    "text": "post a Confluence update for the project page",
+    "expected_intent": "connector_update",
+    "expected_workflow_pack": "connector_ops",
+    "category": "connector"
+  },
+  {
+    "id": "expert_context",
+    "text": "find context about dashboard launch risks",
+    "expected_intent": "retrieve_context",
+    "expected_workflow_pack": "",
+    "category": "expert"
+  },
+  {
+    "id": "expert_why",
+    "text": "why is this work item risky?",
+    "expected_intent": "retrieve_context",
+    "expected_workflow_pack": "",
+    "category": "expert"
+  },
+  {
+    "id": "diagnostic_health",
+    "text": "is the system healthy?",
+    "expected_intent": "system_health",
+    "expected_workflow_pack": "",
+    "category": "diagnostic"
+  },
+  {
+    "id": "diagnostic_release",
+    "text": "run a release check",
+    "expected_intent": "system_health",
+    "expected_workflow_pack": "",
+    "category": "diagnostic"
+  },
+  {
+    "id": "approval_review",
+    "text": "show pending approvals and recent receipts",
+    "expected_intent": "approval_review",
+    "expected_workflow_pack": "",
+    "category": "daily"
+  },
+  {
+    "id": "unknown",
+    "text": "blue elephant",
+    "expected_intent": "unknown",
+    "expected_workflow_pack": "",
+    "category": "unknown"
+  }
+]

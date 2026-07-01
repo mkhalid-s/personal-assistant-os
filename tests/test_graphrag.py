@@ -234,6 +234,42 @@ class GraphRAGDesignTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_multihop_graph_and_claim_backed_retrieval(self) -> None:
+        conn = self._conn()
+        try:
+            source_id = self._work_item(conn, "Project Atlas launch needs dependency review")
+            middle_id = self._work_item(conn, "Gateway integration handoff record")
+            target_id = self._work_item(conn, "Billing metrics confirm downstream stability")
+            connect_work_items(conn, source_id, middle_id, "depends_on", 0.9)
+            connect_work_items(conn, middle_id, target_id, "validated_by", 0.9)
+            conn.commit()
+
+            hits = graphrag.retrieve(conn, "Project Atlas launch dependency", limit=6, graph_hops=2)
+            by_citation = {hit["citation"]: hit for hit in hits}
+            self.assertIn(f"work_item#{target_id}", by_citation)
+            target = by_citation[f"work_item#{target_id}"]
+            self.assertTrue(target["graph_path"])
+            self.assertIn("multi-hop graph expansion", target["reason"])
+            self.assertTrue(
+                any(
+                    "multi-hop graph expansion" in hit["reason"]
+                    and f"work_item#{source_id}" in hit["graph_path"]
+                    for hit in hits
+                )
+            )
+
+            claims.record_claims(
+                conn,
+                "Gateway integration requires dependency review.",
+                source_type="work_item",
+                source_id=middle_id,
+            )
+            conn.commit()
+            claim_hits = graphrag.retrieve(conn, "Gateway integration requires dependency review", limit=3, graph_hops=1)
+            self.assertTrue(any("claim-backed retrieval" in hit["reason"] for hit in claim_hits))
+        finally:
+            conn.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,10 +17,18 @@ class CliFlowTest(unittest.TestCase):
             env["PYTHONPATH"] = str(Path.cwd() / "src")
             db_path = Path(tmp) / "assistant.db"
             env["MYOS_DB_PATH"] = str(db_path)
+            provider_script = Path(tmp) / "role_provider.py"
+            provider_script.write_text(
+                "import json, sys\n"
+                "req=json.loads(sys.stdin.read() or '{}')\n"
+                "print(json.dumps({'reply': 'role ok ' + req.get('purpose', ''), 'plan': [{'step': 'check', 'detail': 'ok'}], 'actions': []}))\n"
+            )
+            env["MYOS_FACTORY_ROLE_BACKEND"] = "command"
+            env["MYOS_AI_COMMAND"] = f"{sys.executable} {provider_script}"
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -38,6 +47,172 @@ class CliFlowTest(unittest.TestCase):
             conn.close()
             self.assertEqual(count, 1)
 
+    def test_smart_do_and_tiered_help(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            db_path = Path(tmp) / "assistant.db"
+            env["MYOS_DB_PATH"] = str(db_path)
+
+            def run(*args: str) -> str:
+                out = subprocess.run(
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
+                    cwd=Path.cwd(),
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                return out.stdout
+
+            help_out = run("help", "daily")
+            self.assertIn("Primary: myos chat | myos voice | myos autopilot --factory | myos do", help_out)
+            self.assertIn("myos do", help_out)
+            self.assertIn("Daily commands", help_out)
+
+            captured = run("do", "remember to follow up with platform")
+            self.assertIn("Autonomy: decision=allowed", captured)
+            self.assertIn("safety=local_write", captured)
+            self.assertIn("Smart route: capture", captured)
+            self.assertIn("Inbox item: #", captured)
+
+            planned = run("do", "plan this launch checklist")
+            self.assertIn("Autonomy: decision=allowed", planned)
+            self.assertIn("Smart route: plan_intent", planned)
+            self.assertIn("Intent: #", planned)
+            self.assertIn("Plan: #", planned)
+
+            conn = sqlite3.connect(db_path)
+            inbox_count = conn.execute("SELECT COUNT(*) FROM inbox_items WHERE source='smart_do'").fetchone()[0]
+            plan_count = conn.execute("SELECT COUNT(*) FROM plans").fetchone()[0]
+            route_events = conn.execute("SELECT COUNT(*) FROM event_log WHERE event_type='smart_route'").fetchone()[0]
+            traces = conn.execute("SELECT COUNT(*) FROM execution_traces WHERE command_path='do' AND route_event_id IS NOT NULL").fetchone()[0]
+            conn.close()
+            self.assertEqual(inbox_count, 1)
+            self.assertEqual(plan_count, 1)
+            self.assertEqual(route_events, 2)
+            self.assertEqual(traces, 2)
+
+            trace_out = run("trace", "list", "--command", "do")
+            self.assertIn("Execution traces:", trace_out)
+            self.assertIn("do status=completed", trace_out)
+            self.assertIn("route_event=#", trace_out)
+
+            empty_trace = run("trace", "list", "--command", "trace")
+            self.assertNotIn("status=running", empty_trace)
+
+    def test_model_setup_cli_and_doctor_readiness(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            db_path = Path(tmp) / "assistant.db"
+            env["MYOS_DB_PATH"] = str(db_path)
+
+            def run(*args: str) -> str:
+                out = subprocess.run(
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
+                    cwd=Path.cwd(),
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                return out.stdout
+
+            recommend = run("model", "recommend", "--purpose", "router")
+            self.assertIn("Recommended router model: qwen2.5:0.5b", recommend)
+
+            setup = run("model", "setup", "--router", "--runtime", "command", "--command", "local-router")
+            self.assertIn("Router model setup plan:", setup)
+            self.assertIn("MYOS_ROUTER_COMMAND=local-router", setup)
+            self.assertIn("Dry run only", setup)
+
+            status = run("model", "status")
+            self.assertIn("Router model status:", status)
+
+            doctor = run("doctor")
+            self.assertIn("router_model", doctor)
+
+            live = run(
+                "setup-live",
+                "--router-model",
+                "--router-runtime",
+                "command",
+                "--data-dir",
+                str(Path(tmp) / "data"),
+                "--env-file",
+                str(Path(tmp) / "data" / ".env.myos"),
+                "--db-path",
+                str(Path(tmp) / "data" / "assistant.db"),
+                "--watch-dir",
+                str(Path(tmp) / "data" / "inbox"),
+            )
+            self.assertIn("Router model setup plan:", live)
+            self.assertIn("Dry run only", live)
+
+    def test_router_eval_and_feedback_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            db_path = Path(tmp) / "assistant.db"
+            env["MYOS_DB_PATH"] = str(db_path)
+
+            def run(*args: str) -> str:
+                out = subprocess.run(
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
+                    cwd=Path.cwd(),
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                return out.stdout
+
+            eval_out = run("router", "eval")
+            self.assertIn("Router eval:", eval_out)
+            self.assertIn("accuracy=100.00%", eval_out)
+            self.assertIn("recorded_eval_run", eval_out)
+
+            run("do", "remember to follow up with platform")
+            conn = sqlite3.connect(db_path)
+            event_id = conn.execute(
+                "SELECT id FROM event_log WHERE event_type='smart_route' ORDER BY id DESC LIMIT 1"
+            ).fetchone()[0]
+            conn.close()
+
+            feedback = run(
+                "router",
+                "feedback",
+                "--event",
+                str(event_id),
+                "--expected-intent",
+                "daily_brief",
+                "--note",
+                "Expected daily planning.",
+            )
+            self.assertIn("Router feedback recorded:", feedback)
+            conn = sqlite3.connect(db_path)
+            row = conn.execute("SELECT expected_intent, actual_intent, note_hash, note_length, text_hash FROM route_feedback").fetchone()
+            override = conn.execute("SELECT expected_intent FROM route_overrides WHERE text_hash=?", (row[4],)).fetchone()
+            conn.close()
+            self.assertEqual(row[0], "daily_brief")
+            self.assertEqual(row[1], "capture")
+            self.assertTrue(row[2])
+            self.assertEqual(row[3], len("Expected daily planning."))
+            self.assertTrue(row[4])
+            self.assertEqual(override[0], "daily_brief")
+
+            overrides = run("router", "overrides")
+            self.assertIn("Router overrides:", overrides)
+            self.assertIn("intent=daily_brief", overrides)
+            learned = run("do", "remember to follow up with platform")
+            self.assertIn("Smart route: daily_brief", learned)
+
+            commands = run("router", "commands", "--tier", "workflow", "--limit", "5")
+            self.assertIn("Router command registry:", commands)
+            self.assertIn("myos factory", commands)
+            self.assertIn("safety=approval_gated", commands)
+
     def test_context_graph_trace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
@@ -46,7 +221,7 @@ class CliFlowTest(unittest.TestCase):
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -76,7 +251,7 @@ class CliFlowTest(unittest.TestCase):
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -106,7 +281,7 @@ class CliFlowTest(unittest.TestCase):
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -145,7 +320,7 @@ class CliFlowTest(unittest.TestCase):
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -167,7 +342,7 @@ class CliFlowTest(unittest.TestCase):
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -233,7 +408,7 @@ class CliFlowTest(unittest.TestCase):
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -260,7 +435,7 @@ class CliFlowTest(unittest.TestCase):
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -292,7 +467,7 @@ class CliFlowTest(unittest.TestCase):
             env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
             cfg = Path(tmp) / ".env.myos"
             out = subprocess.run(
-                ["python", "-m", "personal_assistant.cli", "config-init", "--path", str(cfg)],
+                [sys.executable, "-m", "personal_assistant.cli", "config-init", "--path", str(cfg)],
                 cwd=Path.cwd(),
                 env=env,
                 check=True,
@@ -308,7 +483,7 @@ class CliFlowTest(unittest.TestCase):
             env["PYTHONPATH"] = str(Path.cwd() / "src")
             env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
             out = subprocess.run(
-                ["python", "-m", "personal_assistant.cli", "doctor", "--strict"],
+                [sys.executable, "-m", "personal_assistant.cli", "doctor", "--strict"],
                 cwd=Path.cwd(),
                 env=env,
                 check=True,
@@ -337,7 +512,7 @@ class CliFlowTest(unittest.TestCase):
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -353,7 +528,10 @@ class CliFlowTest(unittest.TestCase):
             list_out = run("migrations", "list")
             self.assertIn("Schema migrations:", list_out)
             self.assertIn("28 add_action_execution_receipts", list_out)
-            self.assertIn("Current version: 28 / expected 28", list_out)
+            self.assertIn("30 add_router_quality_loop", list_out)
+            self.assertIn("31 add_router_feedback_overrides", list_out)
+            self.assertIn("32 add_lightweight_observability", list_out)
+            self.assertIn("Current version: 32 / expected 32", list_out)
 
             backup_out = run("backup", "--output", str(backup_path))
             self.assertIn("Backup created", backup_out)
@@ -381,7 +559,7 @@ class CliFlowTest(unittest.TestCase):
             env = os.environ.copy()
             env["PYTHONPATH"] = str(Path.cwd() / "src")
             env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
-            base_cmd = ["python", "-m", "personal_assistant.cli"]
+            base_cmd = [sys.executable, "-m", "personal_assistant.cli"]
 
             created = subprocess.run(
                 base_cmd
@@ -464,7 +642,7 @@ class CliFlowTest(unittest.TestCase):
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -502,6 +680,303 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("Approval required: True", packet_out)
             self.assertIn("Rollback:", packet_out)
 
+    def test_factory_review_first_policy_packs_and_learning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            db_path = Path(tmp) / "assistant.db"
+            env["MYOS_DB_PATH"] = str(db_path)
+
+            def run(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+                return subprocess.run(
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
+                    cwd=Path.cwd(),
+                    env=env,
+                    check=check,
+                    capture_output=True,
+                    text=True,
+                )
+
+            run("intent", "create", "Ship dashboard safely", "--success", "Factory review passes")
+            run("capture", "Dashboard launch needs customer escalation context")
+            run("triage")
+
+            started = run("factory", "start", "--intent", "1").stdout
+            self.assertIn("Autonomy: decision=needs_approval", started)
+            self.assertIn("safety=approval_gated", started)
+            self.assertIn("Factory run #1 for intent #1 status=awaiting_approval", started)
+            self.assertIn("review_packet=#", started)
+            self.assertIn("stopped_before_execution=True", started)
+
+            status = run("factory", "status", "--id", "1").stdout
+            self.assertIn("mode=review_first pack=intent_execution status=awaiting_approval", status)
+            self.assertIn("- critic status=completed", status)
+            self.assertIn("- execution status=blocked", status)
+            self.assertIn("review_packet#1", status)
+
+            denied = run("factory", "start", "--intent", "1", "--mode", "full_autonomous", check=False)
+            self.assertNotEqual(denied.returncode, 0)
+            self.assertIn("full_autonomous requires an explicit factory policy", denied.stdout)
+
+            policy = run(
+                "factory",
+                "policy",
+                "set",
+                "--mode",
+                "full_autonomous",
+                "--scope-type",
+                "intent",
+                "--scope-id",
+                "1",
+            ).stdout
+            self.assertIn("mode=full_autonomous", policy)
+            packed = run(
+                "factory",
+                "start",
+                "--intent",
+                "1",
+                "--mode",
+                "full_autonomous",
+                "--pack",
+                "software_delivery",
+            ).stdout
+            self.assertIn("mode=full_autonomous pack=software_delivery", packed)
+
+            review = run("factory", "review", "--id", "2").stdout
+            self.assertIn("Factory review #2:", review)
+            self.assertIn("Execution remains approval-gated.", review)
+            learn = run("factory", "learn", "--id", "2", "--outcome", "partial", "--notes", "Reviewer caught missing validation").stdout
+            self.assertIn("Factory learning #1 recorded for run #2: partial", learn)
+            retro = run("factory", "retrospective", "--id", "2").stdout
+            self.assertIn("Factory retrospective #2: outcome=partial", retro)
+            self.assertIn("artifacts=", retro)
+
+            conn = sqlite3.connect(db_path)
+            counts = dict(
+                conn.execute(
+                    """
+                    SELECT artifact_type, COUNT(*)
+                    FROM factory_artifacts
+                    WHERE factory_run_id = 1
+                    GROUP BY artifact_type
+                    """
+                ).fetchall()
+            )
+            stages = dict(
+                conn.execute(
+                    """
+                    SELECT stage_name, status
+                    FROM factory_stages
+                    WHERE factory_run_id = 1
+                    """
+                ).fetchall()
+            )
+            pack = conn.execute("SELECT workflow_pack FROM factory_runs WHERE id = 2").fetchone()[0]
+            conn.close()
+            self.assertGreaterEqual(counts.get("plan", 0), 1)
+            self.assertGreaterEqual(counts.get("retrieval_run", 0), 1)
+            self.assertGreaterEqual(counts.get("review_packet", 0), 1)
+            self.assertGreaterEqual(counts.get("agent_run", 0), 5)
+            self.assertEqual(stages["approval"], "waiting")
+            self.assertEqual(stages["execution"], "blocked")
+            self.assertEqual(pack, "software_delivery")
+
+    def test_deep_factory_autonomous_execution_and_proactive_loop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            db_path = Path(tmp) / "assistant.db"
+            env["MYOS_DB_PATH"] = str(db_path)
+            provider_script = Path(tmp) / "role_provider.py"
+            provider_script.write_text(
+                "import json, sys\n"
+                "req=json.loads(sys.stdin.read() or '{}')\n"
+                "print(json.dumps({'reply': 'role ok ' + req.get('purpose', ''), "
+                "'plan': [{'step': 'check', 'detail': 'ok'}], 'actions': []}))\n"
+            )
+            env["MYOS_FACTORY_ROLE_BACKEND"] = "command"
+            env["MYOS_AI_COMMAND"] = f"{sys.executable} {provider_script}"
+
+            def run(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+                return subprocess.run(
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
+                    cwd=Path.cwd(),
+                    env=env,
+                    check=check,
+                    capture_output=True,
+                    text=True,
+                )
+
+            run("intent", "create", "Prepare launch follow-up", "--priority", "1")
+            run("factory", "policy", "set", "--mode", "semi_autonomous", "--scope-type", "intent", "--scope-id", "1")
+            semi = run("factory", "start", "--intent", "1", "--mode", "semi_autonomous").stdout
+            self.assertIn("status=execution_completed", semi)
+            self.assertIn("stopped_before_execution=False", semi)
+            semi_status = run("factory", "status", "--id", "1").stdout
+            self.assertIn("- execution status=completed", semi_status)
+            self.assertIn("agent_action#1", semi_status)
+            self.assertIn("execution_receipt#1", semi_status)
+            conn = sqlite3.connect(db_path)
+            provider_row = conn.execute(
+                "SELECT provider, plan_json FROM agent_runs WHERE agent_name='reviewer' ORDER BY id ASC LIMIT 1"
+            ).fetchone()
+            conn.close()
+            self.assertEqual(provider_row[0], "factory_command")
+            self.assertIn("role ok factory_reviewer", provider_row[1])
+
+            run("intent", "create", "Update connector stakeholders", "--priority", "2")
+            denied = run("factory", "start", "--intent", "2", "--mode", "full_autonomous", "--pack", "connector_ops", check=False)
+            self.assertNotEqual(denied.returncode, 0)
+            self.assertIn("full_autonomous requires an explicit factory policy", denied.stdout)
+            run("factory", "policy", "set", "--mode", "full_autonomous", "--scope-type", "intent", "--scope-id", "2")
+            run(
+                "factory",
+                "policy",
+                "set",
+                "--mode",
+                "full_autonomous",
+                "--connector",
+                "jira",
+                "--action-type",
+                "draft_external_update",
+            )
+            full = run("factory", "start", "--intent", "2", "--mode", "full_autonomous", "--pack", "connector_ops").stdout
+            self.assertIn("status=execution_completed", full)
+            full_status = run("factory", "status", "--id", "2").stdout
+            self.assertIn("execution_receipt#", full_status)
+            self.assertIn("agent_action#", full_status)
+
+            learn = run("factory", "learn", "--id", "2", "--outcome", "failed", "--notes", "blocked connector update needed reviewer").stdout
+            self.assertIn("Factory learning", learn)
+            insights = run("factory", "insights", "--intent", "2").stdout
+            self.assertIn("outcomes={\"failed\": 1}", insights)
+            self.assertIn("blocked connector update", insights)
+
+            run("intent", "create", "Daily factory priority", "--priority", "1")
+            autopilot = run(
+                "autopilot",
+                "--once",
+                "--no-sync",
+                "--no-process",
+                "--factory",
+                "--factory-mode",
+                "review_first",
+                "--factory-pack",
+                "daily_ops",
+            ).stdout
+            self.assertIn("factory=started", autopilot)
+            morning = run("morning").stdout
+            self.assertIn("Factory runs:", morning)
+            close = run("close-day").stdout
+            self.assertIn("Active factory runs:", close)
+
+    def test_connector_action_provider_hardening(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            db_path = Path(tmp) / "assistant.db"
+            env["MYOS_DB_PATH"] = str(db_path)
+
+            def run(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+                return subprocess.run(
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
+                    cwd=Path.cwd(),
+                    env=env,
+                    check=check,
+                    capture_output=True,
+                    text=True,
+                )
+
+            run("doctor")
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                "INSERT INTO agent_tasks (objective, context, constraints_json, priority, status) VALUES ('connector hardening', '', '{}', 1, 'open')"
+            )
+            task_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            payloads = [
+                {"connector": "jira", "operation": "comment", "target_ref": "PROJ-1", "draft": "Jira dry run", "rollback_note": "Remove Jira comment.", "dry_run": True},
+                {"connector": "github", "operation": "comment", "target_ref": "owner/repo#7", "draft": "GitHub dry run", "rollback_note": "Remove GitHub comment.", "dry_run": True},
+                {"connector": "confluence", "operation": "draft_note", "target_ref": "PAGE-1", "draft": "Confluence dry run", "rollback_note": "Remove Confluence draft.", "dry_run": True},
+                {"connector": "aha", "operation": "link_back", "target_ref": "FEAT-1", "draft": "Aha dry run", "rollback_note": "Remove Aha update.", "dry_run": True},
+                {"connector": "jira", "operation": "comment", "draft": "Missing target", "rollback_note": "No-op."},
+            ]
+            for index, payload in enumerate(payloads, start=1):
+                conn.execute(
+                    """
+                    INSERT INTO agent_actions (agent_task_id, action_type, title, payload_json, requires_approval, status)
+                    VALUES (?, 'draft_external_update', ?, ?, 1, 'proposed')
+                    """,
+                    (task_id, f"connector action {index}", json.dumps(payload)),
+                )
+            conn.commit()
+            conn.close()
+
+            listed = run("act", "--list").stdout
+            self.assertIn("jira:PROJ-1 operation=comment mode=dry_run", listed)
+            self.assertIn("rollback: Remove Jira comment.", listed)
+            approved_list = run("approve", "--list").stdout
+            self.assertIn("github:owner/repo#7 operation=comment mode=dry_run", approved_list)
+
+            for action_id in range(1, 5):
+                out = run("act", "--action", str(action_id), "--approve", "--execute").stdout
+                self.assertIn("connector drafted: outbox #", out)
+
+            blocked = run("act", "--action", "5", "--approve", "--execute").stdout
+            self.assertIn("blocked: jira mutation requires target_ref", blocked)
+
+            receipt = run("execution-receipt", "show", "--id", "1").stdout
+            self.assertIn("Target: jira:PROJ-1 operation=comment mode=dry_run", receipt)
+            self.assertIn("Outbox: #1 provider=connector:jira target=jira:PROJ-1 status=drafted", receipt)
+
+            conn = sqlite3.connect(db_path)
+            outbox = dict(conn.execute("SELECT target_type, COUNT(*) FROM action_outbox GROUP BY target_type").fetchall())
+            receipt_statuses = dict(conn.execute("SELECT final_status, COUNT(*) FROM action_execution_receipts GROUP BY final_status").fetchall())
+            follow_up = conn.execute(
+                "SELECT follow_up_required, follow_up_inbox_id FROM action_execution_receipts WHERE agent_action_id = 5"
+            ).fetchone()
+            conn.close()
+            self.assertEqual(outbox, {"aha": 1, "confluence": 1, "github": 1, "jira": 1})
+            self.assertEqual(receipt_statuses.get("executed"), 4)
+            self.assertEqual(receipt_statuses.get("blocked"), 1)
+            self.assertEqual(follow_up[0], 1)
+            self.assertIsNotNone(follow_up[1])
+
+            run("intent", "create", "Update Confluence launch note", "--priority", "1")
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                INSERT INTO external_items (connector, external_id, item_type, title, body, url)
+                VALUES ('confluence', 'PAGE-9', 'page', 'Launch readiness page', 'Needs update.', 'https://example.test/wiki/PAGE-9')
+                """
+            )
+            conn.commit()
+            conn.close()
+            run("evidence", "sync-external", "--intent", "1", "--connector", "confluence")
+            run("factory", "policy", "set", "--mode", "full_autonomous", "--scope-type", "intent", "--scope-id", "1")
+            run(
+                "factory",
+                "policy",
+                "set",
+                "--mode",
+                "full_autonomous",
+                "--connector",
+                "confluence",
+                "--action-type",
+                "draft_external_update",
+            )
+            factory_out = run("factory", "start", "--intent", "1", "--mode", "full_autonomous", "--pack", "connector_ops").stdout
+            self.assertIn("status=execution_completed", factory_out)
+            conn = sqlite3.connect(db_path)
+            target = conn.execute(
+                "SELECT target_type, target_ref FROM action_outbox WHERE target_type='confluence' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            artifact_count = conn.execute(
+                "SELECT COUNT(*) FROM factory_artifacts WHERE factory_run_id = 1 AND artifact_type='execution_receipt'"
+            ).fetchone()[0]
+            conn.close()
+            self.assertEqual(tuple(target), ("confluence", "PAGE-9"))
+            self.assertGreaterEqual(artifact_count, 1)
+
     def test_claim_extraction_cli(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
@@ -510,7 +985,7 @@ class CliFlowTest(unittest.TestCase):
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -544,7 +1019,7 @@ class CliFlowTest(unittest.TestCase):
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -577,7 +1052,7 @@ class CliFlowTest(unittest.TestCase):
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -611,7 +1086,7 @@ class CliFlowTest(unittest.TestCase):
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -648,7 +1123,7 @@ class CliFlowTest(unittest.TestCase):
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -667,6 +1142,7 @@ class CliFlowTest(unittest.TestCase):
             release = run("release-check", "--strict")
             self.assertIn("Release readiness check:", release)
             self.assertIn("PASS schema", release)
+            self.assertIn("PASS factory_smoke", release)
             self.assertIn("docs, changelog, license, workflows", release)
             self.assertIn("PASS public_hygiene", release)
 
@@ -681,7 +1157,7 @@ class CliFlowTest(unittest.TestCase):
 
             dry = subprocess.run(
                 [
-                    "python",
+                    sys.executable,
                     "-m",
                     "personal_assistant.cli",
                     "setup-live",
@@ -705,7 +1181,7 @@ class CliFlowTest(unittest.TestCase):
 
             pre_check = subprocess.run(
                 [
-                    "python",
+                    sys.executable,
                     "-m",
                     "personal_assistant.cli",
                     "setup-live",
@@ -732,7 +1208,7 @@ class CliFlowTest(unittest.TestCase):
 
             applied = subprocess.run(
                 [
-                    "python",
+                    sys.executable,
                     "-m",
                     "personal_assistant.cli",
                     "setup-live",
@@ -766,7 +1242,7 @@ class CliFlowTest(unittest.TestCase):
 
             post_check = subprocess.run(
                 [
-                    "python",
+                    sys.executable,
                     "-m",
                     "personal_assistant.cli",
                     "setup-live",
@@ -814,7 +1290,7 @@ class CliFlowTest(unittest.TestCase):
             )
             ready_check = subprocess.run(
                 [
-                    "python",
+                    sys.executable,
                     "-m",
                     "personal_assistant.cli",
                     "setup-live",
@@ -841,7 +1317,7 @@ class CliFlowTest(unittest.TestCase):
             env["PYTHONPATH"] = str(Path.cwd() / "src")
             subprocess.run(
                 [
-                    "python",
+                    sys.executable,
                     "-m",
                     "personal_assistant.cli",
                     "setup-live",
@@ -878,7 +1354,7 @@ class CliFlowTest(unittest.TestCase):
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -904,7 +1380,7 @@ class CliFlowTest(unittest.TestCase):
             env["PYTHONPATH"] = str(Path.cwd() / "src")
             env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
             out = subprocess.run(
-                ["python", "-m", "personal_assistant.cli", "metrics", "--days", "3"],
+                [sys.executable, "-m", "personal_assistant.cli", "metrics", "--days", "3"],
                 cwd=Path.cwd(),
                 env=env,
                 check=True,
@@ -919,7 +1395,7 @@ class CliFlowTest(unittest.TestCase):
             env["PYTHONPATH"] = str(Path.cwd() / "src")
             env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
             out_install = subprocess.run(
-                ["python", "-m", "personal_assistant.cli", "launchd-install"],
+                [sys.executable, "-m", "personal_assistant.cli", "launchd-install"],
                 cwd=Path.cwd(),
                 env=env,
                 check=True,
@@ -927,7 +1403,7 @@ class CliFlowTest(unittest.TestCase):
                 text=True,
             )
             out_uninstall = subprocess.run(
-                ["python", "-m", "personal_assistant.cli", "launchd-uninstall"],
+                [sys.executable, "-m", "personal_assistant.cli", "launchd-uninstall"],
                 cwd=Path.cwd(),
                 env=env,
                 check=True,
@@ -939,7 +1415,7 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("Dry run only", out_uninstall.stdout)
 
             out_autopilot = subprocess.run(
-                ["python", "-m", "personal_assistant.cli", "launchd-install", "--autopilot"],
+                [sys.executable, "-m", "personal_assistant.cli", "launchd-install", "--autopilot"],
                 cwd=Path.cwd(),
                 env=env,
                 check=True,
@@ -956,7 +1432,7 @@ class CliFlowTest(unittest.TestCase):
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -990,7 +1466,7 @@ class CliFlowTest(unittest.TestCase):
             cfg = Path(tmp) / ".env.myos"
             cfg.write_text("JIRA_BASE_URL=\nGITHUB_TOKEN=\n")
             out = subprocess.run(
-                ["python", "-m", "personal_assistant.cli", "go-live", "--env-file", str(cfg)],
+                [sys.executable, "-m", "personal_assistant.cli", "go-live", "--env-file", str(cfg)],
                 cwd=Path.cwd(),
                 env=env,
                 check=True,
@@ -1007,7 +1483,7 @@ class CliFlowTest(unittest.TestCase):
             cfg = Path(tmp) / ".env.myos"
             cfg.write_text("")
             out = subprocess.run(
-                ["python", "-m", "personal_assistant.cli", "activate", "--env-file", str(cfg)],
+                [sys.executable, "-m", "personal_assistant.cli", "activate", "--env-file", str(cfg)],
                 cwd=Path.cwd(),
                 env=env,
                 check=True,
@@ -1024,7 +1500,7 @@ class CliFlowTest(unittest.TestCase):
             env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
             output_html = Path(tmp) / "dashboard.html"
             out = subprocess.run(
-                ["python", "-m", "personal_assistant.cli", "dashboard", "--once", "--output-html", str(output_html)],
+                [sys.executable, "-m", "personal_assistant.cli", "dashboard", "--once", "--output-html", str(output_html)],
                 cwd=Path.cwd(),
                 env=env,
                 check=True,
@@ -1040,7 +1516,7 @@ class CliFlowTest(unittest.TestCase):
             env["PYTHONPATH"] = str(Path.cwd() / "src")
             env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
             sanity = subprocess.run(
-                ["python", "-m", "personal_assistant.cli", "sanity"],
+                [sys.executable, "-m", "personal_assistant.cli", "sanity"],
                 cwd=Path.cwd(),
                 env=env,
                 check=True,
@@ -1048,7 +1524,7 @@ class CliFlowTest(unittest.TestCase):
                 text=True,
             )
             runbook = subprocess.run(
-                ["python", "-m", "personal_assistant.cli", "runbook", "--short"],
+                [sys.executable, "-m", "personal_assistant.cli", "runbook", "--short"],
                 cwd=Path.cwd(),
                 env=env,
                 check=True,
@@ -1064,7 +1540,7 @@ class CliFlowTest(unittest.TestCase):
             env["PYTHONPATH"] = str(Path.cwd() / "src")
             env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
             out = subprocess.run(
-                ["python", "-m", "personal_assistant.cli", "launchd-status"],
+                [sys.executable, "-m", "personal_assistant.cli", "launchd-status"],
                 cwd=Path.cwd(),
                 env=env,
                 check=True,
@@ -1081,7 +1557,7 @@ class CliFlowTest(unittest.TestCase):
             cfg = Path(tmp) / ".env.myos"
             cfg.write_text("")
             start = subprocess.run(
-                ["python", "-m", "personal_assistant.cli", "start", "--env-file", str(cfg)],
+                [sys.executable, "-m", "personal_assistant.cli", "start", "--env-file", str(cfg)],
                 cwd=Path.cwd(),
                 env=env,
                 check=True,
@@ -1089,7 +1565,7 @@ class CliFlowTest(unittest.TestCase):
                 text=True,
             )
             stop = subprocess.run(
-                ["python", "-m", "personal_assistant.cli", "stop"],
+                [sys.executable, "-m", "personal_assistant.cli", "stop"],
                 cwd=Path.cwd(),
                 env=env,
                 check=True,
@@ -1107,7 +1583,7 @@ class CliFlowTest(unittest.TestCase):
             cfg = Path(tmp) / ".env.myos"
             cfg.write_text("")
             out = subprocess.run(
-                ["python", "-m", "personal_assistant.cli", "start", "--env-file", str(cfg), "--install-launchd"],
+                [sys.executable, "-m", "personal_assistant.cli", "start", "--env-file", str(cfg), "--install-launchd"],
                 cwd=Path.cwd(),
                 env=env,
                 check=True,
@@ -1124,7 +1600,7 @@ class CliFlowTest(unittest.TestCase):
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -1148,7 +1624,7 @@ class CliFlowTest(unittest.TestCase):
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -1170,7 +1646,7 @@ class CliFlowTest(unittest.TestCase):
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -1196,7 +1672,7 @@ class CliFlowTest(unittest.TestCase):
             env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
 
             out1 = subprocess.run(
-                ["python", "-m", "personal_assistant.cli", "orchestrate", "--workflow", "daily", "--connector", "all"],
+                [sys.executable, "-m", "personal_assistant.cli", "orchestrate", "--workflow", "daily", "--connector", "all"],
                 cwd=Path.cwd(),
                 env=env,
                 check=True,
@@ -1204,7 +1680,7 @@ class CliFlowTest(unittest.TestCase):
                 text=True,
             )
             out2 = subprocess.run(
-                ["python", "-m", "personal_assistant.cli", "workflow-runs", "--limit", "5"],
+                [sys.executable, "-m", "personal_assistant.cli", "workflow-runs", "--limit", "5"],
                 cwd=Path.cwd(),
                 env=env,
                 check=True,
@@ -1224,7 +1700,7 @@ class CliFlowTest(unittest.TestCase):
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -1251,7 +1727,7 @@ class CliFlowTest(unittest.TestCase):
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -1280,7 +1756,7 @@ class CliFlowTest(unittest.TestCase):
             db_path = Path(tmp) / "alt_assistant.db"
             cfg.write_text(f"MYOS_DB_PATH={db_path}\n")
             out = subprocess.run(
-                ["python", "-m", "personal_assistant.cli", "run-day", "--env-file", str(cfg), "--connector", "all"],
+                [sys.executable, "-m", "personal_assistant.cli", "run-day", "--env-file", str(cfg), "--connector", "all"],
                 cwd=Path.cwd(),
                 env=env,
                 check=True,
@@ -1297,7 +1773,7 @@ class CliFlowTest(unittest.TestCase):
             env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
 
             add = subprocess.run(
-                ["python", "-m", "personal_assistant.cli", "queue-add", "--workflow", "weekly"],
+                [sys.executable, "-m", "personal_assistant.cli", "queue-add", "--workflow", "weekly"],
                 cwd=Path.cwd(),
                 env=env,
                 check=True,
@@ -1305,7 +1781,7 @@ class CliFlowTest(unittest.TestCase):
                 text=True,
             )
             run = subprocess.run(
-                ["python", "-m", "personal_assistant.cli", "worker", "--limit", "1"],
+                [sys.executable, "-m", "personal_assistant.cli", "worker", "--limit", "1"],
                 cwd=Path.cwd(),
                 env=env,
                 check=True,
@@ -1323,7 +1799,7 @@ class CliFlowTest(unittest.TestCase):
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -1347,7 +1823,7 @@ class CliFlowTest(unittest.TestCase):
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -1372,7 +1848,7 @@ class CliFlowTest(unittest.TestCase):
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -1426,11 +1902,11 @@ class CliFlowTest(unittest.TestCase):
                 "  'actions': [{'action_type': 'draft_message', 'title': 'AI draft update', 'payload': {'draft': 'AI drafted response'}, 'requires_approval': 'false'}]\n"
                 "}))\n"
             )
-            env["MYOS_AI_COMMAND"] = f"python {ai_script}"
+            env["MYOS_AI_COMMAND"] = f"{sys.executable} {ai_script}"
             env["MYOS_AI_PROVIDER"] = "fake-ai"
 
             subprocess.run(
-                ["python", "-m", "personal_assistant.cli", "capture", "Launch risk contact test@example.com"],
+                [sys.executable, "-m", "personal_assistant.cli", "capture", "Launch risk contact test@example.com"],
                 cwd=Path.cwd(),
                 env=env,
                 check=True,
@@ -1438,7 +1914,7 @@ class CliFlowTest(unittest.TestCase):
                 text=True,
             )
             subprocess.run(
-                ["python", "-m", "personal_assistant.cli", "triage"],
+                [sys.executable, "-m", "personal_assistant.cli", "triage"],
                 cwd=Path.cwd(),
                 env=env,
                 check=True,
@@ -1446,7 +1922,7 @@ class CliFlowTest(unittest.TestCase):
                 text=True,
             )
             out = subprocess.run(
-                ["python", "-m", "personal_assistant.cli", "delegate", "Launch risk update"],
+                [sys.executable, "-m", "personal_assistant.cli", "delegate", "Launch risk update"],
                 cwd=Path.cwd(),
                 env=env,
                 check=True,
@@ -1479,11 +1955,11 @@ class CliFlowTest(unittest.TestCase):
                 "import sys\n"
                 f"open({str(notify_path)!r}, 'w').write(sys.stdin.read())\n"
             )
-            env["MYOS_NOTIFY_COMMAND"] = f"python {notify_script}"
+            env["MYOS_NOTIFY_COMMAND"] = f"{sys.executable} {notify_script}"
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -1534,7 +2010,7 @@ class CliFlowTest(unittest.TestCase):
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -1579,12 +2055,12 @@ class CliFlowTest(unittest.TestCase):
                 "open(request_path, 'w').write(json.dumps(payload))\n"
                 "print(json.dumps({'ok': True, 'target': payload.get('action_type')}))\n"
             )
-            env["MYOS_ACTION_COMMAND"] = f"python {action_script}"
+            env["MYOS_ACTION_COMMAND"] = f"{sys.executable} {action_script}"
             env["MYOS_ACTION_PROVIDER"] = "fake-action"
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -1665,7 +2141,7 @@ class CliFlowTest(unittest.TestCase):
                 if extra_env:
                     merged.update(extra_env)
                 return subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=merged,
                     check=check,
@@ -1686,7 +2162,7 @@ class CliFlowTest(unittest.TestCase):
                 str(action_id),
                 "--execute",
                 check=False,
-                extra_env={"MYOS_ACTION_COMMAND": f"python {fail_script}"},
+                extra_env={"MYOS_ACTION_COMMAND": f"{sys.executable} {fail_script}"},
             )
             self.assertNotEqual(failed.returncode, 0)
             conn = sqlite3.connect(db_path)
@@ -1716,7 +2192,7 @@ class CliFlowTest(unittest.TestCase):
                 str(action_id),
                 "--execute",
                 check=False,
-                extra_env={"MYOS_ACTION_COMMAND": f"python {fail_script}"},
+                extra_env={"MYOS_ACTION_COMMAND": f"{sys.executable} {fail_script}"},
             )
             self.assertNotEqual(failed_again.returncode, 0)
             conn = sqlite3.connect(db_path)
@@ -1745,7 +2221,7 @@ class CliFlowTest(unittest.TestCase):
                 "--limit",
                 "20",
                 check=True,
-                extra_env={"MYOS_ACTION_COMMAND": f"python {ok_script}"},
+                extra_env={"MYOS_ACTION_COMMAND": f"{sys.executable} {ok_script}"},
             )
             self.assertIn("Executed action", retried.stdout)
             receipts = run("execution-receipt", "list")
@@ -1772,7 +2248,7 @@ class CliFlowTest(unittest.TestCase):
                 "safety": {"approved": False, "requires_approval": True},
             }
             dry = subprocess.run(
-                ["python", "-m", "personal_assistant.cli", "action-provider"],
+                [sys.executable, "-m", "personal_assistant.cli", "action-provider"],
                 cwd=Path.cwd(),
                 env=env,
                 input=json.dumps(request),
@@ -1792,7 +2268,7 @@ class CliFlowTest(unittest.TestCase):
             self.assertTrue((db_path.parent / "outbox").exists())
 
             blocked = subprocess.run(
-                ["python", "-m", "personal_assistant.cli", "action-provider", "--execute"],
+                [sys.executable, "-m", "personal_assistant.cli", "action-provider", "--execute"],
                 cwd=Path.cwd(),
                 env=env,
                 input=json.dumps(request),
@@ -1818,7 +2294,7 @@ class CliFlowTest(unittest.TestCase):
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,
@@ -1865,7 +2341,7 @@ class CliFlowTest(unittest.TestCase):
 
             def run(*args: str) -> str:
                 out = subprocess.run(
-                    ["python", "-m", "personal_assistant.cli", *args],
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
                     cwd=Path.cwd(),
                     env=env,
                     check=True,

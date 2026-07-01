@@ -130,6 +130,9 @@ class ProposeAndApproveTest(unittest.TestCase):
             assistant.get_backend = original
 
         self.assertIn("retrieval_run_ids", result)
+        self.assertIn("route_decision", result)
+        self.assertEqual(result["route_decision"]["intent"], "unknown")
+        self.assertEqual(result["reply"], "Here is the cited dashboard answer.")
         turn = self.conn.execute(
             "SELECT retrieval_run_ids FROM conversation_turns ORDER BY id DESC LIMIT 1"
         ).fetchone()
