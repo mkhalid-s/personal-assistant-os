@@ -22,6 +22,7 @@ All notable changes to this project will be documented in this file.
 - Lightweight observability kernel with bounded execution traces, correlation IDs, linked route/factory/action receipt metadata, and trace rollups/cleanup.
 - Policy-aware autonomy decisions with explicit `allowed`, `needs_approval`, and `blocked` explanations before smart routes and factory starts.
 - Policy decision feedback and calibration with local autonomy eval fixtures and privacy-safe feedback linked to execution traces.
+- Decision-aware recommendations with deterministic safe next-step guidance for routed work and factory starts.
 - Daily operating loops for morning briefs, close-day summaries, weekly review signals, and connector evidence mapping.
 - Release hardening docs, recovery notes, CI release-readiness gate, and tag/manual release workflow validation.
 

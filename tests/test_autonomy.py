@@ -25,6 +25,24 @@ class AutonomyPolicyDecisionTest(unittest.TestCase):
         self.assertEqual(blocked["decision"], autonomy.BLOCKED)
         self.assertTrue(blocked["requires_approval"])
 
+    def test_recommend_next_steps_for_decisions(self) -> None:
+        from personal_assistant import autonomy
+
+        allowed = autonomy.decide_command("capture", safety="local_write")
+        allowed_steps = autonomy.recommend_next_steps(allowed, command="do", intent="capture")
+        self.assertEqual(allowed_steps[0]["label"], "continue")
+
+        gated = autonomy.decide_command("factory", safety="approval_gated", requires_confirmation=True)
+        gated_steps = autonomy.recommend_next_steps(gated, command="factory", factory_run_id=7)
+        self.assertEqual(gated_steps[0]["command"], "myos factory review --id 7")
+
+        routed_factory_steps = autonomy.recommend_next_steps(gated, command="do", intent="factory_run")
+        self.assertEqual(routed_factory_steps[0]["command"], "myos factory review --id <run_id>")
+
+        blocked = autonomy.decide_command("delete-everything", safety="unknown")
+        blocked_steps = autonomy.recommend_next_steps(blocked, command="delete-everything")
+        self.assertIn("myos help diagnostic", [step["command"] for step in blocked_steps])
+
     def test_eval_and_feedback_store_no_raw_note(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
             db_path = tmp.name

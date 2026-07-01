@@ -73,6 +73,7 @@ class CliFlowTest(unittest.TestCase):
             captured = run("do", "remember to follow up with platform")
             self.assertIn("Autonomy: decision=allowed", captured)
             self.assertIn("safety=local_write", captured)
+            self.assertIn("Recommendation: Proceed with the local routed workflow", captured)
             self.assertIn("Smart route: capture", captured)
             self.assertIn("Inbox item: #", captured)
 
@@ -724,7 +725,9 @@ class CliFlowTest(unittest.TestCase):
             started = run("factory", "start", "--intent", "1").stdout
             self.assertIn("Autonomy: decision=needs_approval", started)
             self.assertIn("safety=approval_gated", started)
+            self.assertIn("Recommendation: Review the generated packet before approving execution -> myos factory review --id <run_id>", started)
             self.assertIn("Factory run #1 for intent #1 status=awaiting_approval", started)
+            self.assertIn("Recommendation: Review the generated packet before approving execution -> myos factory review --id 1", started)
             self.assertIn("review_packet=#", started)
             self.assertIn("stopped_before_execution=True", started)
 

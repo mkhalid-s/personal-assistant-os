@@ -109,6 +109,16 @@ def _print_autonomy_decision(decision: dict[str, object]) -> None:
     )
 
 
+def _print_recommendations(recommendations: list[dict[str, object]]) -> None:
+    for item in recommendations[:2]:
+        command = str(item.get("command") or "").strip()
+        reason = str(item.get("reason") or "").strip()
+        if command:
+            reason = reason.rstrip(".")
+        suffix = f" -> {command}" if command else ""
+        print(f"Recommendation: {reason}{suffix}")
+
+
 def cmd_capture(args: argparse.Namespace) -> None:
     conn = get_connection()
     # Redact at the boundary: this raw text lands in inbox_items and is later indexed
@@ -4090,6 +4100,14 @@ def cmd_do(args: argparse.Namespace) -> None:
     route_decision = router.route_with_feedback(conn, args.text, surface="do")
     autonomy_decision = router.autonomy_decision_for_route(conn, route_decision)
     _print_autonomy_decision(autonomy_decision)
+    _print_recommendations(
+        autonomy.recommend_next_steps(
+            autonomy_decision,
+            command="do",
+            intent=route_decision.intent,
+            workflow_pack=route_decision.workflow_pack,
+        )
+    )
     if autonomy_decision["decision"] == autonomy.BLOCKED:
         raise SystemExit(1)
     result = router.execute_route(conn, args.text, surface="do", decision=route_decision)
@@ -5180,6 +5198,13 @@ def cmd_factory(args: argparse.Namespace) -> None:
     if action == "start":
         autonomy_decision = _command_autonomy_decision(conn, "factory", requested_mode=args.mode)
         _print_autonomy_decision(autonomy_decision)
+        _print_recommendations(
+            autonomy.recommend_next_steps(
+                autonomy_decision,
+                command="factory",
+                workflow_pack=args.pack,
+            )
+        )
         if autonomy_decision["decision"] == autonomy.BLOCKED:
             raise SystemExit(1)
         try:
@@ -5200,6 +5225,14 @@ def cmd_factory(args: argparse.Namespace) -> None:
         print(f"review_packet=#{result['review_packet_id']}")
         print("agent_runs=" + ",".join(f"#{run_id}" for run_id in result["agent_run_ids"]))
         print(f"stopped_before_execution={args.mode == 'review_first'}")
+        _print_recommendations(
+            autonomy.recommend_next_steps(
+                autonomy_decision,
+                command="factory",
+                workflow_pack=args.pack,
+                factory_run_id=result["id"],
+            )
+        )
         return
 
     if action == "status":

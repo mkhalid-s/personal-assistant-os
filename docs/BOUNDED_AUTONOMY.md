@@ -108,12 +108,31 @@ myos autonomy feedback --trace 123 --expected-decision needs_approval
 
 Feedback is calibration metadata only. It does not override the hard autonomy guards or make external mutations automatic.
 
-## Next Slice: Decision-Aware Recommendations
+## Decision-Aware Recommendations
 
 Purpose: use policy decisions to guide users toward safer next steps before they start work.
 
-Scope:
+Implemented scope:
 
 - Suggest safer alternatives when a command or route needs approval.
 - Show the closest approval/review command for the current decision.
 - Keep suggestions read-only and deterministic.
+
+Useful commands:
+
+```bash
+myos do "draft a Jira update"
+myos factory start --intent 1
+```
+
+Recommendations are printed as guidance only. They never execute the suggested command automatically and they do not change approval policy.
+
+## Next Slice: Recommendation Feedback And Ranking
+
+Purpose: learn which deterministic recommendations are useful without using a model or weakening policy.
+
+Scope:
+
+- Record privacy-safe feedback on recommendation usefulness.
+- Prefer the most useful safe recommendation when multiple deterministic options exist.
+- Keep all recommendation execution manual.
