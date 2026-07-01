@@ -204,6 +204,15 @@ Autonomy: decision=needs_approval tier=confirm safety=approval_gated reason=...
 
 The decision uses command registry safety metadata and the existing `autonomy_level` policy. Local/read-only work can proceed, approval-gated and external-write work stays review-first, and destructive/unknown classifications remain blocked by the hard autonomy guards.
 
+Autonomy decisions can be calibrated locally:
+
+```bash
+myos autonomy eval
+myos autonomy feedback --trace 123 --expected-decision needs_approval --note "Keep external sync approval-gated"
+```
+
+`myos autonomy eval` uses packaged, non-private safety fixtures. Feedback stores the trace link, expected/actual decision metadata, note hash, and note length, not raw notes or command arguments.
+
 ## Quick Start
 
 ```bash

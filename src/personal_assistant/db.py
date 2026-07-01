@@ -4,7 +4,7 @@ import sqlite3
 import os
 from pathlib import Path
 
-EXPECTED_SCHEMA_VERSION = 32
+EXPECTED_SCHEMA_VERSION = 33
 
 
 def resolve_db_path() -> Path:
@@ -1442,6 +1442,56 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             (32, "add_lightweight_observability"),
         )
 
+    if current < 33:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS autonomy_eval_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                total_cases INTEGER NOT NULL,
+                passed_cases INTEGER NOT NULL,
+                accuracy REAL NOT NULL,
+                calibration TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS autonomy_eval_cases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                autonomy_eval_run_id INTEGER NOT NULL,
+                fixture_id TEXT NOT NULL,
+                command TEXT NOT NULL,
+                safety TEXT NOT NULL,
+                expected_decision TEXT NOT NULL,
+                actual_decision TEXT NOT NULL,
+                tier TEXT NOT NULL,
+                passed INTEGER NOT NULL DEFAULT 0,
+                reason TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(autonomy_eval_run_id) REFERENCES autonomy_eval_runs(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS autonomy_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                execution_trace_id INTEGER,
+                command_path TEXT NOT NULL,
+                safety_level TEXT,
+                expected_decision TEXT NOT NULL,
+                actual_decision TEXT NOT NULL,
+                note_hash TEXT,
+                note_length INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(execution_trace_id) REFERENCES execution_traces(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_autonomy_eval_runs_created ON autonomy_eval_runs(created_at);
+            CREATE INDEX IF NOT EXISTS idx_autonomy_eval_cases_run ON autonomy_eval_cases(autonomy_eval_run_id, fixture_id);
+            CREATE INDEX IF NOT EXISTS idx_autonomy_feedback_trace ON autonomy_feedback(execution_trace_id, created_at);
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (33, "add_autonomy_decision_calibration"),
+        )
+
     _ensure_fts5(conn)  # self-heal: build the FTS index if a no-FTS5 run stranded migration 17
     conn.commit()
 
@@ -1519,6 +1569,9 @@ def verify_schema(conn: sqlite3.Connection) -> dict[str, object]:
         "factory_learning",
         "execution_traces",
         "execution_trace_rollups",
+        "autonomy_eval_runs",
+        "autonomy_eval_cases",
+        "autonomy_feedback",
     }
     existing_tables = {
         row["name"]

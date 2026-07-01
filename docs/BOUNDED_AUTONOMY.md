@@ -89,12 +89,31 @@ myos factory start --intent 1
 
 The decision line is intentionally advisory for ordinary local work. Destructive or unknown command classifications remain blocked by the hard autonomy guards, while external and approval-gated workflows stay review-first.
 
-## Next Slice: Policy Decision Feedback And Calibration
+## Policy Decision Feedback And Calibration
 
 Purpose: learn where the autonomy decision explanation is too noisy, too permissive, or too conservative without weakening the execution guard.
 
-Scope:
+Implemented scope:
 
 - Record privacy-safe feedback on autonomy decisions.
 - Add a local eval fixture for representative command safety decisions.
 - Keep all external mutations approval-gated regardless of feedback.
+
+Useful commands:
+
+```bash
+myos autonomy eval
+myos autonomy feedback --trace 123 --expected-decision needs_approval
+```
+
+Feedback is calibration metadata only. It does not override the hard autonomy guards or make external mutations automatic.
+
+## Next Slice: Decision-Aware Recommendations
+
+Purpose: use policy decisions to guide users toward safer next steps before they start work.
+
+Scope:
+
+- Suggest safer alternatives when a command or route needs approval.
+- Show the closest approval/review command for the current decision.
+- Keep suggestions read-only and deterministic.

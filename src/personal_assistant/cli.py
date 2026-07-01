@@ -4312,6 +4312,47 @@ def cmd_trace(args: argparse.Namespace) -> None:
     raise SystemExit("Unknown trace command.")
 
 
+def cmd_autonomy(args: argparse.Namespace) -> None:
+    action = getattr(args, "autonomy_action", "")
+    conn = get_connection()
+    if action == "eval":
+        result = autonomy.evaluate_command_decisions(level=args.level)
+        summary = result["summary"]
+        run_id = 0
+        if not args.no_record:
+            run_id = autonomy.record_command_decision_eval(conn, result)
+        print("Autonomy eval:")
+        print(f"- fixtures: {summary['total']}")
+        print(f"- passed: {summary['passed']} failed={summary['failed']} accuracy={summary['accuracy']:.2%}")
+        print(f"- calibration: {summary['calibration']}")
+        if run_id:
+            print(f"- recorded_eval_run: #{run_id}")
+        failures = [case for case in result["cases"] if not case["passed"]]
+        if failures:
+            print("Failures:")
+            for case in failures[:10]:
+                print(
+                    f"- {case['fixture_id']}: command={case['command']} "
+                    f"expected={case['expected_decision']} actual={case['actual_decision']}"
+                )
+        return
+    if action == "feedback":
+        try:
+            feedback_id = autonomy.record_command_decision_feedback(
+                conn,
+                trace_id=args.trace,
+                expected_decision=args.expected_decision,
+                note=args.note or "",
+            )
+        except ValueError as exc:
+            print(f"Autonomy feedback failed: {exc}")
+            raise SystemExit(1) from exc
+        print(f"Autonomy feedback recorded: #{feedback_id}")
+        print("Privacy: note text was hashed; raw command arguments were not stored.")
+        return
+    raise SystemExit("Unknown autonomy command.")
+
+
 def cmd_smart_help(args: argparse.Namespace) -> None:
     inventory = router.command_inventory()
     tier = "workflow" if args.tier == "workflows" else args.tier
@@ -5718,6 +5759,18 @@ def build_parser() -> argparse.ArgumentParser:
     trace_rollups = trace_sub.add_parser("rollups", help="Show retained aggregate trace counts.")
     trace_rollups.add_argument("--limit", type=int, default=20)
     trace_rollups.set_defaults(func=cmd_trace)
+
+    autonomy_parser = sub.add_parser("autonomy", help="Evaluate and calibrate autonomy decision policy.")
+    autonomy_sub = autonomy_parser.add_subparsers(dest="autonomy_action", required=True)
+    autonomy_eval = autonomy_sub.add_parser("eval", help="Evaluate local autonomy decision fixtures.")
+    autonomy_eval.add_argument("--level", choices=list(autonomy.LEVELS), default=autonomy.DEFAULT_LEVEL)
+    autonomy_eval.add_argument("--no-record", action="store_true", help="Do not persist eval metadata.")
+    autonomy_eval.set_defaults(func=cmd_autonomy)
+    autonomy_feedback = autonomy_sub.add_parser("feedback", help="Record privacy-safe autonomy decision feedback.")
+    autonomy_feedback.add_argument("--trace", type=int, required=True, help="execution_traces id.")
+    autonomy_feedback.add_argument("--expected-decision", choices=list(autonomy.DECISIONS), required=True)
+    autonomy_feedback.add_argument("--note", default="", help="Optional note; stored as hash and length only.")
+    autonomy_feedback.set_defaults(func=cmd_autonomy)
 
     capture = sub.add_parser("capture", help="Capture an inbox item.")
     capture.add_argument("text", help="Raw capture text.")
