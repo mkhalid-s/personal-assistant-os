@@ -213,6 +213,8 @@ myos autonomy feedback --trace 123 --expected-decision needs_approval --note "Ke
 
 `myos autonomy eval` uses packaged, non-private safety fixtures. Feedback stores the trace link, expected/actual decision metadata, note hash, and note length, not raw notes or command arguments.
 
+When a decision needs review, MYOS also prints deterministic recommendations such as `myos approve --list` or `myos factory review --id <run_id>`. These are suggestions only; MYOS never executes the recommended command automatically.
+
 ## Quick Start
 
 ```bash

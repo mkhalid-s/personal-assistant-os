@@ -263,6 +263,71 @@ def decide_command(
     }
 
 
+def recommend_next_steps(
+    decision: dict,
+    *,
+    command: str = "",
+    intent: str = "",
+    workflow_pack: str = "",
+    factory_run_id: int | None = None,
+) -> list[dict]:
+    """Return deterministic, read-only next-step guidance for an autonomy decision."""
+    decision_name = str(decision.get("decision") or "")
+    safety = str(decision.get("safety") or "")
+    command_name = (command or "").strip()
+    intent = (intent or "").strip()
+    workflow_pack = (workflow_pack or "").strip()
+    if decision_name == "allowed":
+        if command_name == "do" and intent in {"capture", "plan_intent"}:
+            return [
+                {
+                    "label": "continue",
+                    "command": "",
+                    "reason": "Proceed with the local routed workflow; external effects remain gated.",
+                }
+            ]
+        return []
+    if decision_name == "needs_approval":
+        if command_name == "factory" or intent == "factory_run":
+            review = f"myos factory review --id {factory_run_id}" if factory_run_id else "myos factory review --id <run_id>"
+            return [
+                {
+                    "label": "review_factory",
+                    "command": review,
+                    "reason": "Review the generated packet before approving execution.",
+                }
+            ]
+        if intent == "connector_update" or workflow_pack == "connector_ops" or safety == "external_write":
+            return [
+                {
+                    "label": "review_approvals",
+                    "command": "myos approve --list",
+                    "reason": "Inspect approval-gated connector actions before anything is sent.",
+                }
+            ]
+        return [
+            {
+                "label": "inspect_gated_commands",
+                "command": "myos router commands --safety approval_gated",
+                "reason": "Review available approval-gated workflows before continuing.",
+            }
+        ]
+    if decision_name == BLOCKED:
+        return [
+            {
+                "label": "inspect_safe_commands",
+                "command": "myos help diagnostic",
+                "reason": "Use read-only diagnostics instead of a blocked or unknown operation.",
+            },
+            {
+                "label": "inspect_recent_traces",
+                "command": "myos trace list",
+                "reason": "Review recent local activity before choosing a safer command.",
+            },
+        ]
+    return []
+
+
 def _text_hash(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
