@@ -17,14 +17,14 @@ import subprocess
 
 from .connectors import AhaConnector, ConfluenceConnector, GitHubConnector, JiraConnector
 from .dashboard import render_dashboard_html, serve_dashboard
-from .db import append_event, get_connection, resolve_db_path, verify_schema
+from .db import append_event, get_connection, initialize_schema, resolve_db_path, verify_schema
 from .extraction import extract_suggestions
 from .graph import connect_work_items
 from .ingest.audio import transcribe_audio
 from .ingest.image import extract_image_text
 from .pulse import detect_mode, run_cycle
 from .retrieval import hybrid_score
-from . import assistant, autonomy, claims, context as ctx, em, entities, graphrag, intents, plans, providers, queries, relationships, watch
+from . import assistant, autonomy, claims, command_registry, context as ctx, em, entities, factory, graphrag, intents, model_setup, observability, plans, providers, queries, relationships, router, watch
 # Helpers extracted out of this module (refactor #12) — re-imported so existing
 # call sites (and tests importing them from cli) keep working unchanged.
 from .inbox import (
@@ -43,7 +43,7 @@ from .execution import (
     _PROTECTED_PATCH_PATTERNS, _patch_target_paths, _status_from_result,
     _execute_agent_action, _execute_action_provider, _read_provider_stdin, _outbox_write,
     _provider_body, _provider_target_summary, _post_jira_comment, _post_github_comment,
-    _handle_proposals, approve_and_execute,
+    _handle_proposals, approve_and_execute, execute_connector_mutation,
 )
 from .autopilot import (
     _create_agent_task, _autopilot_signal_exists, _detect_autopilot_signals,
@@ -70,6 +70,43 @@ def load_env_file(path: str) -> int:
             os.environ[key] = value
             loaded += 1
     return loaded
+
+
+def _command_path(args: argparse.Namespace) -> str:
+    parts = [str(getattr(args, "command", "") or "unknown")]
+    for name, value in sorted(vars(args).items()):
+        if name.endswith("_action") and isinstance(value, str) and value:
+            parts.append(value)
+    return " ".join(parts)
+
+
+def _argv_hash(argv: list[str]) -> str:
+    return observability._hash_text("\0".join(argv))  # hashed only; raw args may contain private text
+
+
+def _trace_enabled_for(args: argparse.Namespace) -> bool:
+    # These commands create, move, or select the database itself; opening an
+    # observability connection before they run can interfere with their purpose.
+    return str(getattr(args, "command", "") or "") not in {"restore", "setup-live"}
+
+
+def _command_autonomy_decision(conn: sqlite3.Connection, command: str, *, requested_mode: str = "") -> dict[str, object]:
+    spec = command_registry.find_command(command)
+    return autonomy.decide_command(
+        command,
+        safety=spec.safety if spec else "unknown",
+        requires_confirmation=bool(spec.requires_confirmation) if spec else True,
+        level=autonomy.level_from_policy(conn),
+        requested_mode=requested_mode,
+    )
+
+
+def _print_autonomy_decision(decision: dict[str, object]) -> None:
+    print(
+        "Autonomy: "
+        f"decision={decision['decision']} tier={decision['tier']} "
+        f"safety={decision['safety']} reason={decision['reason']}"
+    )
 
 
 def cmd_capture(args: argparse.Namespace) -> None:
@@ -351,6 +388,13 @@ def cmd_close_day(args: argparse.Namespace) -> None:
     pending_approvals = conn.execute(
         "SELECT COUNT(*) AS c FROM agent_actions WHERE status = 'proposed'"
     ).fetchone()["c"]
+    active_factory_runs = conn.execute(
+        """
+        SELECT COUNT(*) AS c
+        FROM factory_runs
+        WHERE status IN ('running', 'awaiting_approval', 'execution_ready', 'approved_for_execution')
+        """
+    ).fetchone()["c"]
 
     mode = args.mode
     summary = (
@@ -374,6 +418,7 @@ def cmd_close_day(args: argparse.Namespace) -> None:
                 "high_risk": high_risk,
                 "open_intents": open_intents,
                 "pending_approvals": pending_approvals,
+                "active_factory_runs": active_factory_runs,
             },
             ensure_ascii=True,
         ),
@@ -384,6 +429,7 @@ def cmd_close_day(args: argparse.Namespace) -> None:
     print(summary)
     print(f"Open intents: {open_intents}")
     print(f"Pending approvals: {pending_approvals}")
+    print(f"Active factory runs: {active_factory_runs}")
     if args.note:
         print(f"Note: {args.note}")
 
@@ -440,6 +486,26 @@ def cmd_morning_brief(args: argparse.Namespace) -> None:
     if approvals:
         for row in approvals:
             print(f"- action #{row['id']} [{row['action_type']}] {row['title']}")
+    else:
+        print("- none")
+
+    factory_rows = conn.execute(
+        """
+        SELECT id, intent_id, mode, workflow_pack, status
+        FROM factory_runs
+        WHERE status IN ('running', 'awaiting_approval', 'execution_ready', 'approved_for_execution')
+        ORDER BY started_at DESC, id DESC
+        LIMIT ?
+        """,
+        (args.limit,),
+    ).fetchall()
+    print("Factory runs:")
+    if factory_rows:
+        for row in factory_rows:
+            print(
+                f"- factory #{row['id']} intent=#{row['intent_id']} mode={row['mode']} "
+                f"pack={row['workflow_pack']} status={row['status']}"
+            )
     else:
         print("- none")
 
@@ -963,6 +1029,14 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             ),
         ]
     )
+    router_status = model_setup.router_status()
+    optional_checks.append(
+        (
+            "router_model",
+            bool(router_status["available"]),
+            f"{router_status['backend']} {router_status['model']} ({router_status['detail']})",
+        )
+    )
 
     print("Core checks:")
     for name, ok, detail in core_checks:
@@ -1256,12 +1330,118 @@ def _tracked_local_artifacts(root: Path) -> list[str]:
     return blocked
 
 
+def _factory_release_smoke(conn: sqlite3.Connection) -> tuple[bool, str]:
+    smoke_conn = sqlite3.connect(":memory:")
+    smoke_conn.row_factory = sqlite3.Row
+    initialize_schema(smoke_conn)
+    try:
+        intent_id = intents.create_intent(
+            smoke_conn,
+            objective="Release smoke: verify review-first factory trace",
+            context="Local release-check smoke test.",
+            success_criteria="Factory run creates plan, retrieval, review packet, and role artifacts.",
+        )
+        result = factory.start_review_first_run(smoke_conn, intent_id=intent_id, mode="review_first")
+        artifacts = smoke_conn.execute(
+            """
+            SELECT artifact_type, COUNT(*) AS c
+            FROM factory_artifacts
+            WHERE factory_run_id = ?
+            GROUP BY artifact_type
+            """,
+            (int(result["id"]),),
+        ).fetchall()
+        counts = {row["artifact_type"]: int(row["c"]) for row in artifacts}
+        required = {
+            "plan": 1,
+            "retrieval_run": 1,
+            "review_packet": 1,
+            "agent_run": 5,
+        }
+        missing = [name for name, min_count in required.items() if counts.get(name, 0) < min_count]
+        semi_intent_id = intents.create_intent(
+            smoke_conn,
+            objective="Release smoke: verify semi-autonomous local receipt",
+            context="Local release-check smoke test.",
+            success_criteria="Safe local action executes with receipt.",
+        )
+        factory.set_policy(smoke_conn, allowed_mode="semi_autonomous", scope_type="intent", scope_id=str(semi_intent_id))
+        semi = factory.start_review_first_run(smoke_conn, intent_id=semi_intent_id, mode="semi_autonomous")
+        receipt_count = smoke_conn.execute(
+            """
+            SELECT COUNT(*) AS c
+            FROM factory_artifacts
+            WHERE factory_run_id = ? AND artifact_type = 'execution_receipt'
+            """,
+            (int(semi["id"]),),
+        ).fetchone()["c"]
+        connector_intent_id = intents.create_intent(
+            smoke_conn,
+            objective="Release smoke: verify connector dry-run receipt",
+            context="Local release-check connector smoke test.",
+            success_criteria="Connector dry-run creates outbox and receipt.",
+        )
+        smoke_conn.execute(
+            """
+            INSERT INTO external_items (connector, external_id, item_type, title, body, url)
+            VALUES ('confluence', 'PAGE-SMOKE', 'page', 'Connector smoke page', 'Needs dry-run update.', 'https://example.test/wiki/PAGE-SMOKE')
+            """
+        )
+        intents.add_evidence(
+            smoke_conn,
+            intent_id=connector_intent_id,
+            content="confluence:PAGE-SMOKE page Connector smoke page",
+            source_type="external_item",
+            source_id="1",
+            summary="confluence page: Connector smoke page",
+            confidence=0.8,
+        )
+        factory.set_policy(smoke_conn, allowed_mode="full_autonomous", scope_type="intent", scope_id=str(connector_intent_id))
+        factory.set_policy(
+            smoke_conn,
+            allowed_mode="full_autonomous",
+            connector="confluence",
+            action_type="draft_external_update",
+        )
+        connector = factory.start_review_first_run(
+            smoke_conn,
+            intent_id=connector_intent_id,
+            mode="full_autonomous",
+            workflow_pack="connector_ops",
+        )
+        connector_outbox = smoke_conn.execute(
+            "SELECT COUNT(*) AS c FROM action_outbox WHERE target_type='confluence' AND target_ref='PAGE-SMOKE'"
+        ).fetchone()["c"]
+        ok = (
+            not missing
+            and result["status"] == "awaiting_approval"
+            and semi["status"] == "execution_completed"
+            and int(receipt_count) >= 1
+            and connector["status"] == "execution_completed"
+            and int(connector_outbox) >= 1
+        )
+        detail = (
+            "review-first trace, semi-autonomous receipt, and connector dry-run ok"
+            if ok
+            else (
+                f"missing={','.join(missing)} status={result['status']} semi={semi['status']} "
+                f"receipts={receipt_count} connector={connector['status']} outbox={connector_outbox}"
+            )
+        )
+        return ok, detail
+    except Exception as exc:
+        return False, str(exc)
+    finally:
+        smoke_conn.close()
+
+
 def cmd_release_check(args: argparse.Namespace) -> None:
     root = Path(__file__).resolve().parents[2]
     conn = get_connection()
     schema = verify_schema(conn)
     hygiene = _release_hygiene_findings(root)
     artifacts = _tracked_local_artifacts(root)
+    factory_smoke_ok, factory_smoke_detail = _factory_release_smoke(conn)
     required_files = [
         root / "LICENSE",
         root / "README.md",
@@ -1278,6 +1458,7 @@ def cmd_release_check(args: argparse.Namespace) -> None:
         ("required_files", all(path.exists() for path in required_files), "docs, changelog, license, workflows"),
         ("public_hygiene", not hygiene, f"{len(hygiene)} finding(s)"),
         ("local_artifacts", not artifacts, f"{len(artifacts)} tracked local artifact(s)"),
+        ("factory_smoke", factory_smoke_ok, factory_smoke_detail),
     ]
     print("Release readiness check:")
     ok = True
@@ -1722,6 +1903,13 @@ def _env_template(db_path: Path) -> str:
             "MYOS_AI_PROVIDER=local",
             "MYOS_AI_COMMAND=",
             "",
+            "# Optional tiny local router model for intent finding",
+            "MYOS_ROUTER_BACKEND=",
+            "MYOS_ROUTER_MODEL=",
+            "MYOS_ROUTER_COMMAND=",
+            "MYOS_ROUTER_TIMEOUT_SEC=8",
+            "MYOS_ROUTER_MIN_CONFIDENCE=0.70",
+            "",
             "# Safe default: approved external actions go to local outbox",
             "MYOS_ACTION_PROVIDER=builtin",
             "MYOS_ACTION_COMMAND=myos action-provider",
@@ -1746,6 +1934,24 @@ def _read_env_values(path: Path) -> dict[str, str]:
         key, value = raw.split("=", 1)
         values[key.strip()] = value.strip().strip("'").strip('"')
     return values
+
+
+def _upsert_env_lines(path: Path, lines: list[str], *, header: str = "# Managed tiny router model") -> None:
+    keys = {line.split("=", 1)[0].strip() for line in lines if "=" in line}
+    existing = path.read_text().splitlines() if path.exists() else []
+    kept = []
+    for line in existing:
+        raw = line.strip()
+        candidate = raw[len("export ") :].strip() if raw.startswith("export ") else raw
+        key = candidate.split("=", 1)[0].strip() if "=" in candidate else ""
+        if key in keys:
+            continue
+        kept.append(line)
+    if kept and kept[-1].strip():
+        kept.append("")
+    kept.append(header)
+    kept.extend(lines)
+    path.write_text("\n".join(kept).rstrip() + "\n")
 
 
 def _setup_live_paths(args: argparse.Namespace) -> tuple[Path, Path, Path, Path]:
@@ -1830,6 +2036,16 @@ def _cmd_setup_live_check(env_path: Path, db_path: Path, watch_dir: Path) -> boo
 
 def cmd_setup_live(args: argparse.Namespace) -> None:
     data_dir, env_path, db_path, watch_dir = _setup_live_paths(args)
+    router_model_plan = None
+    if getattr(args, "router_model", False):
+        try:
+            router_model_plan = model_setup.setup_plan(
+                runtime=getattr(args, "router_runtime", "auto"),
+                model=getattr(args, "router_model_name", ""),
+            )
+        except ValueError as exc:
+            print(str(exc))
+            raise SystemExit(1) from exc
     goals = [
         (
             "Keep my work commitments and risks current",
@@ -1857,6 +2073,8 @@ def cmd_setup_live(args: argparse.Namespace) -> None:
     print(f"- default_watch_dir: {watch_dir}")
     print("- default action provider: MYOS_ACTION_COMMAND=myos action-provider")
     print("- default goals: commitment/risk monitoring, daily digest")
+    if router_model_plan:
+        _print_model_plan(router_model_plan)
     print("- launchd autopilot: " + ("yes" if args.install_launchd else "no"))
     if not args.apply:
         print("Dry run only. Re-run with --apply to create files and DB records.")
@@ -1873,6 +2091,16 @@ def cmd_setup_live(args: argparse.Namespace) -> None:
     else:
         env_path.chmod(0o600)
         print(f"Env file already exists: {env_path}")
+    if router_model_plan:
+        setup_result = model_setup.apply_setup(router_model_plan, dry_run=False)
+        _upsert_env_lines(env_path, list(router_model_plan["env_lines"]))
+        env_path.chmod(0o600)
+        print(f"Router model setup: {setup_result['status']}")
+        if setup_result.get("wrapper"):
+            print(f"Router wrapper: {setup_result['wrapper']}")
+        if setup_result["status"] == "failed":
+            print(setup_result.get("stderr") or setup_result.get("stdout") or "model setup failed")
+            raise SystemExit(1)
 
     os.environ["MYOS_DB_PATH"] = str(db_path)
     conn = get_connection()
@@ -3616,6 +3844,23 @@ def cmd_action_provider(args: argparse.Namespace) -> None:
         agent_action_id = int(agent_action_id) if agent_action_id is not None else None
 
         target_ref = str(payload.get("issue_key") or payload.get("issue_number") or payload.get("pr_number") or "draft")
+        if target in {"jira", "github", "confluence", "aha"} or payload.get("operation"):
+            result = execute_connector_mutation(
+                conn,
+                agent_action_id=agent_action_id,
+                action_type=action_type,
+                title=title,
+                payload=payload,
+                approved=approved,
+                execute_live=bool(args.execute),
+            )
+            conn.commit()
+            if result["status"] in {"blocked", "failed"}:
+                print(json.dumps({"status": result["status"], "error": result.get("error", "")}, ensure_ascii=True))
+                raise SystemExit(1)
+            print(json.dumps(result, ensure_ascii=True))
+            return
+
         if not args.execute:
             outbox_id = _outbox_write(
                 conn,
@@ -3696,6 +3941,9 @@ def cmd_act(args: argparse.Namespace) -> None:
             print(f"- action #{row['id']} task=#{row['agent_task_id']} [{row['action_type']}] {row['title']} status={row['status']} {approval}")
             payload = json.loads(row["payload_json"] or "{}")
             print(f"  target: {_provider_target_summary(payload)}")
+            rollback = payload.get("rollback_note") or payload.get("rollback")
+            if rollback:
+                print(f"  rollback: {rollback}")
             preview = payload.get("draft") or payload.get("text")
             if preview:
                 snippet = str(preview) if len(str(preview)) <= 180 else str(preview)[:177] + "..."
@@ -3837,6 +4085,249 @@ def cmd_agent_status(args: argparse.Namespace) -> None:
         print(f"- task #{row['id']} status={row['status']} priority={row['priority']} updated={row['updated_at']} objective={title}")
 
 
+def cmd_do(args: argparse.Namespace) -> None:
+    conn = get_connection()
+    route_decision = router.route_with_feedback(conn, args.text, surface="do")
+    autonomy_decision = router.autonomy_decision_for_route(conn, route_decision)
+    _print_autonomy_decision(autonomy_decision)
+    if autonomy_decision["decision"] == autonomy.BLOCKED:
+        raise SystemExit(1)
+    result = router.execute_route(conn, args.text, surface="do", decision=route_decision)
+    result["autonomy"] = autonomy_decision
+    conn.commit()
+    print(router.summarize_result(result))
+    decision = result["decision"]
+    if decision.get("requires_confirmation"):
+        print("Safety: route is review-first or clarification-oriented; external mutations remain approval-gated.")
+
+
+def _print_model_plan(plan: dict[str, object]) -> None:
+    print("Router model setup plan:")
+    print(f"- runtime: {plan['runtime']} ({'available' if plan['runtime_available'] else 'not available'})")
+    print(f"- runtime_detail: {plan['runtime_detail']}")
+    print(f"- model: {plan['model']} ({plan['model_label']})")
+    print(f"- footprint: {plan['footprint']}")
+    print(f"- quality: {plan['quality']}")
+    print(f"- pull_command: {plan['pull_command_text']}")
+    print(f"- wrapper_path: {plan['wrapper_path']}")
+    print("- env:")
+    for line in plan["env_lines"]:
+        print(f"  {line}")
+    print(f"- privacy: {plan['privacy_note']}")
+
+
+def cmd_model(args: argparse.Namespace) -> None:
+    action = getattr(args, "model_action", "")
+    if action == "recommend":
+        try:
+            rec = model_setup.recommended_model(args.purpose)
+        except ValueError as exc:
+            print(str(exc))
+            raise SystemExit(1) from exc
+        print(f"Recommended {rec['purpose']} model: {rec['model']} ({rec['label']})")
+        print(f"- footprint: {rec['footprint']}")
+        print(f"- quality: {rec['quality']}")
+        return
+    if action == "status":
+        status = model_setup.router_status()
+        print("Router model status:")
+        print(f"- backend: {status['backend']}")
+        print(f"- model: {status['model']}")
+        print(f"- command: {status['command']}")
+        print(f"- runtime: {status['runtime']}")
+        print(f"- available: {bool(status['available'])}")
+        print(f"- detail: {status['detail']}")
+        return
+    if action == "setup":
+        if not args.router:
+            print("Only router model setup is supported in this release. Use --router.")
+            raise SystemExit(1)
+        try:
+            plan = model_setup.setup_plan(runtime=args.runtime, model=args.model, command=args.command)
+        except ValueError as exc:
+            print(str(exc))
+            raise SystemExit(1) from exc
+        _print_model_plan(plan)
+        result = model_setup.apply_setup(plan, dry_run=not args.apply)
+        if not args.apply:
+            print("Dry run only. Re-run with --apply to pull the model and write the wrapper.")
+            return
+        print(f"Apply status: {result['status']}")
+        if result.get("wrapper"):
+            print(f"Wrapper written: {result['wrapper']}")
+        if result.get("stdout"):
+            print(f"stdout: {result['stdout']}")
+        if result.get("stderr"):
+            print(f"stderr: {result['stderr']}")
+        if result["status"] == "failed":
+            raise SystemExit(1)
+        return
+    raise SystemExit("Unknown model command.")
+
+
+def cmd_router(args: argparse.Namespace) -> None:
+    action = getattr(args, "router_action", "")
+    if action == "eval":
+        try:
+            result = router.evaluate_routes(
+                fixture_path=args.fixture or None,
+                model_shadow=args.model_shadow,
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"Router eval failed: {exc}")
+            raise SystemExit(1) from exc
+        conn = get_connection()
+        run_id = 0
+        if not args.no_record:
+            run_id = router.record_route_eval(conn, result)
+        summary = result["summary"]
+        print("Router eval:")
+        print(f"- fixtures: {summary['total']} from {result['fixture_path']}")
+        print(f"- passed: {summary['passed']} failed={summary['failed']} accuracy={summary['accuracy']:.2%}")
+        print(f"- low_confidence: {summary['low_confidence']}")
+        if args.model_shadow:
+            print(
+                f"- model_shadow: overrides={summary['model_overrides']} "
+                f"wins={summary['model_wins']} losses={summary['model_losses']}"
+            )
+        print(f"- calibration: {summary['calibration']}")
+        if run_id:
+            print(f"- recorded_eval_run: #{run_id}")
+        failures = [case for case in result["cases"] if not case["passed"]]
+        if failures:
+            print("Failures:")
+            for case in failures[:10]:
+                print(
+                    f"- {case['fixture_id']}: expected={case['expected_intent']} "
+                    f"actual={case['actual_intent']} confidence={case['confidence']:.2f}"
+                )
+        return
+    if action == "feedback":
+        conn = get_connection()
+        try:
+            feedback_id = router.record_route_feedback(
+                conn,
+                event_id=args.event,
+                expected_intent=args.expected_intent,
+                note=args.note or "",
+            )
+        except (ValueError, json.JSONDecodeError) as exc:
+            print(f"Router feedback failed: {exc}")
+            raise SystemExit(1) from exc
+        print(f"Router feedback recorded: #{feedback_id}")
+        print("Privacy: note text was hashed; raw request text was not stored.")
+        return
+    if action == "overrides":
+        conn = get_connection()
+        rows = router.list_route_overrides(conn, limit=args.limit)
+        if not rows:
+            print("No active router overrides.")
+            return
+        print("Router overrides:")
+        for row in rows:
+            print(
+                f"- #{row['id']} intent={row['expected_intent']} status={row['status']} "
+                f"hash={row['text_hash'][:12]} feedback=#{row['source_feedback_id'] or 'none'} "
+                f"updated={row['updated_at']}"
+            )
+        return
+    if action == "commands":
+        specs = command_registry.filter_commands(
+            tier=args.tier or "",
+            safety=args.safety or "",
+            intent=args.intent or "",
+        )
+        print("Router command registry:")
+        if not specs:
+            print("- no commands match filters")
+            return
+        for spec in specs[: args.limit]:
+            confirm = " confirmation=yes" if spec.requires_confirmation else ""
+            required = f" required={','.join(spec.required_args)}" if spec.required_args else ""
+            example = f" example={spec.examples[0]}" if spec.examples else ""
+            print(
+                f"- myos {spec.command} tier={spec.tier} safety={spec.safety} "
+                f"intent={spec.intent}{confirm}{required}{example}"
+            )
+        return
+    raise SystemExit("Unknown router command.")
+
+
+def cmd_trace(args: argparse.Namespace) -> None:
+    action = getattr(args, "trace_action", "")
+    conn = get_connection()
+    if action == "list":
+        rows = observability.list_traces(
+            conn,
+            limit=args.limit,
+            status=args.status or "",
+            command=args.command_filter or "",
+        )
+        current_trace = observability.current_correlation_id()
+        if current_trace:
+            rows = [row for row in rows if row.get("correlation_id") != current_trace]
+        if not rows:
+            print("No execution traces.")
+            return
+        print("Execution traces:")
+        for row in rows:
+            links = []
+            if row.get("route_event_id"):
+                links.append(f"route_event=#{row['route_event_id']}")
+            if row.get("factory_run_id"):
+                links.append(f"factory_run=#{row['factory_run_id']}")
+            if row.get("agent_task_id"):
+                links.append(f"agent_task=#{row['agent_task_id']}")
+            if row.get("receipt_id"):
+                links.append(f"receipt=#{row['receipt_id']}")
+            link_text = f" {' '.join(links)}" if links else ""
+            print(
+                f"- #{row['id']} {row['command_path']} status={row['status']} "
+                f"duration_ms={row['duration_ms']} corr={row['correlation_id']}{link_text}"
+            )
+        return
+    if action == "cleanup":
+        result = observability.cleanup_traces(
+            conn,
+            retention_days=args.retention_days,
+            max_rows=args.max_rows,
+        )
+        print(
+            "Trace cleanup: "
+            f"rolled_up={result['rolled_up']} deleted={result['deleted']} remaining={result['remaining']}"
+        )
+        return
+    if action == "rollups":
+        rows = observability.rollups(conn, limit=args.limit)
+        if not rows:
+            print("No execution trace rollups.")
+            return
+        print("Execution trace rollups:")
+        for row in rows:
+            print(
+                f"- {row['bucket_date']} {row['command_path']} status={row['status']} "
+                f"count={row['trace_count']} duration_ms={row['total_duration_ms']}"
+            )
+        return
+    raise SystemExit("Unknown trace command.")
+
+
+def cmd_smart_help(args: argparse.Namespace) -> None:
+    inventory = router.command_inventory()
+    tier = "workflow" if args.tier == "workflows" else args.tier
+    if tier == "all":
+        tiers = ["daily", "workflow", "expert", "diagnostic"]
+    else:
+        tiers = [tier]
+    print("MYOS smart command surface")
+    print("Primary: myos chat | myos voice | myos autopilot --factory | myos do \"...\" | myos approve --list")
+    for name in tiers:
+        commands = inventory.get(name, [])
+        print(f"\n{name.title()} commands:")
+        for command in commands:
+            print(f"- myos {command}")
+
+
 def _run_autopilot_cycle(args: argparse.Namespace) -> dict[str, int]:
     if args.env_file:
         loaded = load_env_file(args.env_file)
@@ -3857,6 +4348,7 @@ def _run_autopilot_cycle(args: argparse.Namespace) -> dict[str, int]:
     created_task_ids: list[int] = []
     safe_actions = 0
     approvals_pending = 0
+    factory_step: dict[str, object] = {}
     try:
         if not args.no_sync:
             cmd_sync(argparse.Namespace(connector=args.connector, env_file=""))
@@ -3885,6 +4377,19 @@ def _run_autopilot_cycle(args: argparse.Namespace) -> dict[str, int]:
             if task_id is not None:
                 tasks_created += 1
                 created_task_ids.append(task_id)
+        if getattr(args, "factory", False):
+            routed_factory = router.choose_autopilot_workflow(signals)
+            requested_pack = getattr(args, "factory_pack", "auto")
+            workflow_pack = routed_factory["workflow_pack"] if requested_pack == "auto" else requested_pack
+            factory_step = factory.proactive_step(
+                conn,
+                mode=getattr(args, "factory_mode", "review_first"),
+                workflow_pack=workflow_pack,
+            )
+            factory_step["router_intent"] = routed_factory["intent"]
+            factory_step["router_reason"] = routed_factory["reason"]
+            factory_step["workflow_pack"] = workflow_pack
+            conn.commit()
         safe_actions = _execute_safe_autopilot_actions(conn, args.safe_action_limit, created_task_ids)
         approvals_pending = conn.execute(
             "SELECT COUNT(*) AS c FROM agent_actions WHERE status='proposed' AND requires_approval=1"
@@ -3892,7 +4397,9 @@ def _run_autopilot_cycle(args: argparse.Namespace) -> dict[str, int]:
         summary = (
             f"synced={synced}, signals={signals_detected}, tasks_created={tasks_created}, "
             f"safe_actions={safe_actions}, approvals_pending={approvals_pending}, "
-            f"watched_files={watched_files}, watch_suggestions={watch_suggestions}"
+            f"watched_files={watched_files}, watch_suggestions={watch_suggestions}, "
+            f"factory={factory_step.get('action', 'off') if factory_step else 'off'}"
+            f"/{factory_step.get('workflow_pack', 'none') if factory_step else 'none'}"
         )
         title, digest_body, digest_payload = _build_autopilot_digest(
             conn,
@@ -4010,6 +4517,9 @@ def cmd_approve(args: argparse.Namespace) -> None:
             print(f"- action #{row['id']} task=#{row['agent_task_id']} [{row['action_type']}] {row['title']} status={row['status']}")
             payload = json.loads(row["payload_json"] or "{}")
             print(f"  target: {_provider_target_summary(payload)}")
+            rollback = payload.get("rollback_note") or payload.get("rollback")
+            if rollback:
+                print(f"  rollback: {rollback}")
             preview = payload.get("draft") or payload.get("text")
             if preview:
                 snippet = str(preview) if len(str(preview)) <= 220 else str(preview)[:217] + "..."
@@ -4506,6 +5016,28 @@ def cmd_execution_receipt(args: argparse.Namespace) -> None:
         print(f"Follow-up required: {bool(row['follow_up_required'])}")
         if row["follow_up_inbox_id"]:
             print(f"Follow-up inbox item: #{row['follow_up_inbox_id']}")
+        try:
+            request = json.loads(row["request_json"] or "{}")
+        except (TypeError, ValueError):
+            request = {}
+        payload = request.get("payload") if isinstance(request, dict) else {}
+        if isinstance(payload, dict):
+            print(f"Target: {_provider_target_summary(payload)}")
+        outbox = conn.execute(
+            """
+            SELECT id, provider, target_type, target_ref, status
+            FROM action_outbox
+            WHERE agent_action_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (int(row["agent_action_id"]),),
+        ).fetchone()
+        if outbox:
+            print(
+                f"Outbox: #{outbox['id']} provider={outbox['provider']} "
+                f"target={outbox['target_type']}:{outbox['target_ref']} status={outbox['status']}"
+            )
         print(f"Result: {row['result']}")
         print(f"Rollback: {row['rollback_note']}")
         return
@@ -4598,6 +5130,236 @@ def cmd_agent_run(args: argparse.Namespace) -> None:
     print(f"task: #{task_id}")
     print(f"summary: {summary}")
     print(f"approval_gate: {role_packet['approval_gate']}")
+
+
+def cmd_factory(args: argparse.Namespace) -> None:
+    conn = get_connection()
+    action = getattr(args, "factory_action", "")
+
+    if action == "start":
+        autonomy_decision = _command_autonomy_decision(conn, "factory", requested_mode=args.mode)
+        _print_autonomy_decision(autonomy_decision)
+        if autonomy_decision["decision"] == autonomy.BLOCKED:
+            raise SystemExit(1)
+        try:
+            result = factory.start_review_first_run(
+                conn,
+                intent_id=args.intent,
+                mode=args.mode,
+                workflow_pack=args.pack,
+            )
+        except ValueError as exc:
+            print(str(exc))
+            raise SystemExit(1) from exc
+        conn.commit()
+        print(f"Factory run #{result['id']} for intent #{result['intent_id']} status={result['status']}")
+        print(f"mode={args.mode} pack={args.pack} plan=#{result['plan_id']}")
+        if result["retrieval_run_id"] is not None:
+            print(f"retrieval_run=#{result['retrieval_run_id']}")
+        print(f"review_packet=#{result['review_packet_id']}")
+        print("agent_runs=" + ",".join(f"#{run_id}" for run_id in result["agent_run_ids"]))
+        print(f"stopped_before_execution={args.mode == 'review_first'}")
+        return
+
+    if action == "status":
+        run = factory.get_factory_run(conn, args.id)
+        if run is None:
+            print(f"Factory run #{args.id} not found.")
+            raise SystemExit(1)
+        print(
+            f"Factory run #{run['id']} intent=#{run['intent_id']} plan=#{run['plan_id']} "
+            f"mode={run['mode']} pack={run['workflow_pack']} status={run['status']}"
+        )
+        if run.get("summary"):
+            print(f"Summary: {run['summary']}")
+        if run.get("outcome"):
+            print(f"Outcome: {run['outcome']} notes={run.get('outcome_notes') or ''}")
+        print("Stages:")
+        for stage in run["stages"]:
+            agent = f" agent_run=#{stage['agent_run_id']}" if stage["agent_run_id"] else ""
+            role = f" role={stage['role']}" if stage["role"] else ""
+            print(f"- {stage['stage_name']} status={stage['status']}{role}{agent}")
+        print("Artifacts:")
+        for artifact in run["artifacts"]:
+            label = f" {artifact['label']}" if artifact["label"] else ""
+            print(f"- {artifact['artifact_type']}#{artifact['artifact_id']}{label}")
+        return
+
+    if action == "run-stage":
+        try:
+            factory.record_stage(
+                conn,
+                factory_run_id=args.id,
+                stage_name=args.stage,
+                status=args.status,
+                note=args.note,
+            )
+        except ValueError as exc:
+            print(str(exc))
+            raise SystemExit(1) from exc
+        conn.commit()
+        print(f"Factory run #{args.id} stage {args.stage} -> {args.status}")
+        return
+
+    if action == "continue":
+        run = factory.get_factory_run(conn, args.id)
+        if run is None:
+            print(f"Factory run #{args.id} not found.")
+            raise SystemExit(1)
+        next_stage = next((s for s in run["stages"] if s["status"] in {"pending", "waiting"}), None)
+        if next_stage is None:
+            print(f"Factory run #{args.id} has no pending stages.")
+            return
+        if next_stage["stage_name"] == "execution":
+            try:
+                result = factory.advance_execution(conn, args.id)
+            except ValueError as exc:
+                print(str(exc))
+                raise SystemExit(1) from exc
+            conn.commit()
+            print(
+                f"Factory run #{args.id} execution advanced: "
+                f"actions={result['actions']} executed={result['executed']} pending={result['pending']} blocked={result['blocked']}"
+            )
+            return
+        if next_stage["stage_name"] == "learning":
+            print(f"Factory run #{args.id} is waiting for outcome before learning.")
+            return
+        factory.record_stage(conn, factory_run_id=args.id, stage_name=next_stage["stage_name"], status="completed")
+        conn.commit()
+        print(f"Factory run #{args.id} continued stage {next_stage['stage_name']}.")
+        return
+
+    if action == "review":
+        run = factory.get_factory_run(conn, args.id)
+        if run is None:
+            print(f"Factory run #{args.id} not found.")
+            raise SystemExit(1)
+        post_review = {"execution", "learning"}
+        gaps = [
+            s["stage_name"]
+            for s in run["stages"]
+            if s["status"] in {"pending", "blocked"} and s["stage_name"] not in post_review
+        ]
+        packet = next((a for a in run["artifacts"] if a["artifact_type"] == "review_packet"), None)
+        print(f"Factory review #{args.id}: {'ready_for_approval' if not gaps and packet else 'needs_attention'}")
+        print(f"review_packet=#{packet['artifact_id'] if packet else 'missing'}")
+        if gaps:
+            print("Open gaps: " + ", ".join(gaps))
+        print("Execution remains approval-gated.")
+        return
+
+    if action == "approve":
+        run = factory.get_factory_run(conn, args.id)
+        if run is None:
+            print(f"Factory run #{args.id} not found.")
+            raise SystemExit(1)
+        conn.execute(
+            "UPDATE factory_runs SET status=? WHERE id=?",
+            ("approved_for_execution" if args.execute else "approved", int(args.id)),
+        )
+        factory.record_stage(conn, factory_run_id=args.id, stage_name="approval", status="completed", note="factory approval recorded")
+        if args.execute:
+            try:
+                execution = factory.advance_execution(conn, args.id, approve=True)
+            except ValueError as exc:
+                print(str(exc))
+                raise SystemExit(1) from exc
+        conn.commit()
+        print(f"Factory run #{args.id} approved.")
+        if args.execute:
+            print(
+                f"Execution advanced: actions={execution['actions']} executed={execution['executed']} "
+                f"pending={execution['pending']} blocked={execution['blocked']}"
+            )
+        return
+
+    if action == "policy":
+        policy_action = getattr(args, "policy_action", "")
+        if policy_action == "set":
+            try:
+                policy_id = factory.set_policy(
+                    conn,
+                    allowed_mode=args.mode,
+                    scope_type=args.scope_type,
+                    scope_id=args.scope_id,
+                    connector=args.connector,
+                    action_type=args.action_type,
+                )
+            except ValueError as exc:
+                print(str(exc))
+                raise SystemExit(1) from exc
+            conn.commit()
+            scope = f"{args.scope_type}:{args.scope_id}" if args.scope_id else args.scope_type
+            print(f"Factory policy #{policy_id} {scope} connector={args.connector or 'all'} action={args.action_type or 'all'} mode={args.mode}")
+            return
+        rows = conn.execute(
+            """
+            SELECT id, scope_type, scope_id, connector, action_type, allowed_mode, status
+            FROM factory_policies
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            (int(args.limit),),
+        ).fetchall()
+        if not rows:
+            print("No factory policies configured.")
+            return
+        print("Factory policies:")
+        for row in rows:
+            scope = f"{row['scope_type']}:{row['scope_id']}" if row["scope_id"] else row["scope_type"]
+            connector = row["connector"] or "all"
+            action_type = row["action_type"] or "all"
+            print(f"- #{row['id']} {scope} connector={connector} action={action_type} mode={row['allowed_mode']} status={row['status']}")
+        return
+
+    if action == "learn":
+        try:
+            learning_id = factory.learn(conn, factory_run_id=args.id, outcome=args.outcome, notes=args.notes)
+        except ValueError as exc:
+            print(str(exc))
+            raise SystemExit(1) from exc
+        conn.commit()
+        print(f"Factory learning #{learning_id} recorded for run #{args.id}: {args.outcome}")
+        return
+
+    if action == "retrospective":
+        run = factory.get_factory_run(conn, args.id)
+        if run is None:
+            print(f"Factory run #{args.id} not found.")
+            raise SystemExit(1)
+        retro = factory.latest_retrospective(conn, args.id)
+        if retro is None:
+            print(f"No retrospective recorded for factory run #{args.id}.")
+            return
+        body = retro["retrospective"]
+        print(f"Factory retrospective #{args.id}: outcome={retro['outcome']}")
+        print(f"notes={retro['notes'] or ''}")
+        print(f"stages={body.get('stage_count', 0)} artifacts={body.get('artifact_count', 0)}")
+        receipts = body.get("recent_receipts") or []
+        print(f"recent_receipts={len(receipts)}")
+        return
+
+    if action == "insights":
+        insights = factory.learning_insights(
+            conn,
+            intent_id=args.intent,
+            workflow_pack=args.pack,
+            limit=args.limit,
+        )
+        scope = f"intent=#{args.intent}" if args.intent else "all intents"
+        pack = args.pack or "all packs"
+        print(f"Factory insights ({scope}, {pack}): runs={insights['count']}")
+        print(f"outcomes={json.dumps(insights['outcomes'], ensure_ascii=True, sort_keys=True)}")
+        print(f"blockers={json.dumps(insights['blockers'], ensure_ascii=True, sort_keys=True)}")
+        print(f"useful_sources={json.dumps(insights['useful_sources'], ensure_ascii=True, sort_keys=True)}")
+        if insights["notes"]:
+            print("Notes:")
+            for note in insights["notes"]:
+                print(f"- {note}")
+        return
+
+    raise SystemExit("Unknown factory command.")
 
 
 def cmd_entity(args: argparse.Namespace) -> None:
@@ -4897,6 +5659,66 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
+    do = sub.add_parser("do", help="Route a natural-language request to the right MYOS workflow.")
+    do.add_argument("text", help="What you want MYOS to do.")
+    do.set_defaults(func=cmd_do)
+
+    smart_help = sub.add_parser("help", help="Show simplified daily/workflow/expert command tiers.")
+    smart_help.add_argument("tier", nargs="?", choices=["daily", "workflow", "workflows", "expert", "diagnostic", "all"], default="daily")
+    smart_help.set_defaults(func=cmd_smart_help)
+
+    model = sub.add_parser("model", help="Manage optional tiny local models for MYOS routing.")
+    model_sub = model.add_subparsers(dest="model_action", required=True)
+    model_recommend = model_sub.add_parser("recommend", help="Recommend a small local model for a purpose.")
+    model_recommend.add_argument("--purpose", choices=["router"], default="router")
+    model_recommend.set_defaults(func=cmd_model)
+    model_setup_parser = model_sub.add_parser("setup", help="Plan or apply tiny local model setup.")
+    model_setup_parser.add_argument("--router", action="store_true", help="Configure the router intent model.")
+    model_setup_parser.add_argument("--runtime", choices=["auto", "ollama", "llama-cpp", "command"], default="auto")
+    model_setup_parser.add_argument("--model", choices=list(model_setup.ROUTER_MODELS), default=model_setup.DEFAULT_ROUTER_MODEL)
+    model_setup_parser.add_argument("--command", default="", help="Custom MYOS_ROUTER_COMMAND for runtime=command.")
+    model_setup_parser.add_argument("--apply", action="store_true", help="Pull/download and write local wrapper files.")
+    model_setup_parser.set_defaults(func=cmd_model)
+    model_status = model_sub.add_parser("status", help="Show router model readiness.")
+    model_status.set_defaults(func=cmd_model)
+
+    router_parser = sub.add_parser("router", help="Evaluate and improve smart routing quality.")
+    router_sub = router_parser.add_subparsers(dest="router_action", required=True)
+    router_eval = router_sub.add_parser("eval", help="Evaluate route fixtures and calibration.")
+    router_eval.add_argument("--fixture", default="", help="Optional route eval fixture JSON path.")
+    router_eval.add_argument("--model-shadow", action="store_true", help="Compare local model decisions when configured.")
+    router_eval.add_argument("--no-record", action="store_true", help="Do not persist eval metadata.")
+    router_eval.set_defaults(func=cmd_router)
+    router_feedback = router_sub.add_parser("feedback", help="Record privacy-safe route correction metadata.")
+    router_feedback.add_argument("--event", type=int, required=True, help="smart_route event_log id.")
+    router_feedback.add_argument("--expected-intent", choices=list(router.ROUTABLE_INTENTS), required=True)
+    router_feedback.add_argument("--note", default="", help="Optional note; stored as hash and length only.")
+    router_feedback.set_defaults(func=cmd_router)
+    router_overrides = router_sub.add_parser("overrides", help="List active exact-hash route overrides.")
+    router_overrides.add_argument("--limit", type=int, default=20)
+    router_overrides.set_defaults(func=cmd_router)
+    router_commands = router_sub.add_parser("commands", help="List router-visible MYOS command metadata.")
+    router_commands.add_argument("--tier", choices=list(command_registry.TIERS), default="")
+    router_commands.add_argument("--safety", choices=list(command_registry.SAFETY_LEVELS), default="")
+    router_commands.add_argument("--intent", choices=list(router.ROUTABLE_INTENTS), default="")
+    router_commands.add_argument("--limit", type=int, default=80)
+    router_commands.set_defaults(func=cmd_router)
+
+    trace = sub.add_parser("trace", help="Inspect lightweight command and agent execution traces.")
+    trace_sub = trace.add_subparsers(dest="trace_action", required=True)
+    trace_list = trace_sub.add_parser("list", help="List recent bounded execution traces.")
+    trace_list.add_argument("--limit", type=int, default=20)
+    trace_list.add_argument("--status", default="")
+    trace_list.add_argument("--command", dest="command_filter", default="")
+    trace_list.set_defaults(func=cmd_trace)
+    trace_cleanup = trace_sub.add_parser("cleanup", help="Roll up and delete old detailed traces.")
+    trace_cleanup.add_argument("--retention-days", type=int, default=observability.DEFAULT_RETENTION_DAYS)
+    trace_cleanup.add_argument("--max-rows", type=int, default=observability.DEFAULT_MAX_ROWS)
+    trace_cleanup.set_defaults(func=cmd_trace)
+    trace_rollups = trace_sub.add_parser("rollups", help="Show retained aggregate trace counts.")
+    trace_rollups.add_argument("--limit", type=int, default=20)
+    trace_rollups.set_defaults(func=cmd_trace)
+
     capture = sub.add_parser("capture", help="Capture an inbox item.")
     capture.add_argument("text", help="Raw capture text.")
     capture.add_argument("--kind", choices=["note", "task", "commitment", "decision", "risk"])
@@ -4996,6 +5818,9 @@ def build_parser() -> argparse.ArgumentParser:
     setup_live.add_argument("--install-launchd", action="store_true")
     setup_live.add_argument("--load-launchd", action="store_true")
     setup_live.add_argument("--autopilot-interval-sec", type=int, default=900)
+    setup_live.add_argument("--router-model", action="store_true", help="Also configure the tiny local router model.")
+    setup_live.add_argument("--router-runtime", choices=["auto", "ollama", "llama-cpp", "command"], default="auto")
+    setup_live.add_argument("--router-model-name", choices=list(model_setup.ROUTER_MODELS), default=model_setup.DEFAULT_ROUTER_MODEL)
     setup_live.set_defaults(func=cmd_setup_live)
 
     onboard = sub.add_parser("onboard", help="Show connector onboarding diagnostics.")
@@ -5354,6 +6179,58 @@ def build_parser() -> argparse.ArgumentParser:
     review_packet.add_argument("--retrieval-run", type=int)
     review_packet.set_defaults(func=cmd_review_packet)
 
+    factory_parser = sub.add_parser("factory", help="Run review-first AI factory workflows.")
+    factory_sub = factory_parser.add_subparsers(dest="factory_action", required=True)
+    factory_start = factory_sub.add_parser("start", help="Start a traceable factory run for an intent.")
+    factory_start.add_argument("--intent", type=int, required=True)
+    factory_start.add_argument("--mode", choices=list(factory.MODES), default="review_first")
+    factory_start.add_argument("--pack", choices=list(factory.WORKFLOW_PACKS), default="intent_execution")
+    factory_start.set_defaults(func=cmd_factory)
+    factory_status = factory_sub.add_parser("status", help="Show factory run stages and artifacts.")
+    factory_status.add_argument("--id", type=int, required=True)
+    factory_status.set_defaults(func=cmd_factory)
+    factory_stage = factory_sub.add_parser("run-stage", help="Record or update one factory stage.")
+    factory_stage.add_argument("--id", type=int, required=True)
+    factory_stage.add_argument("--stage", choices=list(factory.STAGES), required=True)
+    factory_stage.add_argument("--status", choices=["pending", "running", "completed", "waiting", "blocked", "failed"], default="completed")
+    factory_stage.add_argument("--note", default="")
+    factory_stage.set_defaults(func=cmd_factory)
+    factory_continue = factory_sub.add_parser("continue", help="Continue the next non-execution pending stage.")
+    factory_continue.add_argument("--id", type=int, required=True)
+    factory_continue.set_defaults(func=cmd_factory)
+    factory_review = factory_sub.add_parser("review", help="Review factory readiness before approval.")
+    factory_review.add_argument("--id", type=int, required=True)
+    factory_review.set_defaults(func=cmd_factory)
+    factory_approve = factory_sub.add_parser("approve", help="Approve a factory run, optionally handing off to execution gates.")
+    factory_approve.add_argument("--id", type=int, required=True)
+    factory_approve.add_argument("--execute", action="store_true")
+    factory_approve.set_defaults(func=cmd_factory)
+    factory_policy = factory_sub.add_parser("policy", help="Configure or list factory autonomy policies.")
+    factory_policy_sub = factory_policy.add_subparsers(dest="policy_action", required=True)
+    factory_policy_set = factory_policy_sub.add_parser("set", help="Set an autonomy policy override.")
+    factory_policy_set.add_argument("--mode", choices=list(factory.MODES), required=True)
+    factory_policy_set.add_argument("--scope-type", choices=["global", "intent", "goal"], default="global")
+    factory_policy_set.add_argument("--scope-id", default="")
+    factory_policy_set.add_argument("--connector", default="")
+    factory_policy_set.add_argument("--action-type", default="")
+    factory_policy_set.set_defaults(func=cmd_factory)
+    factory_policy_list = factory_policy_sub.add_parser("list", help="List factory autonomy policies.")
+    factory_policy_list.add_argument("--limit", type=int, default=50)
+    factory_policy_list.set_defaults(func=cmd_factory)
+    factory_learn = factory_sub.add_parser("learn", help="Record the outcome of a factory run.")
+    factory_learn.add_argument("--id", type=int, required=True)
+    factory_learn.add_argument("--outcome", choices=["success", "partial", "failed"], required=True)
+    factory_learn.add_argument("--notes", default="")
+    factory_learn.set_defaults(func=cmd_factory)
+    factory_retro = factory_sub.add_parser("retrospective", help="Show the latest factory retrospective.")
+    factory_retro.add_argument("--id", type=int, required=True)
+    factory_retro.set_defaults(func=cmd_factory)
+    factory_insights = factory_sub.add_parser("insights", help="Show learned factory patterns.")
+    factory_insights.add_argument("--intent", type=int)
+    factory_insights.add_argument("--pack", choices=list(factory.WORKFLOW_PACKS), default="")
+    factory_insights.add_argument("--limit", type=int, default=20)
+    factory_insights.set_defaults(func=cmd_factory)
+
     delegate = sub.add_parser("delegate", help="Delegate an objective to the autonomous assistant core.")
     delegate.add_argument("objective", help="Outcome or task objective for the assistant.")
     delegate.add_argument("--context", default="", help="Additional context, transcript snippet, or constraints.")
@@ -5418,6 +6295,9 @@ def build_parser() -> argparse.ArgumentParser:
     autopilot.add_argument("--no-sync", action="store_true")
     autopilot.add_argument("--no-process", action="store_true")
     autopilot.add_argument("--watch-risks", action="store_true", help="Proactively detect project risks each cycle and draft nudges (approval-gated).")
+    autopilot.add_argument("--factory", action="store_true", help="Start or continue one policy-aware factory run this cycle.")
+    autopilot.add_argument("--factory-mode", choices=list(factory.MODES), default="review_first")
+    autopilot.add_argument("--factory-pack", choices=["auto", *list(factory.WORKFLOW_PACKS)], default="auto")
     autopilot.set_defaults(func=cmd_autopilot)
 
     approve = sub.add_parser("approve", help="Review, approve, and optionally execute autopilot actions.")
@@ -5579,7 +6459,57 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    args.func(args)
+    if not _trace_enabled_for(args):
+        args.func(args)
+        return
+    command = str(getattr(args, "command", "") or "unknown")
+    command_path = _command_path(args)
+    spec = command_registry.find_command(command)
+    conn = get_connection()
+    correlation_id = observability.start_trace(
+        conn,
+        command=command,
+        command_path=command_path,
+        parent_correlation_id=observability.current_correlation_id(),
+        argv_hash=_argv_hash(sys.argv[1:]),
+    )
+    if spec:
+        observability.link_trace(
+            conn,
+            correlation_id,
+            intent=spec.intent,
+            command_tier=spec.tier,
+            safety_level=spec.safety,
+        )
+        conn.commit()
+    previous_trace = os.environ.get(observability.TRACE_ENV)
+    os.environ[observability.TRACE_ENV] = correlation_id
+    started = time.monotonic()
+    status = "completed"
+    try:
+        args.func(args)
+    except SystemExit as exc:
+        code = exc.code
+        status = "completed" if code in (None, 0) else "failed"
+        raise
+    except Exception:
+        status = "failed"
+        raise
+    finally:
+        duration_ms = int((time.monotonic() - started) * 1000)
+        observability.finish_trace(
+            conn,
+            correlation_id,
+            status=status,
+            duration_ms=duration_ms,
+            summary=f"{command_path} {status}",
+            metadata={"command_path": command_path},
+        )
+        if previous_trace is None:
+            os.environ.pop(observability.TRACE_ENV, None)
+        else:
+            os.environ[observability.TRACE_ENV] = previous_trace
+        conn.close()
 
 
 if __name__ == "__main__":

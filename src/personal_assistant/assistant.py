@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 import time
 
-from . import agentcore, context, graphrag
+from . import agentcore, context, graphrag, router
 from .providers import get_backend, resolve_backend_name
 
 
@@ -37,6 +37,12 @@ def run_turn(
     best-effort: a failure here never breaks the turn, and policy can disable it.
     """
     backend = get_backend(backend_name)
+    route_decision = router.route_with_feedback(conn, user_text, surface=surface)
+    try:
+        router.record_route_event(conn, user_text, surface=surface, decision=route_decision)
+        conn.commit()
+    except Exception:  # noqa: BLE001 - routing audit should never block a turn
+        conn.rollback()
     retrieval_run_ids: list[int] = []
     try:
         hits = graphrag.retrieve(conn, user_text, limit=3, record_run=True, mode=f"{surface}_answer")
@@ -47,6 +53,12 @@ def run_turn(
         conn.rollback()
     started = time.monotonic()
     result = backend.run_turn(conn, user_text, history, on_text=on_text)
+    result["route_decision"] = route_decision.to_dict()
+    if not (result.get("reply") or "").strip() and route_decision.confidence >= 0.7:
+        result["reply"] = (
+            f"Smart route: {route_decision.intent}. "
+            f"{route_decision.recommended_workflow}"
+        )
     if retrieval_run_ids:
         result["retrieval_run_ids"] = retrieval_run_ids
     latency_ms = int((time.monotonic() - started) * 1000)

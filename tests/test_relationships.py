@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -102,7 +103,7 @@ class RelationshipExtractionTest(unittest.TestCase):
             env = os.environ.copy()
             env["PYTHONPATH"] = str(Path.cwd() / "src")
             env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
-            base_cmd = ["python", "-m", "personal_assistant.cli"]
+            base_cmd = [sys.executable, "-m", "personal_assistant.cli"]
 
             out = subprocess.run(
                 base_cmd

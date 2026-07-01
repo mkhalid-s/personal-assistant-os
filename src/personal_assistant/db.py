@@ -4,7 +4,7 @@ import sqlite3
 import os
 from pathlib import Path
 
-EXPECTED_SCHEMA_VERSION = 28
+EXPECTED_SCHEMA_VERSION = 32
 
 
 def resolve_db_path() -> Path:
@@ -1224,6 +1224,224 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             (28, "add_action_execution_receipts"),
         )
 
+    if current < 29:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS factory_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                intent_id INTEGER NOT NULL,
+                plan_id INTEGER,
+                mode TEXT NOT NULL DEFAULT 'review_first',
+                workflow_pack TEXT NOT NULL DEFAULT 'intent_execution',
+                status TEXT NOT NULL DEFAULT 'running',
+                summary TEXT,
+                outcome TEXT,
+                outcome_notes TEXT,
+                started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                finished_at TEXT,
+                FOREIGN KEY(intent_id) REFERENCES intents(id),
+                FOREIGN KEY(plan_id) REFERENCES plans(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS factory_stages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                factory_run_id INTEGER NOT NULL,
+                stage_name TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                role TEXT,
+                agent_run_id INTEGER,
+                output_json TEXT NOT NULL DEFAULT '{}',
+                started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                finished_at TEXT,
+                FOREIGN KEY(factory_run_id) REFERENCES factory_runs(id),
+                FOREIGN KEY(agent_run_id) REFERENCES agent_runs(id),
+                UNIQUE(factory_run_id, stage_name)
+            );
+
+            CREATE TABLE IF NOT EXISTS factory_artifacts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                factory_run_id INTEGER NOT NULL,
+                artifact_type TEXT NOT NULL,
+                artifact_id INTEGER NOT NULL,
+                label TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(factory_run_id) REFERENCES factory_runs(id),
+                UNIQUE(factory_run_id, artifact_type, artifact_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS factory_policies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scope_type TEXT NOT NULL DEFAULT 'global',
+                scope_id TEXT NOT NULL DEFAULT '',
+                connector TEXT NOT NULL DEFAULT '',
+                action_type TEXT NOT NULL DEFAULT '',
+                allowed_mode TEXT NOT NULL DEFAULT 'review_first',
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(scope_type, scope_id, connector, action_type)
+            );
+
+            CREATE TABLE IF NOT EXISTS factory_learning (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                factory_run_id INTEGER NOT NULL,
+                outcome TEXT NOT NULL,
+                notes TEXT,
+                retrospective_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(factory_run_id) REFERENCES factory_runs(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_factory_runs_intent ON factory_runs(intent_id, status, started_at);
+            CREATE INDEX IF NOT EXISTS idx_factory_stages_run ON factory_stages(factory_run_id, stage_name, status);
+            CREATE INDEX IF NOT EXISTS idx_factory_artifacts_run ON factory_artifacts(factory_run_id, artifact_type);
+            CREATE INDEX IF NOT EXISTS idx_factory_policies_scope ON factory_policies(scope_type, scope_id, status);
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (29, "add_ai_factory_workflow"),
+        )
+
+    if current < 30:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS route_eval_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fixture_path TEXT NOT NULL,
+                total_cases INTEGER NOT NULL,
+                passed_cases INTEGER NOT NULL,
+                accuracy REAL NOT NULL,
+                low_confidence_cases INTEGER NOT NULL DEFAULT 0,
+                model_shadow INTEGER NOT NULL DEFAULT 0,
+                model_overrides INTEGER NOT NULL DEFAULT 0,
+                calibration TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS route_eval_cases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                route_eval_run_id INTEGER NOT NULL,
+                fixture_id TEXT NOT NULL,
+                category TEXT NOT NULL,
+                text_hash TEXT NOT NULL,
+                expected_intent TEXT NOT NULL,
+                actual_intent TEXT NOT NULL,
+                backend TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                passed INTEGER NOT NULL DEFAULT 0,
+                shadow_intent TEXT,
+                shadow_backend TEXT,
+                shadow_passed INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(route_eval_run_id) REFERENCES route_eval_runs(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS route_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_log_id INTEGER NOT NULL,
+                surface TEXT,
+                expected_intent TEXT NOT NULL,
+                actual_intent TEXT NOT NULL,
+                backend TEXT,
+                confidence REAL NOT NULL DEFAULT 0.0,
+                note_hash TEXT,
+                note_length INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(event_log_id) REFERENCES event_log(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_route_eval_runs_created ON route_eval_runs(created_at);
+            CREATE INDEX IF NOT EXISTS idx_route_eval_cases_run ON route_eval_cases(route_eval_run_id, fixture_id);
+            CREATE INDEX IF NOT EXISTS idx_route_feedback_event ON route_feedback(event_log_id, created_at);
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (30, "add_router_quality_loop"),
+        )
+
+    if current < 31:
+        columns = conn.execute("PRAGMA table_info(route_feedback)").fetchall()
+        names = {row["name"] for row in columns}
+        if "text_hash" not in names:
+            conn.execute("ALTER TABLE route_feedback ADD COLUMN text_hash TEXT")
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS route_overrides (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                text_hash TEXT NOT NULL UNIQUE,
+                expected_intent TEXT NOT NULL,
+                source_feedback_id INTEGER,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(source_feedback_id) REFERENCES route_feedback(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_route_feedback_hash ON route_feedback(text_hash, created_at);
+            CREATE INDEX IF NOT EXISTS idx_route_overrides_hash ON route_overrides(text_hash, status);
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (31, "add_router_feedback_overrides"),
+        )
+
+    if current < 32:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS execution_traces (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                correlation_id TEXT NOT NULL UNIQUE,
+                parent_correlation_id TEXT,
+                surface TEXT NOT NULL DEFAULT 'cli',
+                command TEXT NOT NULL,
+                command_path TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'running',
+                started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                finished_at TEXT,
+                duration_ms INTEGER NOT NULL DEFAULT 0,
+                intent TEXT,
+                command_tier TEXT,
+                safety_level TEXT,
+                route_event_id INTEGER,
+                factory_run_id INTEGER,
+                agent_task_id INTEGER,
+                receipt_id INTEGER,
+                summary TEXT,
+                summary_hash TEXT,
+                argv_hash TEXT,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(route_event_id) REFERENCES event_log(id),
+                FOREIGN KEY(factory_run_id) REFERENCES factory_runs(id),
+                FOREIGN KEY(agent_task_id) REFERENCES agent_tasks(id),
+                FOREIGN KEY(receipt_id) REFERENCES action_execution_receipts(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS execution_trace_rollups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                bucket_date TEXT NOT NULL,
+                command_path TEXT NOT NULL,
+                status TEXT NOT NULL,
+                trace_count INTEGER NOT NULL DEFAULT 0,
+                total_duration_ms INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(bucket_date, command_path, status)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_execution_traces_correlation ON execution_traces(correlation_id);
+            CREATE INDEX IF NOT EXISTS idx_execution_traces_command ON execution_traces(command_path, status, started_at);
+            CREATE INDEX IF NOT EXISTS idx_execution_traces_links ON execution_traces(route_event_id, factory_run_id, agent_task_id, receipt_id);
+            CREATE INDEX IF NOT EXISTS idx_execution_rollups_bucket ON execution_trace_rollups(bucket_date, command_path);
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (32, "add_lightweight_observability"),
+        )
+
     _ensure_fts5(conn)  # self-heal: build the FTS index if a no-FTS5 run stranded migration 17
     conn.commit()
 
@@ -1294,6 +1512,13 @@ def verify_schema(conn: sqlite3.Connection) -> dict[str, object]:
         "review_packets",
         "claims",
         "action_execution_receipts",
+        "factory_runs",
+        "factory_stages",
+        "factory_artifacts",
+        "factory_policies",
+        "factory_learning",
+        "execution_traces",
+        "execution_trace_rollups",
     }
     existing_tables = {
         row["name"]

@@ -143,6 +143,80 @@ def classify_tool(tool_name: str, tool_input: dict | None = None, *, level: str 
     return {"tier": CONFIRM, "destructive": False, "reason": "unknown tool, default confirm"}
 
 
+def decide_command(
+    command: str,
+    *,
+    safety: str = "",
+    requires_confirmation: bool = False,
+    level: str = DEFAULT_LEVEL,
+    requested_mode: str = "",
+) -> dict:
+    """Explain the autonomy decision for a top-level MYOS command.
+
+    This is intentionally small and advisory for normal local work. The hard
+    execution guard remains `classify_action` / `classify_tool`; this function
+    gives users and higher-level flows a consistent, pre-work explanation.
+    """
+    level = _norm_level(level)
+    command_name = (command or "").strip().lower()
+    safety = (safety or "").strip()
+    requested_mode = (requested_mode or "").strip()
+    if not command_name:
+        return {
+            "decision": BLOCKED,
+            "tier": BLOCKED,
+            "requires_approval": True,
+            "reason": "missing command",
+            "level": level,
+            "safety": safety or "unknown",
+        }
+    if safety == "unknown" or (not safety and any(h in command_name for h in _DESTRUCTIVE_HINTS)):
+        return {
+            "decision": BLOCKED,
+            "tier": BLOCKED,
+            "requires_approval": True,
+            "reason": f"unknown or destructive-looking command '{command_name}'",
+            "level": level,
+            "safety": safety or "unknown",
+        }
+    if safety in {"read_only", "diagnostic"}:
+        return {
+            "decision": "allowed",
+            "tier": AUTO,
+            "requires_approval": False,
+            "reason": f"{safety} command allowed at autonomy_level={level}",
+            "level": level,
+            "safety": safety,
+        }
+    if safety == "local_write" and not requires_confirmation:
+        return {
+            "decision": "allowed",
+            "tier": AUTO,
+            "requires_approval": False,
+            "reason": f"local write command allowed; external effects remain gated (level={level})",
+            "level": level,
+            "safety": safety,
+        }
+    if safety in {"approval_gated", "external_write"} or requires_confirmation:
+        suffix = f"; requested_mode={requested_mode}" if requested_mode else ""
+        return {
+            "decision": "needs_approval",
+            "tier": CONFIRM,
+            "requires_approval": True,
+            "reason": f"{safety or 'command'} requires review/approval before risky effects{suffix}",
+            "level": level,
+            "safety": safety or "unknown",
+        }
+    return {
+        "decision": "needs_approval",
+        "tier": CONFIRM,
+        "requires_approval": True,
+        "reason": f"unrecognized command safety '{safety or 'unknown'}', defaulting to approval",
+        "level": level,
+        "safety": safety or "unknown",
+    }
+
+
 def _normalize_cmd(cmd: str) -> str:
     """Collapse common shell-obfuscation so the denylist can't be trivially evaded."""
     c = cmd.replace("${IFS}", " ").replace("$IFS", " ")

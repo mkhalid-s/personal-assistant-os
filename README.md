@@ -6,9 +6,9 @@ Local-first CLI assistant for planning work, remembering context, triaging tasks
 
 ## Current Status
 
-This repository is an MVP public baseline. It is useful as a local CLI assistant with reliability checks, durable plans, review packets, retrieval traces, and daily operating loops, but it is not yet a production-stable application, a full GraphRAG system, or a graph database application.
+This repository is an MVP public baseline. It is useful as a local CLI assistant with reliability checks, durable plans, review packets, retrieval traces, policy-aware factory runs, and daily operating loops, but it is not yet a production-stable application or a graph database application.
 
-The current graph support is SQLite-based and lightweight: `knowledge_nodes`, `knowledge_edges`, deterministic `entities`/`entity_aliases`, typed `relationships`, `claims`, manual links, conversation-derived relationship hints, persisted retrieval traces for cited graph expansion, entity-aware retrieval expansion, and fixture-based retrieval evals. Deeper GraphRAG is planned in stages. See `ARCHITECTURE.md` and `ROADMAP.md`.
+The current graph support is SQLite-based and lightweight: `knowledge_nodes`, `knowledge_edges`, deterministic `entities`/`entity_aliases`, typed `relationships`, `claims`, manual links, conversation-derived relationship hints, persisted retrieval traces for cited graph expansion, entity-aware retrieval expansion, bounded multi-hop work-item traversal, claim-backed retrieval, and fixture-based retrieval evals. See `ARCHITECTURE.md` and `ROADMAP.md`.
 
 ## Project Direction
 
@@ -26,13 +26,14 @@ The design is inspired by AI-native software-factory ideas: intent-first workflo
 - Syncs optional external context from configured connectors such as Jira, GitHub, Confluence, and Aha.
 - Ingests text, audio transcripts, images, meeting notes, and watched folders.
 - Builds searchable memory with provenance, deterministic entity and relationship extraction, graph links, hybrid retrieval, persisted retrieval traces, retrieval eval fixtures, and graph-aware "why" explanations.
-- Runs assistant workflows such as morning briefs, durable plans, review packets, agent role runs, risk scans, delegation, autopilot, approvals, and weekly reviews.
+- Runs assistant workflows through chat, voice, autopilot, one-shot smart routing, morning briefs, durable plans, review packets, policy-aware factory runs, provider-backed role runs with local fallback, risk scans, delegation, approvals, connector dry-run outbox workflows, and weekly reviews.
 - Redacts common PII and secrets before persistence and keeps private runtime data out of git.
 
 ## Design Docs
 
 - `ARCHITECTURE.md`: current architecture, target operating loop, and GraphRAG direction.
 - `ROADMAP.md`: surgical roadmap from MVP to stable app, intent layer, GraphRAG, and product hardening.
+- `docs/BOUNDED_AUTONOMY.md`: bounded autonomy direction, router feedback application, command registry, and lightweight observability plans.
 - `CHANGELOG.md`: release notes for the current checkpoint and future tagged releases.
 
 ## Open Source Stack
@@ -58,7 +59,7 @@ External services are optional. Connectors only run when their environment varia
 The assistant is designed to propose before it mutates external systems.
 
 - Local capture and bookkeeping can run directly.
-- External updates are drafted into an approval queue.
+- External updates are normalized as connector mutations and drafted into an approval queue/outbox by default.
 - Destructive or broad actions are blocked by policy.
 - Executed, failed, blocked, and no-op actions write execution receipts; failed or blocked receipts create follow-up inbox items.
 - Conversation logs, action payloads, and indexed text pass through privacy filters.
@@ -114,22 +115,101 @@ export MYOS_CONNECTOR_TIMEOUT_SEC="25"
 # Optional reasoning provider. Command receives JSON on stdin and returns JSON.
 export MYOS_AI_COMMAND="/path/to/your-ai-wrapper"
 
+# Optional tiny local router model for intent finding.
+# Dry-run first: myos model setup --router
+export MYOS_ROUTER_BACKEND="ollama"
+export MYOS_ROUTER_MODEL="qwen2.5:0.5b"
+export MYOS_ROUTER_COMMAND="python3 /path/to/data/router/router_ollama.py"
+export MYOS_ROUTER_TIMEOUT_SEC="8"
+export MYOS_ROUTER_MIN_CONFIDENCE="0.70"
+
 # Optional notification hook. Command receives assistant digest JSON on stdin.
 export MYOS_NOTIFY_COMMAND="/path/to/notify-wrapper"
 
 # Built-in safe default: write approved external actions into data/outbox.
 export MYOS_ACTION_PROVIDER="builtin"
 export MYOS_ACTION_COMMAND="myos action-provider"
+
+# Optional live connector mutations. Keep unset for dry-run outbox behavior.
+export MYOS_CONNECTOR_LIVE="0"
 ```
 
 Do not commit local `.env` files, SQLite databases, logs, generated reports, or agent/tool settings. The repository `.gitignore` is configured to keep those local artifacts out of source control.
 
 For a no-network first run, follow `examples/demo-local.md`.
 
+## Smart Daily Surface
+
+Most daily use should start with one of these surfaces instead of memorizing the full command catalog:
+
+- `myos chat`: interactive assistant with routed intent awareness and approval-gated actions.
+- `myos voice`: voice-first assistant using the same routed chat loop.
+- `myos autopilot --factory`: proactive loop that selects a factory workflow pack from detected signals.
+- `myos do "plan my day and draft follow-ups"`: one-shot natural-language router for CLI users.
+- `myos approve --list`: review anything that could mutate external systems.
+
+Use `myos help daily`, `myos help workflows`, `myos help expert`, or `myos help diagnostic` to see a smaller tiered command list.
+
+## Tiny Local Router Model
+
+MYOS can use a very small local model as a fallback for intent routing when deterministic confidence is low. This is optional and never downloaded during `pip install`.
+
+Recommended first setup:
+
+```bash
+myos model recommend --purpose router
+myos model setup --router
+myos model setup --router --runtime ollama --model qwen2.5:0.5b --apply
+```
+
+Lower-memory fallback:
+
+```bash
+myos model setup --router --runtime ollama --model smollm2:360m --apply
+```
+
+The setup command keeps MYOS runtime-agnostic by writing a local JSON command wrapper under `data/router/` and printing env vars such as `MYOS_ROUTER_COMMAND`. The router still falls back to deterministic rules if the model runtime is unavailable, times out, or returns invalid JSON.
+
+Router quality can be measured locally:
+
+```bash
+myos router eval
+myos router eval --model-shadow
+myos router feedback --event 123 --expected-intent daily_brief --note "Expected daily planning"
+myos router overrides
+myos router commands --tier workflow
+```
+
+`myos router eval` uses packaged, non-private fixtures and records only route metadata, confidence, and text hashes. Feedback records correction metadata against a `smart_route` event and stores note hashes/lengths, not raw request text.
+Exact feedback corrections are applied only to the same future request hash, so unrelated phrasing still uses deterministic routing and optional model fallback.
+`myos router commands` shows the static command registry that the router and tiny local model use for bounded tool awareness, including tier and safety metadata.
+
+### Execution traces stay lightweight
+
+```bash
+myos trace list
+myos trace cleanup --retention-days 30 --max-rows 5000
+myos trace rollups
+```
+
+MYOS records small execution trace rows for CLI commands and links them to route events, factory runs, agent tasks, or execution receipts when those records exist. Traces store correlation IDs, command path, status, duration, safety metadata, linked IDs, capped summaries, and hashes. They do not store raw stdout/stderr or private command text by default. Cleanup rolls old detailed rows into aggregate counts before deleting them.
+
+### Autonomy decisions are explicit
+
+`myos do "..."` and `myos factory start ...` print an autonomy decision before doing work:
+
+```bash
+Autonomy: decision=needs_approval tier=confirm safety=approval_gated reason=...
+```
+
+The decision uses command registry safety metadata and the existing `autonomy_level` policy. Local/read-only work can proceed, approval-gated and external-write work stays review-first, and destructive/unknown classifications remain blocked by the hard autonomy guards.
+
 ## Quick Start
 
 ```bash
 myos capture "Follow up with platform team about auth token expiry by Friday"
+myos do "what should I work on today?"
+myos autopilot --once --factory
 myos triage
 myos today --meeting-hours 4
 myos sync --connector all
@@ -141,7 +221,9 @@ myos why --item 1 --graph
 myos close-day --mode hybrid --note "Meeting-heavy coordination day"
 ```
 
-## Command Catalog
+## Expert Command Catalog
+
+The commands below remain available for scripting, debugging, and precise control. For day-to-day use, prefer the smart surface above.
 
 Common daily commands:
 
@@ -184,10 +266,21 @@ Assistant and automation:
 - `myos evidence sync-external --intent N [--connector all|jira|github|confluence|aha]`
 - `myos review-packet --plan N [--retrieval-run N]`
 - `myos agent-run --intent N --role planner|researcher|executor|reviewer|critic|summarizer [--plan N]`
+- `myos factory start --intent N [--mode review_first|semi_autonomous|full_autonomous] [--pack intent_execution|daily_ops|software_delivery|connector_ops]`
+- `myos factory status --id N`
+- `myos factory review --id N`
+- `myos factory approve --id N [--execute]`
+- `myos factory learn --id N --outcome success|partial|failed [--notes TEXT]`
+- `myos factory insights [--intent N] [--pack intent_execution|daily_ops|software_delivery|connector_ops]`
+- `myos factory policy set --mode review_first|semi_autonomous|full_autonomous [--scope-type global|intent|goal] [--scope-id ID] [--connector NAME] [--action-type TYPE]`
 - `myos act [--task N] [--action N] [--list] [--approve] [--execute]`
 - `myos approve [--list] [--action N] [--execute]`
 - `myos execution-receipt [list|show --id N]`
-- `myos autopilot [--env-file PATH] [--once] [--interval-sec N]`
+- `myos action-provider [--execute]` for explicit connector adapters; without `--execute`, it writes `data/outbox` drafts.
+- `myos model recommend|setup|status` for optional tiny local router model setup.
+- `myos router eval|feedback|overrides|commands` for privacy-safe router quality, learned exact-match corrections, and command awareness.
+- `myos trace list|cleanup|rollups` for lightweight execution observability with retention budgets.
+- `myos autopilot [--env-file PATH] [--once] [--interval-sec N] [--factory]`
 - `myos autopilot-status [--limit N]`
 - `myos digest [--id N] [--title-only]`
 - `myos self-review`

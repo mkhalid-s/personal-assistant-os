@@ -22,7 +22,7 @@ import sys
 import time
 import urllib.request
 
-from . import autonomy
+from . import autonomy, observability
 from .db import append_event, resolve_db_path
 from .inbox import insert_inbox_item_dedup
 from .privacy import apply_privacy_filters, get_policy_map, redact_obj
@@ -33,6 +33,8 @@ from .privacy import apply_privacy_filters, get_policy_map, redact_obj
 # the repo/agent config. Matched as path-segment prefixes, never bare substrings.
 _PROTECTED_PATH_SEGMENTS = ("personal_assistant", ".claude", ".git", "hooks")
 _PROTECTED_PATCH_PATTERNS = _PROTECTED_PATH_SEGMENTS  # back-compat alias
+CONNECTOR_TARGETS = frozenset({"jira", "github", "confluence", "aha"})
+CONNECTOR_OPERATIONS = frozenset({"comment", "status_update", "draft_note", "link_back"})
 
 
 def _path_is_protected(path: str) -> bool:
@@ -100,6 +102,78 @@ def _status_from_result(result: str) -> str:
     return "executed"
 
 
+def _truthy(value: object) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _connector_live_enabled(conn, connector: str) -> bool:
+    policy = get_policy_map(conn)
+    key = f"{connector}_live_mutations"
+    return (
+        _truthy(os.getenv("MYOS_CONNECTOR_LIVE"))
+        or _truthy(os.getenv(f"MYOS_{connector.upper()}_LIVE_MUTATIONS"))
+        or _truthy(policy.get("connector_live_mutations"))
+        or _truthy(policy.get(key))
+    )
+
+
+def _payload_target(payload: dict[str, object]) -> str:
+    return str(payload.get("connector") or payload.get("target") or payload.get("target_type") or "outbox").lower()
+
+
+def _is_connector_payload(payload: dict[str, object]) -> bool:
+    return _payload_target(payload) in CONNECTOR_TARGETS or str(payload.get("operation") or "").strip() in CONNECTOR_OPERATIONS
+
+
+def _connector_target_ref(payload: dict[str, object], connector: str) -> str:
+    target_ref = str(payload.get("target_ref") or payload.get("external_id") or "").strip()
+    if target_ref:
+        return target_ref
+    if connector == "jira":
+        return str(payload.get("issue_key") or "").strip()
+    if connector == "github":
+        owner = str(payload.get("owner") or os.getenv("GITHUB_OWNER", "")).strip()
+        repo = str(payload.get("repo") or os.getenv("GITHUB_REPO", "")).strip()
+        number = str(payload.get("issue_number") or payload.get("pr_number") or "").strip()
+        if owner and repo and number:
+            return f"{owner}/{repo}#{number}"
+        return number
+    if connector == "confluence":
+        return str(payload.get("page_id") or payload.get("content_id") or "").strip()
+    if connector == "aha":
+        return str(payload.get("feature_id") or payload.get("idea_id") or payload.get("record_id") or "").strip()
+    return ""
+
+
+def normalize_connector_mutation(payload: dict[str, object], *, title: str = "Assistant action") -> dict[str, object]:
+    connector = _payload_target(payload)
+    if connector not in CONNECTOR_TARGETS:
+        raise ValueError(f"unsupported connector target: {connector}")
+    operation = str(payload.get("operation") or "comment").strip().lower()
+    if operation not in CONNECTOR_OPERATIONS:
+        raise ValueError(f"unsupported connector operation: {operation}")
+    body = _provider_body(payload)
+    if not body:
+        raise ValueError("connector mutation requires draft/body/text")
+    target_ref = _connector_target_ref(payload, connector)
+    if not target_ref:
+        raise ValueError(f"{connector} mutation requires target_ref")
+    rollback_note = str(payload.get("rollback_note") or payload.get("rollback") or "").strip()
+    if not rollback_note:
+        rollback_note = "Create a corrective connector update or remove the drafted/sent update if possible."
+    dry_run = not (payload.get("dry_run") is False or str(payload.get("dry_run")).strip().lower() == "false")
+    return {
+        "connector": connector,
+        "operation": operation,
+        "target_ref": target_ref,
+        "title": str(payload.get("title") or title or "Assistant connector action"),
+        "body": body,
+        "url": str(payload.get("url") or ""),
+        "rollback_note": rollback_note,
+        "dry_run": dry_run,
+    }
+
+
 def _record_execution_receipt(conn, row, *, approved: bool, final_status: str, result: str) -> None:
     payload = json.loads(row["payload_json"] or "{}")
     rollback_note = str(payload.get("rollback_note") or payload.get("rollback") or "").strip()
@@ -134,6 +208,11 @@ def _record_execution_receipt(conn, row, *, approved: bool, final_status: str, r
         ),
     )
     receipt_id = int(cur.lastrowid)
+    observability.link_current_trace(
+        conn,
+        agent_task_id=int(row["agent_task_id"]),
+        receipt_id=receipt_id,
+    )
     if follow_up_required:
         follow_up_text = (
             f"Follow up on {final_status} action #{row['id']}: "
@@ -232,6 +311,21 @@ def _execute_agent_action(conn, row) -> str:
         if proc.returncode != 0:
             proc = subprocess.run(["git", "-C", root, "apply"], input=diff, text=True, capture_output=True)
         return "patch applied" if proc.returncode == 0 else f"patch failed: {(proc.stderr or '')[:300]}"
+    if action_type == "draft_external_update" and _is_connector_payload(payload):
+        result = execute_connector_mutation(
+            conn,
+            agent_action_id=row["id"],
+            action_type=action_type,
+            title=str(row["title"]),
+            payload=payload,
+            approved=row["status"] in ("approved", "executing"),
+            execute_live=False,
+        )
+        if result["status"] == "blocked":
+            return f"blocked: {result['error']}"
+        if result["status"] == "failed":
+            return f"provider execution failed: {result['error']}"
+        return f"connector {result['status']}: outbox #{result.get('outbox_id')} target={result['target']}"
     if action_type == "draft_external_update" and os.getenv("MYOS_ACTION_COMMAND", "").strip():
         return _execute_action_provider(conn, row, payload)
     if action_type.startswith("draft_"):
@@ -352,7 +446,14 @@ def _provider_body(payload: dict[str, object]) -> str:
 
 
 def _provider_target_summary(payload: dict[str, object]) -> str:
-    target = str(payload.get("target") or payload.get("target_type") or "outbox").lower()
+    target = _payload_target(payload)
+    if target in CONNECTOR_TARGETS:
+        try:
+            mutation = normalize_connector_mutation(payload)
+            mode = "dry_run" if mutation["dry_run"] else "live"
+            return f"{target}:{mutation['target_ref']} operation={mutation['operation']} mode={mode}"
+        except ValueError as exc:
+            return f"{target}:invalid ({exc})"
     if target == "jira":
         return f"jira:{payload.get('issue_key') or 'missing_issue_key'}"
     if target == "github":
@@ -394,6 +495,71 @@ def _post_jira_comment(issue_key: str, body: str) -> str:
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
         return resp.read().decode("utf-8")[:1000]
+
+
+def execute_connector_mutation(
+    conn,
+    *,
+    agent_action_id: int | None,
+    action_type: str,
+    title: str,
+    payload: dict[str, object],
+    approved: bool,
+    execute_live: bool = False,
+) -> dict[str, object]:
+    if action_type != "draft_external_update":
+        return {"status": "blocked", "error": f"unsupported connector action_type={action_type}"}
+    try:
+        mutation = normalize_connector_mutation(payload, title=title)
+    except ValueError as exc:
+        return {"status": "blocked", "error": str(exc)}
+
+    connector = str(mutation["connector"])
+    live_requested = bool(execute_live) or not bool(mutation["dry_run"])
+    if live_requested and not approved:
+        return {"status": "blocked", "error": "approved action required for live connector mutation"}
+    if live_requested and not _connector_live_enabled(conn, connector):
+        return {"status": "blocked", "error": f"live {connector} mutations are not enabled"}
+
+    outbox_status = "pending_execute" if live_requested else "drafted"
+    outbox_id = _outbox_write(
+        conn,
+        agent_action_id=agent_action_id,
+        provider=f"connector:{connector}",
+        target_type=connector,
+        target_ref=str(mutation["target_ref"]),
+        title=apply_privacy_filters(conn, str(mutation["title"])),
+        body=apply_privacy_filters(conn, str(mutation["body"])),
+        status=outbox_status,
+        payload={**payload, "normalized": mutation},
+    )
+    if not live_requested:
+        return {
+            "status": "drafted",
+            "outbox_id": outbox_id,
+            "target": f"{connector}:{mutation['target_ref']}",
+            "operation": mutation["operation"],
+        }
+    try:
+        if connector == "jira":
+            response = _post_jira_comment(str(mutation["target_ref"]), str(mutation["body"]))
+        elif connector == "github":
+            response = _post_github_comment(payload, str(mutation["body"]))
+        else:
+            return {"status": "blocked", "outbox_id": outbox_id, "error": f"live {connector} adapter is not enabled"}
+        conn.execute(
+            "UPDATE action_outbox SET status='sent', sent_at=CURRENT_TIMESTAMP WHERE id=?",
+            (outbox_id,),
+        )
+        return {
+            "status": "sent",
+            "outbox_id": outbox_id,
+            "target": f"{connector}:{mutation['target_ref']}",
+            "operation": mutation["operation"],
+            "provider_response": response,
+        }
+    except Exception as exc:  # noqa: BLE001 - surfaced through execution receipt
+        return {"status": "failed", "outbox_id": outbox_id, "error": str(exc)[:1000]}
 
 
 def _post_github_comment(payload: dict[str, object], body: str) -> str:
