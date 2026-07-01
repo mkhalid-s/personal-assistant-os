@@ -14,6 +14,7 @@ Callers pass the active ``level`` (read from the ``assistant_policies`` table).
 
 from __future__ import annotations
 
+import hashlib
 import re
 
 AUTO = "auto"
@@ -21,6 +22,51 @@ CONFIRM = "confirm"
 BLOCKED = "blocked"
 LEVELS = ("safe", "balanced", "bold")
 DEFAULT_LEVEL = "balanced"
+DECISIONS = ("allowed", "needs_approval", BLOCKED)
+COMMAND_DECISION_FIXTURES = (
+    {
+        "id": "read_context",
+        "command": "context",
+        "safety": "read_only",
+        "requires_confirmation": False,
+        "expected_decision": "allowed",
+    },
+    {
+        "id": "local_capture",
+        "command": "capture",
+        "safety": "local_write",
+        "requires_confirmation": False,
+        "expected_decision": "allowed",
+    },
+    {
+        "id": "diagnostic_release",
+        "command": "release-check",
+        "safety": "diagnostic",
+        "requires_confirmation": False,
+        "expected_decision": "allowed",
+    },
+    {
+        "id": "external_sync",
+        "command": "sync",
+        "safety": "external_write",
+        "requires_confirmation": True,
+        "expected_decision": "needs_approval",
+    },
+    {
+        "id": "factory_start",
+        "command": "factory",
+        "safety": "approval_gated",
+        "requires_confirmation": True,
+        "expected_decision": "needs_approval",
+    },
+    {
+        "id": "unknown_destructive",
+        "command": "delete-everything",
+        "safety": "unknown",
+        "requires_confirmation": True,
+        "expected_decision": BLOCKED,
+    },
+)
 
 # Base tier for known *queued action types* (the things that flow through
 # agent_actions). Only create_inbox_item is AUTO — and AUTO_ACTION_TYPES below is
@@ -215,6 +261,133 @@ def decide_command(
         "level": level,
         "safety": safety or "unknown",
     }
+
+
+def _text_hash(text: str) -> str:
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+
+
+def evaluate_command_decisions(*, level: str = DEFAULT_LEVEL) -> dict:
+    cases = []
+    for fixture in COMMAND_DECISION_FIXTURES:
+        decision = decide_command(
+            fixture["command"],
+            safety=fixture["safety"],
+            requires_confirmation=bool(fixture["requires_confirmation"]),
+            level=level,
+        )
+        passed = decision["decision"] == fixture["expected_decision"]
+        cases.append(
+            {
+                "fixture_id": fixture["id"],
+                "command": fixture["command"],
+                "safety": fixture["safety"],
+                "expected_decision": fixture["expected_decision"],
+                "actual_decision": decision["decision"],
+                "tier": decision["tier"],
+                "passed": passed,
+                "reason": decision["reason"],
+            }
+        )
+    passed_count = sum(1 for case in cases if case["passed"])
+    total = len(cases)
+    if passed_count == total:
+        calibration = "autonomy command decisions match expected safety policy"
+    else:
+        calibration = "review failed autonomy decision fixtures before changing policy"
+    return {
+        "summary": {
+            "total": total,
+            "passed": passed_count,
+            "failed": total - passed_count,
+            "accuracy": (passed_count / total) if total else 0.0,
+            "calibration": calibration,
+        },
+        "cases": cases,
+    }
+
+
+def record_command_decision_eval(conn, eval_result: dict) -> int:
+    summary = eval_result["summary"]
+    cur = conn.execute(
+        """
+        INSERT INTO autonomy_eval_runs (total_cases, passed_cases, accuracy, calibration)
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            summary["total"],
+            summary["passed"],
+            summary["accuracy"],
+            summary["calibration"],
+        ),
+    )
+    run_id = int(cur.lastrowid)
+    for case in eval_result["cases"]:
+        conn.execute(
+            """
+            INSERT INTO autonomy_eval_cases (
+                autonomy_eval_run_id, fixture_id, command, safety, expected_decision,
+                actual_decision, tier, passed, reason
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                case["fixture_id"],
+                case["command"],
+                case["safety"],
+                case["expected_decision"],
+                case["actual_decision"],
+                case["tier"],
+                1 if case["passed"] else 0,
+                case["reason"],
+            ),
+        )
+    conn.commit()
+    return run_id
+
+
+def record_command_decision_feedback(
+    conn,
+    *,
+    trace_id: int,
+    expected_decision: str,
+    note: str = "",
+) -> int:
+    if expected_decision not in DECISIONS:
+        raise ValueError(f"unsupported expected decision: {expected_decision}")
+    trace = conn.execute(
+        """
+        SELECT id, command, command_path, safety_level
+        FROM execution_traces
+        WHERE id = ?
+        """,
+        (int(trace_id),),
+    ).fetchone()
+    if not trace:
+        raise ValueError(f"execution trace not found: {trace_id}")
+    safety = str(trace["safety_level"] or "unknown")
+    actual = decide_command(str(trace["command"] or ""), safety=safety)
+    cur = conn.execute(
+        """
+        INSERT INTO autonomy_feedback (
+            execution_trace_id, command_path, safety_level, expected_decision,
+            actual_decision, note_hash, note_length
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            int(trace["id"]),
+            str(trace["command_path"] or trace["command"] or ""),
+            safety,
+            expected_decision,
+            actual["decision"],
+            _text_hash(note) if note else "",
+            len(note or ""),
+        ),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
 
 
 def _normalize_cmd(cmd: str) -> str:

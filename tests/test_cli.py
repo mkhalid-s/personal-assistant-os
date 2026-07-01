@@ -101,6 +101,25 @@ class CliFlowTest(unittest.TestCase):
             empty_trace = run("trace", "list", "--command", "trace")
             self.assertNotIn("status=running", empty_trace)
 
+            autonomy_eval = run("autonomy", "eval")
+            self.assertIn("Autonomy eval:", autonomy_eval)
+            self.assertIn("accuracy=100.00%", autonomy_eval)
+            conn = sqlite3.connect(db_path)
+            trace_id = conn.execute("SELECT id FROM execution_traces WHERE command_path='do' ORDER BY id DESC LIMIT 1").fetchone()[0]
+            conn.close()
+            feedback = run(
+                "autonomy",
+                "feedback",
+                "--trace",
+                str(trace_id),
+                "--expected-decision",
+                "allowed",
+                "--note",
+                "Expected allowed local route.",
+            )
+            self.assertIn("Autonomy feedback recorded:", feedback)
+            self.assertIn("Privacy: note text was hashed", feedback)
+
     def test_model_setup_cli_and_doctor_readiness(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
@@ -531,7 +550,8 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("30 add_router_quality_loop", list_out)
             self.assertIn("31 add_router_feedback_overrides", list_out)
             self.assertIn("32 add_lightweight_observability", list_out)
-            self.assertIn("Current version: 32 / expected 32", list_out)
+            self.assertIn("33 add_autonomy_decision_calibration", list_out)
+            self.assertIn("Current version: 33 / expected 33", list_out)
 
             backup_out = run("backup", "--output", str(backup_path))
             self.assertIn("Backup created", backup_out)

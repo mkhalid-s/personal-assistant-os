@@ -93,6 +93,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec("memory", "expert", "read_only", "retrieve_context", "Show conversation and memory overview.", examples=("myos memory",)),
     CommandSpec("reindex", "expert", "local_write", "retrieve_context", "Backfill graph nodes and chunks for existing data.", examples=("myos reindex",)),
     CommandSpec("model", "diagnostic", "local_write", "system_health", "Manage optional tiny local router models.", subcommands=("recommend", "setup", "status"), examples=("myos model status",)),
+    CommandSpec("autonomy", "diagnostic", "diagnostic", "system_health", "Evaluate and calibrate autonomy decision policy.", subcommands=("eval", "feedback"), examples=("myos autonomy eval",)),
     CommandSpec("config-init", "diagnostic", "local_write", "system_health", "Create a local connector env template.", examples=("myos config-init --path .env.myos",)),
     CommandSpec("onboard", "diagnostic", "read_only", "system_health", "Show connector onboarding diagnostics.", examples=("myos onboard",)),
     CommandSpec("activate", "diagnostic", "approval_gated", "system_health", "Run go-live activation flow.", examples=("myos activate --env-file .env.myos",), requires_confirmation=True),
