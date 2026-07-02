@@ -1,9 +1,9 @@
 """Pluggable reasoning/execution backends.
 
 A *backend* is whatever agent does the thinking: ``claude`` (in-process Anthropic
-SDK), or an external agent CLI driven as a subprocess (``copilot`` or a generic
-``command``). They share one contract so the rest of the app never cares
-which one is active:
+SDK), SDK-backed coding agents, or an external agent CLI driven as a subprocess
+(``cursor``, ``claude-code``, ``copilot`` or a generic ``command``). They share
+one contract so the rest of the app never cares which one is active:
 
     request  = {"purpose", "objective", "context", "analogies", ...}
     response = {"reply": str, "plan": [{"step","detail"}], "actions": [action,...]}
@@ -112,7 +112,7 @@ def _plan_to_text(plan: list[dict]) -> str:
 
 def get_backend(name: str | None = None):
     resolved = resolve_backend_name(name)
-    if resolved in ("claude-sdk", "claude_sdk", "sdk"):
+    if resolved in ("claude-sdk", "claude_sdk", "claude-code-sdk", "claude_code_sdk", "sdk"):
         from .claude_sdk import ClaudeSdkBackend
 
         return ClaudeSdkBackend()
@@ -124,6 +124,14 @@ def get_backend(name: str | None = None):
         from .copilot import CopilotBackend
 
         return CopilotBackend()
+    if resolved == "cursor":
+        from .cursor import CursorBackend
+
+        return CursorBackend()
+    if resolved in ("claude-code", "claude_code", "claudecode"):
+        from .claude_code import ClaudeCodeBackend
+
+        return ClaudeCodeBackend()
     if resolved in ("command", "cli"):
         from .agent_cli import AgentCliBackend
 
@@ -142,7 +150,7 @@ def get_backend(name: str | None = None):
 def available_backends() -> list[dict]:
     """Best-effort availability probe for ``myos doctor``."""
     out = []
-    for name in ("claude", "claude-sdk", "copilot", "command"):
+    for name in ("claude", "claude-sdk", "claude-code-sdk", "cursor", "claude-code", "copilot", "command"):
         try:
             ok, detail = get_backend(name).available()
         except Exception as exc:  # pragma: no cover - defensive

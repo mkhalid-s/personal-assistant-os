@@ -127,12 +127,167 @@ myos factory start --intent 1
 
 Recommendations are printed as guidance only. They never execute the suggested command automatically and they do not change approval policy.
 
-## Next Slice: Recommendation Feedback And Ranking
+## Recommendation Feedback And Ranking
 
 Purpose: learn which deterministic recommendations are useful without using a model or weakening policy.
 
-Scope:
+Implemented scope:
 
 - Record privacy-safe feedback on recommendation usefulness.
-- Prefer the most useful safe recommendation when multiple deterministic options exist.
+- Rank already-deterministic recommendations by usefulness score.
+- Store note hashes and lengths rather than raw feedback text.
 - Keep all recommendation execution manual.
+
+Useful commands:
+
+```bash
+myos autonomy recommendation-feedback --label inspect_recent_traces --command "myos trace list" --useful yes
+myos autonomy recommendations
+```
+
+Recommendation ranking changes only print order. It does not invent new commands, automatically run suggested commands, or alter autonomy decisions.
+
+## Durable Autonomous Task Loop
+
+Purpose: give MYOS a resumable local autonomy loop without creating a new execution path.
+
+Implemented scope:
+
+- Start or resume one bounded task cycle at a time.
+- Store loop state in existing agent task, run, action, and observation tables.
+- Execute only safe local actions automatically.
+- Leave approval-gated work in the existing approval queue.
+- Link loop commands to lightweight execution traces.
+
+Useful commands:
+
+```bash
+myos loop start "Handle the blocked launch dependency" --backend cursor
+myos loop status
+myos loop resume --task 1
+myos approve --list
+```
+
+The loop is durable and resumable, but not a background daemon. Each invocation runs one bounded cycle, records what happened, and prints the next review command when approval is needed.
+
+## Goal-Driven Autonomy Scheduler
+
+Purpose: let MYOS pick one eligible standing goal and run exactly one bounded autonomy loop decision.
+
+Implemented scope:
+
+- Select active goals whose cadence window is due.
+- Start a loop for a selected goal that has no existing loop.
+- Resume a selected goal's loop when it is clear of pending approvals.
+- Skip and record a scheduler observation when the loop is waiting on approvals.
+- Append scheduler events and link loop task traces without adding new schema.
+
+Useful commands:
+
+```bash
+myos loop goals
+myos loop run-goal --backend cursor
+myos loop run-goal --goal 1
+myos approve --list
+```
+
+The scheduler is one-shot and local. It is not a daemon, does not process multiple goals in a batch, and does not bypass approval-gated actions.
+
+## Autonomy Run Ledger
+
+Purpose: make each autonomous run, skip, pause, and completion easier to inspect after the fact.
+
+Implemented scope:
+
+- Store one compact row per loop and goal scheduler decision.
+- Link decisions to assistant goals, agent tasks, agent runs, and trace correlation IDs.
+- Expose read-only inspection through `myos loop ledger`.
+- Keep payloads capped and privacy-filtered.
+
+Useful commands:
+
+```bash
+myos loop ledger
+myos loop ledger --goal 1
+myos loop ledger --task 1 --status skipped
+```
+
+The ledger is not a verbose transcript store. It records counts, IDs, provider names, and short reasons so autonomy behavior can be audited without persisting raw prompts or large outputs.
+
+## Autopilot Goal Wrapper
+
+Purpose: let an explicit autopilot invocation run one goal scheduler decision as a tiny wrapper around the existing durable loop.
+
+Implemented scope:
+
+- Add an opt-in `myos autopilot --once --loop-goal` path and optional `--loop-goal-id`.
+- Call the existing goal scheduler once and report the ledger entry.
+- Reuse the existing autopilot lock and `autopilot_runs` summary records.
+- Keep daemon behavior, approval gates, and multi-goal batching out of scope.
+
+Useful commands:
+
+```bash
+myos autopilot --once --loop-goal
+myos autopilot --once --loop-goal --loop-goal-id 1
+myos loop ledger --limit 1
+```
+
+This wrapper is intentionally explicit. It does not make standing goals run in the background; it only gives the normal autopilot entry point a one-shot bridge into the durable goal scheduler.
+
+## Autonomy Command Module Split
+
+Purpose: reduce `cli.py` size by moving autonomy and loop command handlers behind small module boundaries.
+
+Implemented scope:
+
+- Extract command handlers without changing behavior.
+- Preserve parser shape, tests, and public command output.
+- Keep the slice mechanical and validation-heavy.
+
+The parser remains in `cli.py`, while autonomy and loop command bodies live in `cli_autonomy.py`. This keeps public commands stable and starts reducing the blast radius of future autonomy changes.
+
+## Autopilot Command Module Split
+
+Purpose: continue reducing `cli.py` size by extracting autopilot command orchestration into a focused command module.
+
+Implemented scope:
+
+- Move autopilot command handlers without changing behavior.
+- Preserve lock usage, digest behavior, goal-wrapper behavior, and public output.
+- Keep validation focused on regression safety.
+
+The parser remains in `cli.py`, while the main autopilot cycle and goal-wrapper orchestration live in `cli_autopilot.py`. CLI-only sync, ingest, triage, and watch-scan functions are passed in as explicit dependencies to avoid circular imports.
+
+## Factory Command Module Split
+
+Purpose: continue reducing `cli.py` size by moving factory command presentation and command dispatch into a focused module.
+
+Implemented scope:
+
+- Move factory command handlers without changing behavior.
+- Preserve autonomy decision printing, recommendation output, factory policy commands, and public CLI text.
+- Keep the parser in `cli.py` and validate with focused factory regressions.
+
+The parser remains in `cli.py`, while factory command dispatch and presentation live in `cli_factory.py`. This keeps factory behavior stable while reducing the size and risk of future changes to the main CLI entry point.
+
+## Command Mapper Maintenance
+
+Purpose: keep local models aware of the current CLI surface without exposing private user data.
+
+Implemented scope:
+
+- Use `command_registry.py` as the source of truth for local-model command awareness.
+- Include command names, subcommands, required args, examples, tiers, intents, confirmation needs, and safety metadata.
+- Pass the full local-model-safe command mapper to the optional router model while preserving the older compact catalog field.
+- Keep parser coverage tests in place so future command slices update the mapper alongside CLI changes.
+
+## Next Slice: Agent Command Module Split
+
+Purpose: continue reducing `cli.py` size by moving agent task, action, learning, and status command presentation into a focused module.
+
+Scope:
+
+- Move agent-facing command handlers without changing behavior.
+- Preserve approval output, execution receipt behavior, and public CLI text.
+- Keep the parser in `cli.py` and validate with focused agent/action regressions.

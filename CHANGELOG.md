@@ -23,6 +23,12 @@ All notable changes to this project will be documented in this file.
 - Policy-aware autonomy decisions with explicit `allowed`, `needs_approval`, and `blocked` explanations before smart routes and factory starts.
 - Policy decision feedback and calibration with local autonomy eval fixtures and privacy-safe feedback linked to execution traces.
 - Decision-aware recommendations with deterministic safe next-step guidance for routed work and factory starts.
+- Recommendation feedback and ranking with privacy-safe usefulness records for deterministic next-step guidance.
+- First-class Cursor Agent CLI, Claude Code CLI, and Claude Code SDK backend names for `myos chat` and doctor visibility.
+- Durable autonomy loop with bounded `myos loop start/resume/status`, safe local execution, approval pauses, and trace links.
+- Goal-driven autonomy scheduler with `myos loop goals` and one-shot `myos loop run-goal` start/resume/skip decisions for standing goals.
+- Autonomy run ledger with schema-backed loop/goal decision rows and `myos loop ledger` filters for goal, task, and status.
+- Autopilot goal wrapper with one-shot `myos autopilot --once --loop-goal` execution and ledger reporting.
 - Daily operating loops for morning briefs, close-day summaries, weekly review signals, and connector evidence mapping.
 - Release hardening docs, recovery notes, CI release-readiness gate, and tag/manual release workflow validation.
 
@@ -31,6 +37,10 @@ All notable changes to this project will be documented in this file.
 - External CLI execution now uses a generic command backend rather than a tool-specific provider surface.
 - Failed or blocked execution receipts create and retain links to follow-up inbox work.
 - README command guidance now starts with chat, voice, autopilot, smart routing, and approvals before the expert command catalog.
+- Autonomy and loop CLI command bodies moved into a focused module while preserving parser shape and output.
+- Autopilot CLI orchestration moved into a focused module while preserving lock, digest, and goal-wrapper behavior.
+- Factory CLI command dispatch moved into a focused module while preserving autonomy prompts, recommendations, and policy output.
+- Local router models now receive a full command mapper with subcommands, required args, examples, tiers, intents, and safety metadata.
 
 ### Validation
 

@@ -112,8 +112,13 @@ export MYOS_CONNECTOR_RETRIES="3"
 export MYOS_CONNECTOR_BACKOFF_SEC="1.2"
 export MYOS_CONNECTOR_TIMEOUT_SEC="25"
 
-# Optional reasoning provider. Command receives JSON on stdin and returns JSON.
+# Optional reasoning providers.
+export MYOS_AGENT_BACKEND="cursor"  # claude|claude-sdk|claude-code-sdk|cursor|claude-code|copilot|command
 export MYOS_AI_COMMAND="/path/to/your-ai-wrapper"
+export MYOS_AGENT_CMD_CURSOR="agent --print --trust --mode ask --output-format text"
+export MYOS_AGENT_CMD_CLAUDE_CODE="claude -p"
+export MYOS_CLAUDE_MODEL="claude-opus-4-8"
+export MYOS_SDK_LOAD_SETTINGS="0"
 
 # Optional tiny local router model for intent finding.
 # Dry-run first: myos model setup --router
@@ -182,7 +187,7 @@ myos router commands --tier workflow
 
 `myos router eval` uses packaged, non-private fixtures and records only route metadata, confidence, and text hashes. Feedback records correction metadata against a `smart_route` event and stores note hashes/lengths, not raw request text.
 Exact feedback corrections are applied only to the same future request hash, so unrelated phrasing still uses deterministic routing and optional model fallback.
-`myos router commands` shows the static command registry that the router and tiny local model use for bounded tool awareness, including tier and safety metadata.
+`myos router commands` shows the static command registry that the router and tiny local model use for bounded tool awareness, including tier and safety metadata. Internally, the router also passes a local-model-safe command mapper with command names, subcommands, required args, examples, and safety metadata whenever a configured router model is asked to route a request.
 
 ### Execution traces stay lightweight
 
@@ -322,12 +327,29 @@ Setup and operations:
 
 ```bash
 myos chat
+myos chat --backend cursor
+myos chat --backend claude-code
+myos chat --backend claude-code-sdk
 myos voice
 myos voice --text-reply
 myos doctor
 ```
 
-The assistant can answer from local memory, retrieve relevant context, capture new tasks, and draft external updates for approval.
+The assistant can answer from local memory, retrieve relevant context, capture new tasks, and draft external updates for approval. Cursor chat defaults to read-only ask mode; Claude Code CLI and SDK backends are explicit opt-ins and still preserve MYOS approval gates.
+
+### Durable Autonomy Loop
+
+```bash
+myos loop start "Handle the blocked launch dependency" --backend cursor
+myos loop status
+myos loop resume --task 1
+myos loop goals
+myos loop run-goal --goal 1 --backend cursor
+myos loop ledger --goal 1
+myos approve --list
+```
+
+The loop runs one bounded cycle at a time. It stores durable task state in the existing agent task/run/action tables, executes only safe local actions, links execution traces, and pauses on approval-gated work until you explicitly review it. Goal-driven runs pick one due active goal, start or resume its loop, and skip cleanly when that goal is waiting on approvals. The ledger gives a compact history of why each autonomy decision ran, paused, skipped, or no-oped.
 
 ### Delegation and Approval
 
@@ -341,16 +363,30 @@ myos coach "blocked launch dependency"
 myos agent-status --task 1
 ```
 
+### Recommendation Feedback
+
+```bash
+myos autonomy recommendation-feedback \
+  --label inspect_recent_traces \
+  --command "myos trace list" \
+  --useful yes
+myos autonomy recommendations
+```
+
+Recommendation feedback is privacy-safe calibration only. MYOS stores labels, command text, usefulness, and note hashes to rank already-deterministic guidance; it never executes a recommendation automatically or weakens approval gates.
+
 ### Autopilot
 
 ```bash
 myos autopilot --env-file ./data/.env.myos --once
+myos autopilot --once --loop-goal
+myos autopilot --once --loop-goal --loop-goal-id 1
 myos autopilot --env-file ./data/.env.myos --interval-sec 900
 myos approve --list
 myos digest
 ```
 
-Autopilot runs the pipeline, detects important changes, creates delegated assistant tasks, executes safe local actions, and leaves risky or external actions in the approval queue.
+Autopilot runs the pipeline, detects important changes, creates delegated assistant tasks, executes safe local actions, and leaves risky or external actions in the approval queue. The `--loop-goal` option is one-shot only: it routes an explicit autopilot invocation into the goal scheduler, reports the latest ledger row, and stops.
 
 ## Privacy and Retention
 

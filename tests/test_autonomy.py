@@ -76,6 +76,43 @@ class AutonomyPolicyDecisionTest(unittest.TestCase):
             os.environ.pop("MYOS_DB_PATH", None)
             os.unlink(db_path)
 
+    def test_recommendation_feedback_ranks_without_raw_note_storage(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+            db_path = tmp.name
+        os.environ["MYOS_DB_PATH"] = db_path
+        try:
+            from personal_assistant import autonomy
+            from personal_assistant.db import get_connection
+
+            conn = get_connection()
+            blocked = autonomy.decide_command("delete-everything", safety="unknown")
+            steps = autonomy.recommend_next_steps(blocked, command="delete-everything")
+            self.assertEqual(steps[0]["label"], "inspect_safe_commands")
+            autonomy.record_recommendation_feedback(
+                conn,
+                label="inspect_safe_commands",
+                command="myos help diagnostic",
+                useful=False,
+                note="This was not the useful suggestion.",
+            )
+            autonomy.record_recommendation_feedback(
+                conn,
+                label="inspect_recent_traces",
+                command="myos trace list",
+                useful=True,
+                note="This was useful.",
+            )
+            ranked = autonomy.ranked_recommendations(conn, steps)
+            self.assertEqual(ranked[0]["label"], "inspect_recent_traces")
+            rows = autonomy.recommendation_feedback_summary(conn)
+            self.assertEqual(rows[0]["label"], "inspect_recent_traces")
+            raw = "\n".join(str(tuple(row)) for row in conn.execute("SELECT * FROM recommendation_feedback").fetchall())
+            self.assertNotIn("This was useful", raw)
+            conn.close()
+        finally:
+            os.environ.pop("MYOS_DB_PATH", None)
+            os.unlink(db_path)
+
 
 if __name__ == "__main__":
     unittest.main()

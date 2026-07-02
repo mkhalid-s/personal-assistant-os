@@ -4,7 +4,7 @@ import sqlite3
 import os
 from pathlib import Path
 
-EXPECTED_SCHEMA_VERSION = 33
+EXPECTED_SCHEMA_VERSION = 35
 
 
 def resolve_db_path() -> Path:
@@ -1490,6 +1490,66 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
             (33, "add_autonomy_decision_calibration"),
+        )
+
+    if current < 34:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS autonomy_run_ledger (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                decision_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                reason TEXT,
+                assistant_goal_id INTEGER,
+                agent_task_id INTEGER,
+                agent_run_id INTEGER,
+                correlation_id TEXT,
+                provider TEXT,
+                actions_proposed INTEGER NOT NULL DEFAULT 0,
+                safe_actions_executed INTEGER NOT NULL DEFAULT 0,
+                pending_approvals INTEGER NOT NULL DEFAULT 0,
+                blocked_or_failed INTEGER NOT NULL DEFAULT 0,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(assistant_goal_id) REFERENCES assistant_goals(id),
+                FOREIGN KEY(agent_task_id) REFERENCES agent_tasks(id),
+                FOREIGN KEY(agent_run_id) REFERENCES agent_runs(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_autonomy_run_ledger_created ON autonomy_run_ledger(created_at);
+            CREATE INDEX IF NOT EXISTS idx_autonomy_run_ledger_goal ON autonomy_run_ledger(assistant_goal_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_autonomy_run_ledger_task ON autonomy_run_ledger(agent_task_id, created_at);
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (34, "add_autonomy_run_ledger"),
+        )
+
+    if current < 35:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS recommendation_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                recommendation_key TEXT NOT NULL,
+                label TEXT NOT NULL,
+                command TEXT,
+                decision TEXT,
+                intent TEXT,
+                workflow_pack TEXT,
+                useful INTEGER NOT NULL,
+                note_hash TEXT,
+                note_length INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_recommendation_feedback_key ON recommendation_feedback(recommendation_key, created_at);
+            CREATE INDEX IF NOT EXISTS idx_recommendation_feedback_useful ON recommendation_feedback(useful, created_at);
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (35, "add_recommendation_feedback"),
         )
 
     _ensure_fts5(conn)  # self-heal: build the FTS index if a no-FTS5 run stranded migration 17

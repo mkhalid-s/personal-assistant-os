@@ -328,6 +328,97 @@ def recommend_next_steps(
     return []
 
 
+def recommendation_key(step: dict) -> str:
+    label = str(step.get("label") or "").strip()
+    command = str(step.get("command") or "").strip()
+    base = f"{label}|{command}"
+    return _text_hash(base)[:24]
+
+
+def _feedback_scores(conn) -> dict[str, int]:
+    try:
+        rows = conn.execute(
+            """
+            SELECT recommendation_key,
+                   SUM(CASE WHEN useful = 1 THEN 1 ELSE -1 END) AS score
+            FROM recommendation_feedback
+            GROUP BY recommendation_key
+            """
+        ).fetchall()
+    except Exception:
+        return {}
+    return {str(row["recommendation_key"]): int(row["score"] or 0) for row in rows}
+
+
+def ranked_recommendations(conn, steps: list[dict]) -> list[dict]:
+    scores = _feedback_scores(conn)
+    ranked: list[tuple[int, int, dict]] = []
+    for index, step in enumerate(steps):
+        key = recommendation_key(step)
+        enriched = dict(step)
+        enriched["key"] = key
+        enriched["score"] = scores.get(key, 0)
+        ranked.append((-int(enriched["score"]), index, enriched))
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    return [item[2] for item in ranked]
+
+
+def record_recommendation_feedback(
+    conn,
+    *,
+    label: str,
+    command: str = "",
+    decision: str = "",
+    intent: str = "",
+    workflow_pack: str = "",
+    useful: bool,
+    note: str = "",
+) -> int:
+    if not label.strip():
+        raise ValueError("recommendation label is required")
+    step = {"label": label.strip(), "command": command.strip()}
+    cur = conn.execute(
+        """
+        INSERT INTO recommendation_feedback (
+            recommendation_key, label, command, decision, intent, workflow_pack,
+            useful, note_hash, note_length
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            recommendation_key(step),
+            label.strip()[:120],
+            command.strip()[:300],
+            decision.strip()[:80],
+            intent.strip()[:80],
+            workflow_pack.strip()[:120],
+            1 if useful else 0,
+            _text_hash(note) if note else "",
+            len(note or ""),
+        ),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def recommendation_feedback_summary(conn, *, limit: int = 20) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT recommendation_key, label, command,
+               SUM(CASE WHEN useful = 1 THEN 1 ELSE 0 END) AS useful_count,
+               SUM(CASE WHEN useful = 0 THEN 1 ELSE 0 END) AS not_useful_count,
+               SUM(CASE WHEN useful = 1 THEN 1 ELSE -1 END) AS score,
+               MAX(created_at) AS last_feedback_at
+        FROM recommendation_feedback
+        GROUP BY recommendation_key, label, command
+        ORDER BY score DESC, last_feedback_at DESC
+        LIMIT ?
+        """,
+        (max(1, int(limit)),),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def _text_hash(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 

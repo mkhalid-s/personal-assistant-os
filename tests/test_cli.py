@@ -152,6 +152,9 @@ class CliFlowTest(unittest.TestCase):
 
             doctor = run("doctor")
             self.assertIn("router_model", doctor)
+            self.assertIn("cursor:", doctor)
+            self.assertIn("claude-code:", doctor)
+            self.assertIn("claude-code-sdk:", doctor)
 
             live = run(
                 "setup-live",
@@ -169,6 +172,171 @@ class CliFlowTest(unittest.TestCase):
             )
             self.assertIn("Router model setup plan:", live)
             self.assertIn("Dry run only", live)
+
+    def test_first_class_agent_backend_chat_smoke(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            agent = bin_dir / "agent"
+            agent.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                "if len(sys.argv) > 1 and sys.argv[1] == 'status':\n"
+                "    print('Logged in as fake@example.com')\n"
+                "    raise SystemExit(0)\n"
+                "print('cursor reply: ' + sys.argv[-1].splitlines()[-1])\n",
+                encoding="utf-8",
+            )
+            claude = bin_dir / "claude"
+            claude.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                "print('claude-code reply: ' + sys.argv[-1].splitlines()[-1])\n",
+                encoding="utf-8",
+            )
+            os.chmod(agent, 0o755)
+            os.chmod(claude, 0o755)
+            env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+
+            def run_chat(backend: str) -> str:
+                out = subprocess.run(
+                    [sys.executable, "-m", "personal_assistant.cli", "chat", "--backend", backend],
+                    cwd=Path.cwd(),
+                    env=env,
+                    input="hello\nexit\n",
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
+                return out.stdout
+
+            cursor = run_chat("cursor")
+            self.assertIn("MYOS chat [cursor]", cursor)
+            self.assertIn("cursor reply:", cursor)
+
+            claude_code = run_chat("claude-code")
+            self.assertIn("MYOS chat [claude-code]", claude_code)
+            self.assertIn("claude-code reply:", claude_code)
+
+    def test_durable_autonomy_loop_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            db_path = Path(tmp) / "assistant.db"
+            env["MYOS_DB_PATH"] = str(db_path)
+
+            def run(*args: str) -> str:
+                out = subprocess.run(
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
+                    cwd=Path.cwd(),
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                return out.stdout
+
+            started = run("loop", "start", "Handle Jira risk and follow up")
+            self.assertIn("Autonomy loop task #1", started)
+            self.assertIn("status=waiting_approval", started)
+            self.assertIn("pending_approvals=", started)
+            self.assertIn("Recommendation: review pending approvals -> myos approve --list", started)
+
+            status = run("loop", "status", "--task", "1")
+            self.assertIn("Autonomy loop tasks:", status)
+            self.assertIn("task #1 status=waiting_approval", status)
+            self.assertIn("Recommendation: myos approve --list", status)
+
+            resumed = run("loop", "resume", "--task", "1", "--max-actions", "2")
+            self.assertIn("Autonomy loop task #1", resumed)
+            self.assertIn("run #1", resumed)
+            self.assertIn("safe_executed=0", resumed)
+
+            conn = sqlite3.connect(db_path)
+            trace_link = conn.execute(
+                "SELECT COUNT(*) FROM execution_traces WHERE command_path LIKE 'loop%' AND agent_task_id=1"
+            ).fetchone()[0]
+            pending_external = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM agent_actions
+                WHERE agent_task_id=1 AND action_type='draft_external_update'
+                  AND status='proposed' AND requires_approval=1
+                """
+            ).fetchone()[0]
+            cycles = json.loads(conn.execute("SELECT constraints_json FROM agent_tasks WHERE id=1").fetchone()[0])["cycles"]
+            conn.close()
+            self.assertGreaterEqual(trace_link, 2)
+            self.assertEqual(pending_external, 1)
+            self.assertEqual(cycles, 1)
+
+    def test_goal_driven_autonomy_scheduler_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            db_path = Path(tmp) / "assistant.db"
+            env["MYOS_DB_PATH"] = str(db_path)
+
+            def run(*args: str) -> str:
+                out = subprocess.run(
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
+                    cwd=Path.cwd(),
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                return out.stdout
+
+            created = run(
+                "goal",
+                "add",
+                "Handle Jira risk",
+                "--context",
+                "Needs approval-gated follow-up",
+                "--cadence-minutes",
+                "1",
+                "--priority",
+                "1",
+            )
+            self.assertIn("Added assistant goal #1", created)
+
+            goals = run("loop", "goals")
+            self.assertIn("Eligible autonomy goals:", goals)
+            self.assertIn("goal #1", goals)
+            self.assertIn("loop_task=none", goals)
+
+            first = run("loop", "run-goal", "--goal", "1")
+            self.assertIn("Goal scheduler: action=started goal=#1", first)
+            self.assertIn("pending_approvals=", first)
+            self.assertIn("Recommendation: review pending approvals -> myos approve --list", first)
+
+            second = run("loop", "run-goal", "--goal", "1")
+            self.assertIn("Goal scheduler: action=skipped goal=#1", second)
+            self.assertIn("Recommendation: review pending approvals -> myos approve --list", second)
+
+            conn = sqlite3.connect(db_path)
+            pending = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM agent_actions
+                WHERE agent_task_id=1 AND status='proposed' AND requires_approval=1
+                """
+            ).fetchone()[0]
+            skipped_events = conn.execute(
+                "SELECT COUNT(*) FROM event_log WHERE event_type='autonomy_goal_skipped'"
+            ).fetchone()[0]
+            trace_links = conn.execute(
+                "SELECT COUNT(*) FROM execution_traces WHERE command_path LIKE 'loop run-goal%' AND agent_task_id=1"
+            ).fetchone()[0]
+            conn.close()
+            self.assertEqual(pending, 2)
+            self.assertEqual(skipped_events, 1)
+            self.assertEqual(trace_links, 2)
 
     def test_router_eval_and_feedback_cli(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -552,7 +720,9 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("31 add_router_feedback_overrides", list_out)
             self.assertIn("32 add_lightweight_observability", list_out)
             self.assertIn("33 add_autonomy_decision_calibration", list_out)
-            self.assertIn("Current version: 33 / expected 33", list_out)
+            self.assertIn("34 add_autonomy_run_ledger", list_out)
+            self.assertIn("35 add_recommendation_feedback", list_out)
+            self.assertIn("Current version: 35 / expected 35", list_out)
 
             backup_out = run("backup", "--output", str(backup_path))
             self.assertIn("Backup created", backup_out)
@@ -2384,6 +2554,167 @@ class CliFlowTest(unittest.TestCase):
             conn.close()
             self.assertEqual(work_count, 3)
             self.assertEqual(processing_count, 0)
+
+    def test_autonomy_run_ledger_cli_filters(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            db_path = Path(tmp) / "assistant.db"
+            env["MYOS_DB_PATH"] = str(db_path)
+
+            def run(*args: str) -> str:
+                out = subprocess.run(
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
+                    cwd=Path.cwd(),
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                return out.stdout
+
+            run(
+                "goal",
+                "add",
+                "Handle Jira risk",
+                "--context",
+                "Needs approval-gated follow-up",
+                "--cadence-minutes",
+                "1",
+                "--priority",
+                "1",
+            )
+            run("loop", "run-goal", "--goal", "1")
+            run("loop", "run-goal", "--goal", "1")
+
+            ledger = run("loop", "ledger", "--goal", "1")
+            self.assertIn("Autonomy run ledger:", ledger)
+            self.assertIn("decision=goal_skipped status=skipped goal=#1 task=#1", ledger)
+            self.assertIn("decision=goal_started status=waiting_approval goal=#1 task=#1 run=#1", ledger)
+            self.assertIn("decision=loop_started status=waiting_approval goal=#1 task=#1 run=#1", ledger)
+
+            skipped = run("loop", "ledger", "--status", "skipped")
+            self.assertIn("decision=goal_skipped status=skipped", skipped)
+            self.assertNotIn("decision=goal_started", skipped)
+
+            task_rows = run("loop", "ledger", "--task", "1")
+            self.assertIn("pending=2", task_rows)
+
+            conn = sqlite3.connect(db_path)
+            ledger_count = conn.execute("SELECT COUNT(*) FROM autonomy_run_ledger").fetchone()[0]
+            schema_version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
+            conn.close()
+            self.assertEqual(ledger_count, 3)
+            self.assertEqual(schema_version, 35)
+
+    def test_autopilot_loop_goal_wrapper(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            db_path = Path(tmp) / "assistant.db"
+            env["MYOS_DB_PATH"] = str(db_path)
+
+            def run(*args: str, check: bool = True):
+                return subprocess.run(
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
+                    cwd=Path.cwd(),
+                    env=env,
+                    check=check,
+                    capture_output=True,
+                    text=True,
+                )
+
+            rejected = run("autopilot", "--loop-goal", check=False)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("one-shot only", rejected.stdout)
+
+            added = run(
+                "goal",
+                "add",
+                "Handle Jira risk",
+                "--context",
+                "Needs approval-gated follow-up",
+                "--cadence-minutes",
+                "1",
+                "--priority",
+                "1",
+            )
+            self.assertIn("Added assistant goal #1", added.stdout)
+
+            first = run("autopilot", "--once", "--loop-goal", "--loop-goal-id", "1")
+            self.assertIn("Autopilot goal wrapper complete", first.stdout)
+            self.assertIn("Goal scheduler: action=started goal=#1", first.stdout)
+            self.assertIn("Ledger: myos loop ledger --limit 1", first.stdout)
+
+            second = run("autopilot", "--once", "--loop-goal", "--loop-goal-id", "1")
+            self.assertIn("Goal scheduler: action=skipped goal=#1", second.stdout)
+
+            conn = sqlite3.connect(db_path)
+            pending = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM agent_actions
+                WHERE agent_task_id=1 AND status='proposed' AND requires_approval=1
+                """
+            ).fetchone()[0]
+            autopilot_runs = conn.execute("SELECT COUNT(*) FROM autopilot_runs WHERE mode='loop_goal'").fetchone()[0]
+            skipped = conn.execute(
+                "SELECT COUNT(*) FROM autonomy_run_ledger WHERE decision_type='goal_skipped'"
+            ).fetchone()[0]
+            event_count = conn.execute("SELECT COUNT(*) FROM event_log WHERE event_type='autopilot_loop_goal'").fetchone()[0]
+            conn.close()
+            self.assertEqual(pending, 2)
+            self.assertEqual(autopilot_runs, 2)
+            self.assertEqual(skipped, 1)
+            self.assertEqual(event_count, 2)
+
+    def test_recommendation_feedback_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            db_path = Path(tmp) / "assistant.db"
+            env["MYOS_DB_PATH"] = str(db_path)
+
+            def run(*args: str) -> str:
+                out = subprocess.run(
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
+                    cwd=Path.cwd(),
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                return out.stdout
+
+            recorded = run(
+                "autonomy",
+                "recommendation-feedback",
+                "--label",
+                "inspect_recent_traces",
+                "--command",
+                "myos trace list",
+                "--decision",
+                "blocked",
+                "--useful",
+                "yes",
+                "--note",
+                "Helpful next step",
+            )
+            self.assertIn("Recommendation feedback recorded", recorded)
+            self.assertIn("raw recommendation feedback text was not stored", recorded)
+            summary = run("autonomy", "recommendations")
+            self.assertIn("Recommendation feedback summary:", summary)
+            self.assertIn("label=inspect_recent_traces command=myos trace list score=1", summary)
+
+            conn = sqlite3.connect(db_path)
+            row = conn.execute("SELECT note_hash, note_length FROM recommendation_feedback LIMIT 1").fetchone()
+            schema_version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
+            raw = "\n".join(str(value) for value in row)
+            conn.close()
+            self.assertTrue(row[0])
+            self.assertEqual(row[1], len("Helpful next step"))
+            self.assertNotIn("Helpful next step", raw)
+            self.assertEqual(schema_version, 35)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,8 @@ shared contract two ways:
 * ``input_mode="prompt"`` (raw agent CLIs): send a rendered prompt on
   stdin, capture freeform stdout as ``reply``; if the agent happens to emit a JSON
   ``{plan, actions}`` block we parse it, otherwise there are simply no proposals.
+* ``input_mode="prompt_arg"`` (headless agent CLIs): append the rendered prompt as
+  the final argv element for tools such as Cursor Agent and Claude Code.
 
 Hardened vs. the original inline path: ``shlex.split`` (never ``shell=True``),
 timeout, errors degrade to an empty response, and each call is audited to
@@ -74,16 +76,20 @@ class AgentCliBackend(BaseBackend):
         argv = self._argv()
         if not argv:
             return {"reply": "", "plan": [], "actions": []}
-        payload_in = (
-            json.dumps(request, ensure_ascii=True)
-            if self.input_mode == "json"
-            else _render_prompt(request)
-        )
+        if self.input_mode == "json":
+            run_argv = argv
+            payload_in = json.dumps(request, ensure_ascii=True)
+        elif self.input_mode == "prompt_arg":
+            run_argv = argv + [_render_prompt(request)]
+            payload_in = None
+        else:
+            run_argv = argv
+            payload_in = _render_prompt(request)
         started = time.monotonic()
         status, error, raw = "error", "", ""
         try:
             proc = subprocess.run(
-                argv,
+                run_argv,
                 input=payload_in,
                 capture_output=True,
                 text=True,

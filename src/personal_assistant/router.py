@@ -201,6 +201,7 @@ def _model_route_text(text: str, *, surface: str, fallback: RouteDecision) -> Ro
         "allowed_intents": list(ROUTABLE_INTENTS),
         "heuristic": fallback.to_dict(),
         "command_catalog": command_catalog(limit=32),
+        "command_mapper": command_registry.local_model_command_mapper(),
     }
     started = time.monotonic()
     try:

@@ -23,6 +23,10 @@ class CommandRegistryTest(unittest.TestCase):
         self.assertEqual(sync.safety, "external_write")
         self.assertTrue(sync.requires_confirmation)
 
+        loop = command_registry.find_command("loop")
+        self.assertIsNotNone(loop)
+        self.assertIn("ledger", loop.subcommands)
+
     def test_compact_catalog_is_model_safe_metadata(self) -> None:
         from personal_assistant import command_registry
 
@@ -30,10 +34,27 @@ class CommandRegistryTest(unittest.TestCase):
         self.assertEqual(len(catalog), 5)
         for item in catalog:
             self.assertIn("command", item)
+            self.assertIn("usage", item)
             self.assertIn("tier", item)
             self.assertIn("safety", item)
             self.assertIn("intent", item)
+            self.assertIn("subcommands", item)
+            self.assertIn("required_args", item)
             self.assertNotIn("raw_text", item)
+
+    def test_local_model_command_mapper_covers_all_registered_commands(self) -> None:
+        from personal_assistant import command_registry
+
+        mapper = command_registry.local_model_command_mapper()
+        self.assertEqual(mapper["schema"], "myos.command_mapper.v1")
+        commands = mapper["commands"]
+        self.assertEqual(len(commands), len(command_registry.all_commands()))
+        by_name = {item["command"]: item for item in commands}
+        self.assertIn("factory", by_name)
+        self.assertIn("policy", by_name["factory"]["subcommands"])
+        self.assertIn("autopilot", by_name)
+        self.assertIn("--loop-goal", by_name["autopilot"]["subcommands"])
+        self.assertNotIn("raw_text", str(mapper))
 
     def test_filter_commands(self) -> None:
         from personal_assistant import command_registry
@@ -52,6 +73,24 @@ class CommandRegistryTest(unittest.TestCase):
         parser_commands = set(subparser_action.choices)
         registry_commands = {spec.command for spec in command_registry.all_commands()}
         self.assertEqual(sorted(parser_commands - registry_commands), [])
+
+    def test_autonomy_loop_autopilot_and_factory_handlers_are_module_backed(self) -> None:
+        from personal_assistant import cli, cli_autonomy, cli_autopilot, cli_factory
+
+        self.assertTrue(callable(cli_autonomy.cmd_autonomy))
+        self.assertTrue(callable(cli_autonomy.cmd_loop))
+        self.assertTrue(callable(cli_autopilot.cmd_autopilot))
+        self.assertTrue(callable(cli_autopilot.run_autopilot_cycle))
+        self.assertTrue(callable(cli_factory.cmd_factory))
+        parser = cli.build_parser()
+        autonomy_args = parser.parse_args(["autonomy", "eval", "--no-record"])
+        loop_args = parser.parse_args(["loop", "status"])
+        autopilot_args = parser.parse_args(["autopilot", "--once"])
+        factory_args = parser.parse_args(["factory", "policy", "list"])
+        self.assertIs(autonomy_args.func, cli.cmd_autonomy)
+        self.assertIs(loop_args.func, cli.cmd_loop)
+        self.assertIs(autopilot_args.func, cli.cmd_autopilot)
+        self.assertIs(factory_args.func, cli.cmd_factory)
 
 
 if __name__ == "__main__":
