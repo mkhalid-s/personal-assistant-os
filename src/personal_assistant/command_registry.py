@@ -31,7 +31,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec("chat", "daily", "read_only", "unknown", "Interactive assistant with routed intent awareness.", examples=("myos chat",)),
     CommandSpec("voice", "daily", "read_only", "unknown", "Voice-first assistant using the routed chat loop.", examples=("myos voice",)),
     CommandSpec("do", "daily", "local_write", "unknown", "Route a natural-language request to a MYOS workflow.", required_args=("text",), examples=("myos do 'what should I work on today?'",)),
-    CommandSpec("autopilot", "daily", "approval_gated", "factory_run", "Run proactive local cycles and leave risky actions for approval.", examples=("myos autopilot --once --factory",), requires_confirmation=True),
+    CommandSpec("autopilot", "daily", "approval_gated", "factory_run", "Run proactive local cycles and leave risky actions for approval.", subcommands=("--once", "--factory", "--loop-goal"), examples=("myos autopilot --once --factory", "myos autopilot --once --loop-goal"), requires_confirmation=True),
     CommandSpec("approve", "daily", "approval_gated", "approval_review", "Review and optionally execute approval-gated actions.", subcommands=("--list", "--action", "--execute"), examples=("myos approve --list",), requires_confirmation=True),
     CommandSpec("capture", "daily", "local_write", "capture", "Capture an inbox item.", required_args=("text",), examples=("myos capture 'Follow up by Friday'",)),
     CommandSpec("morning", "daily", "read_only", "daily_brief", "Generate a morning focus brief.", examples=("myos morning",)),
@@ -43,6 +43,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec("review-packet", "workflow", "local_write", "plan_intent", "Build a review packet for a plan.", required_args=("--plan",), examples=("myos review-packet --plan 1",)),
     CommandSpec("factory", "workflow", "approval_gated", "factory_run", "Run review-first AI factory workflows.", subcommands=("start", "status", "review", "approve", "policy", "learn", "insights"), examples=("myos factory start --intent 1",), requires_confirmation=True),
     CommandSpec("delegate", "workflow", "approval_gated", "factory_run", "Delegate an objective to the assistant core.", required_args=("objective",), examples=("myos delegate 'Handle blocked launch dependency'",), requires_confirmation=True),
+    CommandSpec("loop", "workflow", "approval_gated", "factory_run", "Run a bounded durable autonomy loop cycle.", subcommands=("start", "resume", "status", "goals", "run-goal", "ledger"), examples=("myos loop start 'Handle blocked launch dependency'",), requires_confirmation=True),
     CommandSpec("agent-run", "workflow", "local_write", "factory_run", "Run one durable agent role for an intent.", required_args=("--intent", "--role"), examples=("myos agent-run --intent 1 --role planner",)),
     CommandSpec("evidence", "workflow", "local_write", "plan_intent", "Attach evidence artifacts to intents.", subcommands=("attach", "sync-external"), examples=("myos evidence sync-external --intent 1",)),
     CommandSpec("sync", "workflow", "external_write", "retrieve_context", "Sync external connector context when credentials are configured.", examples=("myos sync --connector all",), requires_confirmation=True),
@@ -93,7 +94,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec("memory", "expert", "read_only", "retrieve_context", "Show conversation and memory overview.", examples=("myos memory",)),
     CommandSpec("reindex", "expert", "local_write", "retrieve_context", "Backfill graph nodes and chunks for existing data.", examples=("myos reindex",)),
     CommandSpec("model", "diagnostic", "local_write", "system_health", "Manage optional tiny local router models.", subcommands=("recommend", "setup", "status"), examples=("myos model status",)),
-    CommandSpec("autonomy", "diagnostic", "diagnostic", "system_health", "Evaluate and calibrate autonomy decision policy.", subcommands=("eval", "feedback"), examples=("myos autonomy eval",)),
+    CommandSpec("autonomy", "diagnostic", "diagnostic", "system_health", "Evaluate and calibrate autonomy decision policy.", subcommands=("eval", "feedback", "recommendation-feedback", "recommendations"), examples=("myos autonomy eval",)),
     CommandSpec("config-init", "diagnostic", "local_write", "system_health", "Create a local connector env template.", examples=("myos config-init --path .env.myos",)),
     CommandSpec("onboard", "diagnostic", "read_only", "system_health", "Show connector onboarding diagnostics.", examples=("myos onboard",)),
     CommandSpec("activate", "diagnostic", "approval_gated", "system_health", "Run go-live activation flow.", examples=("myos activate --env-file .env.myos",), requires_confirmation=True),
@@ -170,18 +171,34 @@ def filter_commands(*, tier: str = "", safety: str = "", intent: str = "") -> li
     return list(specs)
 
 
+def _model_safe_item(spec: CommandSpec) -> dict[str, Any]:
+    return {
+        "command": spec.command,
+        "usage": f"myos {spec.command}",
+        "tier": spec.tier,
+        "safety": spec.safety,
+        "intent": spec.intent,
+        "requires_confirmation": spec.requires_confirmation,
+        "summary": spec.summary[:160],
+        "subcommands": list(spec.subcommands),
+        "required_args": list(spec.required_args),
+        "examples": list(spec.examples[:3]),
+    }
+
+
 def compact_catalog(*, limit: int = 40) -> list[dict[str, Any]]:
     items = []
-    for spec in COMMAND_SPECS[: max(0, int(limit))]:
-        items.append(
-            {
-                "command": spec.command,
-                "tier": spec.tier,
-                "safety": spec.safety,
-                "intent": spec.intent,
-                "requires_confirmation": spec.requires_confirmation,
-                "summary": spec.summary[:120],
-                "examples": list(spec.examples[:1]),
-            }
-        )
+    selected = COMMAND_SPECS if int(limit) <= 0 else COMMAND_SPECS[: max(0, int(limit))]
+    for spec in selected:
+        items.append(_model_safe_item(spec))
     return items
+
+
+def local_model_command_mapper(*, limit: int = 0) -> dict[str, Any]:
+    return {
+        "schema": "myos.command_mapper.v1",
+        "description": "Local-model-safe MYOS CLI command map. It contains command metadata only, never user data.",
+        "tiers": list(TIERS),
+        "safety_levels": list(SAFETY_LEVELS),
+        "commands": compact_catalog(limit=limit),
+    }

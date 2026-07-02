@@ -17,7 +17,7 @@ class ObservabilityTest(unittest.TestCase):
             conn = get_connection()
             report = verify_schema(conn)
             self.assertTrue(report["ok"])
-            self.assertEqual(report["expected_version"], 33)
+            self.assertEqual(report["expected_version"], 35)
 
             corr = observability.start_trace(
                 conn,

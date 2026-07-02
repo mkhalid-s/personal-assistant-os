@@ -24,7 +24,7 @@ from .ingest.audio import transcribe_audio
 from .ingest.image import extract_image_text
 from .pulse import detect_mode, run_cycle
 from .retrieval import hybrid_score
-from . import assistant, autonomy, claims, command_registry, context as ctx, em, entities, factory, graphrag, intents, model_setup, observability, plans, providers, queries, relationships, router, watch
+from . import assistant, autonomy, autonomy_loop, claims, cli_autonomy, cli_autopilot, cli_factory, command_registry, context as ctx, em, entities, factory, graphrag, intents, model_setup, observability, plans, providers, queries, relationships, router, watch
 # Helpers extracted out of this module (refactor #12) — re-imported so existing
 # call sites (and tests importing them from cli) keep working unchanged.
 from .inbox import (
@@ -44,11 +44,6 @@ from .execution import (
     _execute_agent_action, _execute_action_provider, _read_provider_stdin, _outbox_write,
     _provider_body, _provider_target_summary, _post_jira_comment, _post_github_comment,
     _handle_proposals, approve_and_execute, execute_connector_mutation,
-)
-from .autopilot import (
-    _create_agent_task, _autopilot_signal_exists, _detect_autopilot_signals,
-    _record_signal_and_task, _execute_safe_autopilot_actions, _build_autopilot_digest,
-    _store_autopilot_digest, _notify_digest,
 )
 
 
@@ -91,32 +86,15 @@ def _trace_enabled_for(args: argparse.Namespace) -> bool:
 
 
 def _command_autonomy_decision(conn: sqlite3.Connection, command: str, *, requested_mode: str = "") -> dict[str, object]:
-    spec = command_registry.find_command(command)
-    return autonomy.decide_command(
-        command,
-        safety=spec.safety if spec else "unknown",
-        requires_confirmation=bool(spec.requires_confirmation) if spec else True,
-        level=autonomy.level_from_policy(conn),
-        requested_mode=requested_mode,
-    )
+    return cli_autonomy.command_autonomy_decision(conn, command, requested_mode=requested_mode)
 
 
 def _print_autonomy_decision(decision: dict[str, object]) -> None:
-    print(
-        "Autonomy: "
-        f"decision={decision['decision']} tier={decision['tier']} "
-        f"safety={decision['safety']} reason={decision['reason']}"
-    )
+    cli_autonomy.print_autonomy_decision(decision)
 
 
-def _print_recommendations(recommendations: list[dict[str, object]]) -> None:
-    for item in recommendations[:2]:
-        command = str(item.get("command") or "").strip()
-        reason = str(item.get("reason") or "").strip()
-        if command:
-            reason = reason.rstrip(".")
-        suffix = f" -> {command}" if command else ""
-        print(f"Recommendation: {reason}{suffix}")
+def _print_recommendations(conn: sqlite3.Connection, recommendations: list[dict[str, object]]) -> None:
+    cli_autonomy.print_recommendations(conn, recommendations)
 
 
 def cmd_capture(args: argparse.Namespace) -> None:
@@ -1302,15 +1280,24 @@ def _release_hygiene_findings(root: Path) -> list[str]:
         "personal-assistant-os-" + "public",
     ]
     findings: list[str] = []
+    cursor_backend_refs = {
+        Path("README.md"),
+        Path("src/personal_assistant/providers/__init__.py"),
+        Path("src/personal_assistant/providers/agent_cli.py"),
+        Path("src/personal_assistant/providers/cursor.py"),
+    }
     for path in _release_scan_files(root):
         try:
             text = path.read_text(errors="ignore")
         except OSError:
             continue
+        rel_path = path.relative_to(root)
         for line_no, line in enumerate(text.splitlines(), start=1):
             for pattern in patterns:
                 if pattern in line:
-                    findings.append(f"{path.relative_to(root)}:{line_no}: {pattern}")
+                    if pattern == ("Cur" + "sor") and rel_path in cursor_backend_refs:
+                        continue
+                    findings.append(f"{rel_path}:{line_no}: {pattern}")
     return findings
 
 
@@ -4101,6 +4088,7 @@ def cmd_do(args: argparse.Namespace) -> None:
     autonomy_decision = router.autonomy_decision_for_route(conn, route_decision)
     _print_autonomy_decision(autonomy_decision)
     _print_recommendations(
+        conn,
         autonomy.recommend_next_steps(
             autonomy_decision,
             command="do",
@@ -4331,44 +4319,7 @@ def cmd_trace(args: argparse.Namespace) -> None:
 
 
 def cmd_autonomy(args: argparse.Namespace) -> None:
-    action = getattr(args, "autonomy_action", "")
-    conn = get_connection()
-    if action == "eval":
-        result = autonomy.evaluate_command_decisions(level=args.level)
-        summary = result["summary"]
-        run_id = 0
-        if not args.no_record:
-            run_id = autonomy.record_command_decision_eval(conn, result)
-        print("Autonomy eval:")
-        print(f"- fixtures: {summary['total']}")
-        print(f"- passed: {summary['passed']} failed={summary['failed']} accuracy={summary['accuracy']:.2%}")
-        print(f"- calibration: {summary['calibration']}")
-        if run_id:
-            print(f"- recorded_eval_run: #{run_id}")
-        failures = [case for case in result["cases"] if not case["passed"]]
-        if failures:
-            print("Failures:")
-            for case in failures[:10]:
-                print(
-                    f"- {case['fixture_id']}: command={case['command']} "
-                    f"expected={case['expected_decision']} actual={case['actual_decision']}"
-                )
-        return
-    if action == "feedback":
-        try:
-            feedback_id = autonomy.record_command_decision_feedback(
-                conn,
-                trace_id=args.trace,
-                expected_decision=args.expected_decision,
-                note=args.note or "",
-            )
-        except ValueError as exc:
-            print(f"Autonomy feedback failed: {exc}")
-            raise SystemExit(1) from exc
-        print(f"Autonomy feedback recorded: #{feedback_id}")
-        print("Privacy: note text was hashed; raw command arguments were not stored.")
-        return
-    raise SystemExit("Unknown autonomy command.")
+    cli_autonomy.cmd_autonomy(args)
 
 
 def cmd_smart_help(args: argparse.Namespace) -> None:
@@ -4387,172 +4338,40 @@ def cmd_smart_help(args: argparse.Namespace) -> None:
             print(f"- myos {command}")
 
 
-def _run_autopilot_cycle(args: argparse.Namespace) -> dict[str, int]:
-    if args.env_file:
-        loaded = load_env_file(args.env_file)
-        print(f"Loaded {loaded} vars from {args.env_file}")
-    conn = get_connection()
-    conn.execute(
-        "INSERT INTO autopilot_runs (status, mode) VALUES ('running', ?)",
-        (args.mode,),
+def _autopilot_dependencies() -> cli_autopilot.AutopilotCommandDependencies:
+    return cli_autopilot.AutopilotCommandDependencies(
+        load_env_file=load_env_file,
+        cmd_sync=cmd_sync,
+        cmd_ingest_external=cmd_ingest_external,
+        scan_watch_dirs=_scan_watch_dirs,
+        cmd_inbox_process=cmd_inbox_process,
+        cmd_triage=cmd_triage,
+        print_goal_cycle_result=_print_goal_cycle_result,
     )
-    run_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
-    conn.commit()
 
-    synced = 0
-    watched_files = 0
-    watch_suggestions = 0
-    signals_detected = 0
-    tasks_created = 0
-    created_task_ids: list[int] = []
-    safe_actions = 0
-    approvals_pending = 0
-    factory_step: dict[str, object] = {}
-    try:
-        if not args.no_sync:
-            cmd_sync(argparse.Namespace(connector=args.connector, env_file=""))
-            synced = 1
-        if not args.no_process:
-            cmd_ingest_external(argparse.Namespace(limit=args.external_limit, min_risk=55))
-            watched_files, watch_suggestions = _scan_watch_dirs(
-                conn,
-                limit=args.watch_limit,
-                min_confidence=args.min_confidence,
-            )
-            conn.commit()
-            cmd_inbox_process(argparse.Namespace(limit=args.media_limit, min_confidence=args.min_confidence))
-            cmd_triage(argparse.Namespace())
 
-        signals = _detect_autopilot_signals(
-            conn,
-            risk_threshold=args.risk_threshold,
-            due_days=args.due_days,
-            limit=args.signal_limit,
-            watch_risks=getattr(args, "watch_risks", False),
-        )
-        signals_detected = len(signals)
-        for signal in signals:
-            task_id = _record_signal_and_task(conn, signal, mode=args.mode, max_actions=args.max_actions)
-            if task_id is not None:
-                tasks_created += 1
-                created_task_ids.append(task_id)
-        if getattr(args, "factory", False):
-            routed_factory = router.choose_autopilot_workflow(signals)
-            requested_pack = getattr(args, "factory_pack", "auto")
-            workflow_pack = routed_factory["workflow_pack"] if requested_pack == "auto" else requested_pack
-            factory_step = factory.proactive_step(
-                conn,
-                mode=getattr(args, "factory_mode", "review_first"),
-                workflow_pack=workflow_pack,
-            )
-            factory_step["router_intent"] = routed_factory["intent"]
-            factory_step["router_reason"] = routed_factory["reason"]
-            factory_step["workflow_pack"] = workflow_pack
-            conn.commit()
-        safe_actions = _execute_safe_autopilot_actions(conn, args.safe_action_limit, created_task_ids)
-        approvals_pending = conn.execute(
-            "SELECT COUNT(*) AS c FROM agent_actions WHERE status='proposed' AND requires_approval=1"
-        ).fetchone()["c"]
-        summary = (
-            f"synced={synced}, signals={signals_detected}, tasks_created={tasks_created}, "
-            f"safe_actions={safe_actions}, approvals_pending={approvals_pending}, "
-            f"watched_files={watched_files}, watch_suggestions={watch_suggestions}, "
-            f"factory={factory_step.get('action', 'off') if factory_step else 'off'}"
-            f"/{factory_step.get('workflow_pack', 'none') if factory_step else 'none'}"
-        )
-        title, digest_body, digest_payload = _build_autopilot_digest(
-            conn,
-            run_id=run_id,
-            synced=synced,
-            signals_detected=signals_detected,
-            tasks_created=tasks_created,
-            safe_actions=safe_actions,
-            approvals_pending=approvals_pending,
-            created_task_ids=created_task_ids,
-        )
-        digest_id = _store_autopilot_digest(conn, title, digest_body, digest_payload, output_dir=args.digest_dir)
-        conn.execute(
-            """
-            UPDATE autopilot_runs
-            SET status='completed', finished_at=CURRENT_TIMESTAMP, synced=?, signals_detected=?,
-                tasks_created=?, safe_actions_executed=?, approvals_pending=?, summary=?
-            WHERE id=?
-            """,
-            (synced, signals_detected, tasks_created, safe_actions, approvals_pending, summary, run_id),
-        )
-        append_event(conn, "autopilot_cycle", "autopilot_run", run_id, json.dumps({"summary": summary}, ensure_ascii=True))
-        conn.commit()
-        # Context Intelligence Loop runs AFTER the cycle's atomic commit (review #5): reflect()
-        # /hygiene() commit internally, so doing this mid-cycle would defeat the cycle's
-        # rollback boundary. As a separate committed post-step it can't corrupt cycle state.
-        try:
-            reflection = ctx.reflect(conn)
-            hygiene_stats = ctx.hygiene(conn)
-            append_event(
-                conn, "context_reflect", "autopilot_run", run_id,
-                json.dumps({**reflection, **hygiene_stats}, ensure_ascii=True),
-            )
-            conn.commit()
-        except Exception:  # noqa: BLE001 — never fail an autopilot cycle on the reflection step
-            # Roll back any partial reflect/hygiene write so it can't be flushed by the
-            # subsequent _notify_digest commit (review #4, defensive — the cycle already
-            # committed at line 3301 and reflect/hygiene self-commit).
-            conn.rollback()
-        _notify_digest(conn, digest_id, title, digest_body, digest_payload)
-        conn.commit()
-        print(f"Autopilot cycle complete (run_id={run_id}, digest_id={digest_id}): {summary}")
-        if approvals_pending:
-            print("Needs your approval:")
-            pending = conn.execute(
-                """
-                SELECT id, agent_task_id, action_type, title
-                FROM agent_actions
-                WHERE status='proposed' AND requires_approval=1
-                ORDER BY created_at ASC
-                LIMIT 10
-                """
-            ).fetchall()
-            for row in pending:
-                print(f"- action #{row['id']} task=#{row['agent_task_id']} [{row['action_type']}] {row['title']}")
-            print("Run: myos approve --list")
-        return {
-            "run_id": run_id,
-            "synced": synced,
-            "signals_detected": signals_detected,
-            "tasks_created": tasks_created,
-            "safe_actions": safe_actions,
-            "approvals_pending": approvals_pending,
-        }
-    except Exception as exc:
-        conn.rollback()
-        conn.execute(
-            "UPDATE autopilot_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, summary=? WHERE id=?",
-            (str(exc), run_id),
-        )
-        conn.commit()
-        raise
+def _run_autopilot_cycle(args: argparse.Namespace) -> dict[str, int]:
+    return cli_autopilot.run_autopilot_cycle(args, _autopilot_dependencies())
+
+
+def _run_autopilot_goal_cycle(args: argparse.Namespace) -> dict[str, object]:
+    return cli_autopilot.run_autopilot_goal_cycle(args, _autopilot_dependencies())
 
 
 def cmd_autopilot(args: argparse.Namespace) -> None:
-    lock_conn = get_connection()
-    owner = f"autopilot-{os.getpid()}"
-    cycles = 0
-    while True:
-        # Per-cycle mutual exclusion: two `myos autopilot` processes can't run
-        # overlapping cycles (which would corrupt shared state). The lock is held
-        # only for the cycle's duration, then released, so it never goes stale.
-        if acquire_lock(lock_conn, "autopilot", owner):
-            try:
-                _run_autopilot_cycle(args)
-            finally:
-                release_lock(lock_conn, "autopilot", owner)
-                lock_conn.commit()
-        else:
-            print("autopilot: another instance is mid-cycle; skipping this tick.")
-        cycles += 1
-        if args.once or (args.max_cycles and cycles >= args.max_cycles):
-            return
-        time.sleep(args.interval_sec)
+    cli_autopilot.cmd_autopilot(args, _autopilot_dependencies())
+
+
+def _print_loop_result(result: dict[str, object]) -> None:
+    cli_autonomy.print_loop_result(result)
+
+
+def _print_goal_cycle_result(result: dict[str, object]) -> None:
+    cli_autonomy.print_goal_cycle_result(result)
+
+
+def cmd_loop(args: argparse.Namespace) -> None:
+    cli_autonomy.cmd_loop(args)
 
 
 def cmd_approve(args: argparse.Namespace) -> None:
@@ -5192,248 +5011,7 @@ def cmd_agent_run(args: argparse.Namespace) -> None:
 
 
 def cmd_factory(args: argparse.Namespace) -> None:
-    conn = get_connection()
-    action = getattr(args, "factory_action", "")
-
-    if action == "start":
-        autonomy_decision = _command_autonomy_decision(conn, "factory", requested_mode=args.mode)
-        _print_autonomy_decision(autonomy_decision)
-        _print_recommendations(
-            autonomy.recommend_next_steps(
-                autonomy_decision,
-                command="factory",
-                workflow_pack=args.pack,
-            )
-        )
-        if autonomy_decision["decision"] == autonomy.BLOCKED:
-            raise SystemExit(1)
-        try:
-            result = factory.start_review_first_run(
-                conn,
-                intent_id=args.intent,
-                mode=args.mode,
-                workflow_pack=args.pack,
-            )
-        except ValueError as exc:
-            print(str(exc))
-            raise SystemExit(1) from exc
-        conn.commit()
-        print(f"Factory run #{result['id']} for intent #{result['intent_id']} status={result['status']}")
-        print(f"mode={args.mode} pack={args.pack} plan=#{result['plan_id']}")
-        if result["retrieval_run_id"] is not None:
-            print(f"retrieval_run=#{result['retrieval_run_id']}")
-        print(f"review_packet=#{result['review_packet_id']}")
-        print("agent_runs=" + ",".join(f"#{run_id}" for run_id in result["agent_run_ids"]))
-        print(f"stopped_before_execution={args.mode == 'review_first'}")
-        _print_recommendations(
-            autonomy.recommend_next_steps(
-                autonomy_decision,
-                command="factory",
-                workflow_pack=args.pack,
-                factory_run_id=result["id"],
-            )
-        )
-        return
-
-    if action == "status":
-        run = factory.get_factory_run(conn, args.id)
-        if run is None:
-            print(f"Factory run #{args.id} not found.")
-            raise SystemExit(1)
-        print(
-            f"Factory run #{run['id']} intent=#{run['intent_id']} plan=#{run['plan_id']} "
-            f"mode={run['mode']} pack={run['workflow_pack']} status={run['status']}"
-        )
-        if run.get("summary"):
-            print(f"Summary: {run['summary']}")
-        if run.get("outcome"):
-            print(f"Outcome: {run['outcome']} notes={run.get('outcome_notes') or ''}")
-        print("Stages:")
-        for stage in run["stages"]:
-            agent = f" agent_run=#{stage['agent_run_id']}" if stage["agent_run_id"] else ""
-            role = f" role={stage['role']}" if stage["role"] else ""
-            print(f"- {stage['stage_name']} status={stage['status']}{role}{agent}")
-        print("Artifacts:")
-        for artifact in run["artifacts"]:
-            label = f" {artifact['label']}" if artifact["label"] else ""
-            print(f"- {artifact['artifact_type']}#{artifact['artifact_id']}{label}")
-        return
-
-    if action == "run-stage":
-        try:
-            factory.record_stage(
-                conn,
-                factory_run_id=args.id,
-                stage_name=args.stage,
-                status=args.status,
-                note=args.note,
-            )
-        except ValueError as exc:
-            print(str(exc))
-            raise SystemExit(1) from exc
-        conn.commit()
-        print(f"Factory run #{args.id} stage {args.stage} -> {args.status}")
-        return
-
-    if action == "continue":
-        run = factory.get_factory_run(conn, args.id)
-        if run is None:
-            print(f"Factory run #{args.id} not found.")
-            raise SystemExit(1)
-        next_stage = next((s for s in run["stages"] if s["status"] in {"pending", "waiting"}), None)
-        if next_stage is None:
-            print(f"Factory run #{args.id} has no pending stages.")
-            return
-        if next_stage["stage_name"] == "execution":
-            try:
-                result = factory.advance_execution(conn, args.id)
-            except ValueError as exc:
-                print(str(exc))
-                raise SystemExit(1) from exc
-            conn.commit()
-            print(
-                f"Factory run #{args.id} execution advanced: "
-                f"actions={result['actions']} executed={result['executed']} pending={result['pending']} blocked={result['blocked']}"
-            )
-            return
-        if next_stage["stage_name"] == "learning":
-            print(f"Factory run #{args.id} is waiting for outcome before learning.")
-            return
-        factory.record_stage(conn, factory_run_id=args.id, stage_name=next_stage["stage_name"], status="completed")
-        conn.commit()
-        print(f"Factory run #{args.id} continued stage {next_stage['stage_name']}.")
-        return
-
-    if action == "review":
-        run = factory.get_factory_run(conn, args.id)
-        if run is None:
-            print(f"Factory run #{args.id} not found.")
-            raise SystemExit(1)
-        post_review = {"execution", "learning"}
-        gaps = [
-            s["stage_name"]
-            for s in run["stages"]
-            if s["status"] in {"pending", "blocked"} and s["stage_name"] not in post_review
-        ]
-        packet = next((a for a in run["artifacts"] if a["artifact_type"] == "review_packet"), None)
-        print(f"Factory review #{args.id}: {'ready_for_approval' if not gaps and packet else 'needs_attention'}")
-        print(f"review_packet=#{packet['artifact_id'] if packet else 'missing'}")
-        if gaps:
-            print("Open gaps: " + ", ".join(gaps))
-        print("Execution remains approval-gated.")
-        return
-
-    if action == "approve":
-        run = factory.get_factory_run(conn, args.id)
-        if run is None:
-            print(f"Factory run #{args.id} not found.")
-            raise SystemExit(1)
-        conn.execute(
-            "UPDATE factory_runs SET status=? WHERE id=?",
-            ("approved_for_execution" if args.execute else "approved", int(args.id)),
-        )
-        factory.record_stage(conn, factory_run_id=args.id, stage_name="approval", status="completed", note="factory approval recorded")
-        if args.execute:
-            try:
-                execution = factory.advance_execution(conn, args.id, approve=True)
-            except ValueError as exc:
-                print(str(exc))
-                raise SystemExit(1) from exc
-        conn.commit()
-        print(f"Factory run #{args.id} approved.")
-        if args.execute:
-            print(
-                f"Execution advanced: actions={execution['actions']} executed={execution['executed']} "
-                f"pending={execution['pending']} blocked={execution['blocked']}"
-            )
-        return
-
-    if action == "policy":
-        policy_action = getattr(args, "policy_action", "")
-        if policy_action == "set":
-            try:
-                policy_id = factory.set_policy(
-                    conn,
-                    allowed_mode=args.mode,
-                    scope_type=args.scope_type,
-                    scope_id=args.scope_id,
-                    connector=args.connector,
-                    action_type=args.action_type,
-                )
-            except ValueError as exc:
-                print(str(exc))
-                raise SystemExit(1) from exc
-            conn.commit()
-            scope = f"{args.scope_type}:{args.scope_id}" if args.scope_id else args.scope_type
-            print(f"Factory policy #{policy_id} {scope} connector={args.connector or 'all'} action={args.action_type or 'all'} mode={args.mode}")
-            return
-        rows = conn.execute(
-            """
-            SELECT id, scope_type, scope_id, connector, action_type, allowed_mode, status
-            FROM factory_policies
-            ORDER BY id ASC
-            LIMIT ?
-            """,
-            (int(args.limit),),
-        ).fetchall()
-        if not rows:
-            print("No factory policies configured.")
-            return
-        print("Factory policies:")
-        for row in rows:
-            scope = f"{row['scope_type']}:{row['scope_id']}" if row["scope_id"] else row["scope_type"]
-            connector = row["connector"] or "all"
-            action_type = row["action_type"] or "all"
-            print(f"- #{row['id']} {scope} connector={connector} action={action_type} mode={row['allowed_mode']} status={row['status']}")
-        return
-
-    if action == "learn":
-        try:
-            learning_id = factory.learn(conn, factory_run_id=args.id, outcome=args.outcome, notes=args.notes)
-        except ValueError as exc:
-            print(str(exc))
-            raise SystemExit(1) from exc
-        conn.commit()
-        print(f"Factory learning #{learning_id} recorded for run #{args.id}: {args.outcome}")
-        return
-
-    if action == "retrospective":
-        run = factory.get_factory_run(conn, args.id)
-        if run is None:
-            print(f"Factory run #{args.id} not found.")
-            raise SystemExit(1)
-        retro = factory.latest_retrospective(conn, args.id)
-        if retro is None:
-            print(f"No retrospective recorded for factory run #{args.id}.")
-            return
-        body = retro["retrospective"]
-        print(f"Factory retrospective #{args.id}: outcome={retro['outcome']}")
-        print(f"notes={retro['notes'] or ''}")
-        print(f"stages={body.get('stage_count', 0)} artifacts={body.get('artifact_count', 0)}")
-        receipts = body.get("recent_receipts") or []
-        print(f"recent_receipts={len(receipts)}")
-        return
-
-    if action == "insights":
-        insights = factory.learning_insights(
-            conn,
-            intent_id=args.intent,
-            workflow_pack=args.pack,
-            limit=args.limit,
-        )
-        scope = f"intent=#{args.intent}" if args.intent else "all intents"
-        pack = args.pack or "all packs"
-        print(f"Factory insights ({scope}, {pack}): runs={insights['count']}")
-        print(f"outcomes={json.dumps(insights['outcomes'], ensure_ascii=True, sort_keys=True)}")
-        print(f"blockers={json.dumps(insights['blockers'], ensure_ascii=True, sort_keys=True)}")
-        print(f"useful_sources={json.dumps(insights['useful_sources'], ensure_ascii=True, sort_keys=True)}")
-        if insights["notes"]:
-            print("Notes:")
-            for note in insights["notes"]:
-                print(f"- {note}")
-        return
-
-    raise SystemExit("Unknown factory command.")
+    cli_factory.cmd_factory(args)
 
 
 def cmd_entity(args: argparse.Namespace) -> None:
@@ -5804,6 +5382,51 @@ def build_parser() -> argparse.ArgumentParser:
     autonomy_feedback.add_argument("--expected-decision", choices=list(autonomy.DECISIONS), required=True)
     autonomy_feedback.add_argument("--note", default="", help="Optional note; stored as hash and length only.")
     autonomy_feedback.set_defaults(func=cmd_autonomy)
+    recommendation_feedback = autonomy_sub.add_parser("recommendation-feedback", help="Record privacy-safe feedback on a printed recommendation.")
+    recommendation_feedback.add_argument("--label", required=True, help="Recommendation label printed by MYOS.")
+    recommendation_feedback.add_argument("--command", dest="recommendation_command", default="", help="Recommended command text, if any.")
+    recommendation_feedback.add_argument("--decision", choices=["", *list(autonomy.DECISIONS)], default="")
+    recommendation_feedback.add_argument("--intent", default="")
+    recommendation_feedback.add_argument("--workflow-pack", default="")
+    recommendation_feedback.add_argument("--useful", choices=["yes", "no"], required=True)
+    recommendation_feedback.add_argument("--note", default="", help="Optional note; stored as hash and length only.")
+    recommendation_feedback.set_defaults(func=cmd_autonomy)
+    recommendations = autonomy_sub.add_parser("recommendations", help="List recommendation feedback ranking summary.")
+    recommendations.add_argument("--limit", type=int, default=20)
+    recommendations.set_defaults(func=cmd_autonomy)
+
+    loop = sub.add_parser("loop", help="Run one bounded durable autonomy loop cycle.")
+    loop_sub = loop.add_subparsers(dest="loop_action", required=True)
+    loop_start = loop_sub.add_parser("start", help="Start a durable autonomous task loop.")
+    loop_start.add_argument("objective")
+    loop_start.add_argument("--context", default="")
+    loop_start.add_argument("--backend", choices=["", "claude", "claude-sdk", "claude-code-sdk", "cursor", "claude-code", "copilot", "command"], default="")
+    loop_start.add_argument("--max-actions", type=int, default=autonomy_loop.DEFAULT_MAX_ACTIONS)
+    loop_start.add_argument("--mode", choices=list(autonomy_loop.MODES), default="safe")
+    loop_start.set_defaults(func=cmd_loop)
+    loop_resume = loop_sub.add_parser("resume", help="Run the next bounded cycle for an autonomy loop task.")
+    loop_resume.add_argument("--task", type=int, required=True)
+    loop_resume.add_argument("--max-actions", type=int, default=autonomy_loop.DEFAULT_MAX_ACTIONS)
+    loop_resume.set_defaults(func=cmd_loop)
+    loop_status = loop_sub.add_parser("status", help="Show durable autonomy loop status.")
+    loop_status.add_argument("--task", type=int)
+    loop_status.add_argument("--limit", type=int, default=10)
+    loop_status.set_defaults(func=cmd_loop)
+    loop_goals = loop_sub.add_parser("goals", help="List eligible goals for a scheduler cycle.")
+    loop_goals.add_argument("--limit", type=int, default=5)
+    loop_goals.set_defaults(func=cmd_loop)
+    loop_run_goal = loop_sub.add_parser("run-goal", help="Run one bounded goal-driven autonomy cycle.")
+    loop_run_goal.add_argument("--goal", type=int)
+    loop_run_goal.add_argument("--backend", choices=["", "claude", "claude-sdk", "claude-code-sdk", "cursor", "claude-code", "copilot", "command"], default="")
+    loop_run_goal.add_argument("--max-actions", type=int, default=autonomy_loop.DEFAULT_MAX_ACTIONS)
+    loop_run_goal.add_argument("--limit", type=int, default=5)
+    loop_run_goal.set_defaults(func=cmd_loop)
+    loop_ledger = loop_sub.add_parser("ledger", help="Inspect recent autonomy run ledger decisions.")
+    loop_ledger.add_argument("--limit", type=int, default=20)
+    loop_ledger.add_argument("--goal", type=int)
+    loop_ledger.add_argument("--task", type=int)
+    loop_ledger.add_argument("--status", default="")
+    loop_ledger.set_defaults(func=cmd_loop)
 
     capture = sub.add_parser("capture", help="Capture an inbox item.")
     capture.add_argument("text", help="Raw capture text.")
@@ -6384,6 +6007,9 @@ def build_parser() -> argparse.ArgumentParser:
     autopilot.add_argument("--factory", action="store_true", help="Start or continue one policy-aware factory run this cycle.")
     autopilot.add_argument("--factory-mode", choices=list(factory.MODES), default="review_first")
     autopilot.add_argument("--factory-pack", choices=["auto", *list(factory.WORKFLOW_PACKS)], default="auto")
+    autopilot.add_argument("--loop-goal", action="store_true", help="Run one goal-driven autonomy scheduler decision and stop; requires --once.")
+    autopilot.add_argument("--loop-goal-id", type=int, help="Target one active goal for --loop-goal; otherwise pick the next eligible goal.")
+    autopilot.add_argument("--loop-goal-limit", type=int, default=5, help="Number of eligible goals to inspect for --loop-goal.")
     autopilot.set_defaults(func=cmd_autopilot)
 
     approve = sub.add_parser("approve", help="Review, approve, and optionally execute autopilot actions.")
