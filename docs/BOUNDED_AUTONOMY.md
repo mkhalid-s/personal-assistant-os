@@ -282,12 +282,24 @@ Implemented scope:
 - Pass the full local-model-safe command mapper to the optional router model while preserving the older compact catalog field.
 - Keep parser coverage tests in place so future command slices update the mapper alongside CLI changes.
 
-## Next Slice: Agent Command Module Split
+## Agent Command Module Split
 
 Purpose: continue reducing `cli.py` size by moving agent task, action, learning, and status command presentation into a focused module.
 
-Scope:
+Implemented scope:
 
 - Move agent-facing command handlers without changing behavior.
 - Preserve approval output, execution receipt behavior, and public CLI text.
 - Keep the parser in `cli.py` and validate with focused agent/action regressions.
+
+The parser remains in `cli.py`, while agent delegation, action listing/execution, approvals, receipts, learning, coaching, status, and local agent-role presentation live in `cli_agent.py`.
+
+## Next Slice: Intent And Plan Command Module Split
+
+Purpose: continue reducing `cli.py` size by moving intent, plan, evidence, and review-packet command presentation into a focused module.
+
+Scope:
+
+- Move intent and planning command handlers without changing behavior.
+- Preserve evidence attachment output, review packet output, and public CLI text.
+- Keep the parser in `cli.py` and validate with focused intent/plan regressions.

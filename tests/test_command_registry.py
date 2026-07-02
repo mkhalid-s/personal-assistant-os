@@ -74,23 +74,43 @@ class CommandRegistryTest(unittest.TestCase):
         registry_commands = {spec.command for spec in command_registry.all_commands()}
         self.assertEqual(sorted(parser_commands - registry_commands), [])
 
-    def test_autonomy_loop_autopilot_and_factory_handlers_are_module_backed(self) -> None:
-        from personal_assistant import cli, cli_autonomy, cli_autopilot, cli_factory
+    def test_extracted_command_handlers_are_module_backed(self) -> None:
+        from personal_assistant import cli, cli_agent, cli_autonomy, cli_autopilot, cli_factory
 
         self.assertTrue(callable(cli_autonomy.cmd_autonomy))
         self.assertTrue(callable(cli_autonomy.cmd_loop))
         self.assertTrue(callable(cli_autopilot.cmd_autopilot))
         self.assertTrue(callable(cli_autopilot.run_autopilot_cycle))
         self.assertTrue(callable(cli_factory.cmd_factory))
+        self.assertTrue(callable(cli_agent.cmd_delegate))
+        self.assertTrue(callable(cli_agent.cmd_act))
+        self.assertTrue(callable(cli_agent.cmd_approve))
+        self.assertTrue(callable(cli_agent.cmd_execution_receipt))
         parser = cli.build_parser()
         autonomy_args = parser.parse_args(["autonomy", "eval", "--no-record"])
         loop_args = parser.parse_args(["loop", "status"])
         autopilot_args = parser.parse_args(["autopilot", "--once"])
         factory_args = parser.parse_args(["factory", "policy", "list"])
+        delegate_args = parser.parse_args(["delegate", "Handle blocked launch dependency"])
+        act_args = parser.parse_args(["act", "--list"])
+        approve_args = parser.parse_args(["approve", "--list"])
+        receipt_args = parser.parse_args(["execution-receipt", "list"])
+        learn_args = parser.parse_args(["learn", "--task", "1", "--outcome", "success"])
+        coach_args = parser.parse_args(["coach", "blocked launch dependency"])
+        agent_status_args = parser.parse_args(["agent-status"])
+        agent_run_args = parser.parse_args(["agent-run", "--intent", "1", "--role", "planner"])
         self.assertIs(autonomy_args.func, cli.cmd_autonomy)
         self.assertIs(loop_args.func, cli.cmd_loop)
         self.assertIs(autopilot_args.func, cli.cmd_autopilot)
         self.assertIs(factory_args.func, cli.cmd_factory)
+        self.assertIs(delegate_args.func, cli.cmd_delegate)
+        self.assertIs(act_args.func, cli.cmd_act)
+        self.assertIs(approve_args.func, cli.cmd_approve)
+        self.assertIs(receipt_args.func, cli.cmd_execution_receipt)
+        self.assertIs(learn_args.func, cli.cmd_learn)
+        self.assertIs(coach_args.func, cli.cmd_coach)
+        self.assertIs(agent_status_args.func, cli.cmd_agent_status)
+        self.assertIs(agent_run_args.func, cli.cmd_agent_run)
 
 
 if __name__ == "__main__":
