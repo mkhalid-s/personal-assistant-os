@@ -48,6 +48,7 @@ All notable changes to this project will be documented in this file.
 - Daily/review presentation moved into a focused review module while dependency-heavy operational orchestration remains in the parser entrypoint.
 - Run-day, go-live, workflow queue, worker, and workflow orchestration presentation moved into a focused operations module with explicit environment-loading dependencies.
 - Doctor, sanity, snapshot, cutover, UAT, and tuning readiness presentation moved into a focused health module.
+- Dashboard, runbook, launchd status, health alias, and UI alias presentation moved into a focused runtime module.
 - Local router models now receive a full command mapper with subcommands, required args, examples, tiers, intents, and safety metadata.
 
 ### Validation

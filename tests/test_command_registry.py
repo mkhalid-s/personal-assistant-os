@@ -87,6 +87,7 @@ class CommandRegistryTest(unittest.TestCase):
             cli_operations,
             cli_planning,
             cli_review,
+            cli_runtime,
             cli_workflow,
         )
 
@@ -130,6 +131,10 @@ class CommandRegistryTest(unittest.TestCase):
         self.assertTrue(callable(cli_health.cmd_snapshot))
         self.assertTrue(callable(cli_health.cmd_uat))
         self.assertTrue(callable(cli_health.cmd_tune))
+        self.assertTrue(callable(cli_runtime.cmd_dashboard))
+        self.assertTrue(callable(cli_runtime.cmd_runbook))
+        self.assertTrue(callable(cli_runtime.cmd_launchd_status))
+        self.assertTrue(callable(cli_runtime.cmd_health))
         parser = cli.build_parser()
         autonomy_args = parser.parse_args(["autonomy", "eval", "--no-record"])
         loop_args = parser.parse_args(["loop", "status"])
@@ -183,6 +188,11 @@ class CommandRegistryTest(unittest.TestCase):
         cutover_args = parser.parse_args(["cutover-check"])
         uat_args = parser.parse_args(["uat"])
         tune_args = parser.parse_args(["tune"])
+        dashboard_args = parser.parse_args(["dashboard", "--once"])
+        runbook_args = parser.parse_args(["runbook"])
+        launchd_status_args = parser.parse_args(["launchd-status"])
+        health_args = parser.parse_args(["health"])
+        ui_args = parser.parse_args(["ui"])
         self.assertIs(autonomy_args.func, cli.cmd_autonomy)
         self.assertIs(loop_args.func, cli.cmd_loop)
         self.assertIs(autopilot_args.func, cli.cmd_autopilot)
@@ -235,6 +245,11 @@ class CommandRegistryTest(unittest.TestCase):
         self.assertIs(cutover_args.func, cli.cmd_cutover_check)
         self.assertIs(uat_args.func, cli.cmd_uat)
         self.assertIs(tune_args.func, cli.cmd_tune)
+        self.assertIs(dashboard_args.func, cli.cmd_dashboard)
+        self.assertIs(runbook_args.func, cli.cmd_runbook)
+        self.assertIs(launchd_status_args.func, cli.cmd_launchd_status)
+        self.assertIs(health_args.func, cli.cmd_health)
+        self.assertIs(ui_args.func, cli.cmd_ui)
 
 
 if __name__ == "__main__":
