@@ -390,12 +390,24 @@ Implemented scope:
 
 The first safe runtime slice moves dashboard presentation, launchd status, runbook output, and the health/ui aliases into `cli_runtime.py`. Setup, activation, start/stop, launchd install/uninstall, cleanup, backup, restore, and dashboard serving safety remain parser-adjacent where their side effects are easiest to audit.
 
-## Next Slice: Setup And Local Data Safety Boundary Review
+## Setup And Local Data Safety Boundary Review
 
 Purpose: review the remaining side-effecting setup and local-data operations for dependency injection opportunities without obscuring safety checks.
 
-Scope:
+Implemented scope:
 
 - Evaluate `setup-live`, backup, restore, cleanup, and config initialization.
 - Keep restore verification, dry-run behavior, local artifact checks, and filesystem writes obvious.
 - Preserve all existing command text and validation gates.
+
+Local data maintenance now lives in `cli_local_data.py`, including migration verification, backup, restore, config initialization, and cleanup. Restore still verifies the source database before copying, creates a pre-restore backup, clears SQLite sidecars, and verifies schema after restore. `setup-live` stays in `cli.py` because it coordinates env templating, router setup, watch dirs, standing goals, and optional launchd installation.
+
+## Next Slice: Setup Live Dependency Boundary Review
+
+Purpose: review `setup-live` for explicit dependency injection without weakening dry-run behavior, file-permission handling, or launchd safety.
+
+Scope:
+
+- Evaluate `_env_template`, `_setup_live_paths`, readiness checks, env-line upserts, and launchd handoff.
+- Preserve dry-run as the default and keep env file permissions explicit.
+- Keep router model setup and launchd installation visibly gated.

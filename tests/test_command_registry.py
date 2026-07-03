@@ -84,6 +84,7 @@ class CommandRegistryTest(unittest.TestCase):
             cli_factory,
             cli_health,
             cli_knowledge,
+            cli_local_data,
             cli_operations,
             cli_planning,
             cli_review,
@@ -135,6 +136,11 @@ class CommandRegistryTest(unittest.TestCase):
         self.assertTrue(callable(cli_runtime.cmd_runbook))
         self.assertTrue(callable(cli_runtime.cmd_launchd_status))
         self.assertTrue(callable(cli_runtime.cmd_health))
+        self.assertTrue(callable(cli_local_data.cmd_backup))
+        self.assertTrue(callable(cli_local_data.cmd_restore))
+        self.assertTrue(callable(cli_local_data.cmd_migrations))
+        self.assertTrue(callable(cli_local_data.cmd_config_init))
+        self.assertTrue(callable(cli_local_data.cmd_cleanup))
         parser = cli.build_parser()
         autonomy_args = parser.parse_args(["autonomy", "eval", "--no-record"])
         loop_args = parser.parse_args(["loop", "status"])
@@ -193,6 +199,11 @@ class CommandRegistryTest(unittest.TestCase):
         launchd_status_args = parser.parse_args(["launchd-status"])
         health_args = parser.parse_args(["health"])
         ui_args = parser.parse_args(["ui"])
+        backup_args = parser.parse_args(["backup"])
+        restore_args = parser.parse_args(["restore", "--from", "backup.db"])
+        migrations_args = parser.parse_args(["migrations"])
+        config_init_args = parser.parse_args(["config-init"])
+        cleanup_args = parser.parse_args(["cleanup"])
         self.assertIs(autonomy_args.func, cli.cmd_autonomy)
         self.assertIs(loop_args.func, cli.cmd_loop)
         self.assertIs(autopilot_args.func, cli.cmd_autopilot)
@@ -250,6 +261,11 @@ class CommandRegistryTest(unittest.TestCase):
         self.assertIs(launchd_status_args.func, cli.cmd_launchd_status)
         self.assertIs(health_args.func, cli.cmd_health)
         self.assertIs(ui_args.func, cli.cmd_ui)
+        self.assertIs(backup_args.func, cli.cmd_backup)
+        self.assertIs(restore_args.func, cli.cmd_restore)
+        self.assertIs(migrations_args.func, cli.cmd_migrations)
+        self.assertIs(config_init_args.func, cli.cmd_config_init)
+        self.assertIs(cleanup_args.func, cli.cmd_cleanup)
 
 
 if __name__ == "__main__":
