@@ -294,12 +294,84 @@ Implemented scope:
 
 The parser remains in `cli.py`, while agent delegation, action listing/execution, approvals, receipts, learning, coaching, status, and local agent-role presentation live in `cli_agent.py`.
 
-## Next Slice: Intent And Plan Command Module Split
+## Intent And Plan Command Module Split
 
 Purpose: continue reducing `cli.py` size by moving intent, plan, evidence, and review-packet command presentation into a focused module.
 
-Scope:
+Implemented scope:
 
 - Move intent and planning command handlers without changing behavior.
 - Preserve evidence attachment output, review packet output, and public CLI text.
 - Keep the parser in `cli.py` and validate with focused intent/plan regressions.
+
+The parser remains in `cli.py`, while intent, plan, evidence attachment, external evidence sync, and review-packet presentation live in `cli_planning.py`.
+
+## Entity And Relationship Command Module Split
+
+Purpose: continue reducing `cli.py` size by moving entity, relationship, and graph retrieval presentation into focused modules.
+
+Implemented scope:
+
+- Move entity and relationship command handlers without changing behavior.
+- Preserve extraction/list output for entity, relationship, and claim commands.
+- Keep the parser in `cli.py` and validate with focused entity/relationship/graph regressions.
+
+The parser remains in `cli.py`, while deterministic entity, relationship, and claim extraction/list presentation live in `cli_knowledge.py`.
+
+## Router, Model, And Trace Command Module Split
+
+Purpose: continue reducing `cli.py` size by moving router calibration, model setup, trace inspection, and retrieval/graph presentation into focused modules.
+
+Implemented scope:
+
+- Move router/model/trace command handlers without changing behavior.
+- Preserve router command mapper output, model setup output, trace cleanup/rollup output, and retrieval command text.
+- Keep the parser in `cli.py` and validate with focused router/model/trace/retrieval regressions.
+
+The parser remains in `cli.py`, while router calibration, model setup/status, trace inspection, graph linking, context lookup, why output, and retrieval-run presentation live in `cli_diagnostics.py`.
+
+## Inbox, Sync, And Connector Command Module Split
+
+Purpose: continue reducing `cli.py` size by moving inbox, sync, connector ingestion, and day-planning presentation into focused modules.
+
+Implemented scope:
+
+- Move sync, ingest, triage, inbox processing, and daily work-list command handlers without changing behavior.
+- Preserve connector output, local-write behavior, provenance indexing, and public CLI text.
+- Keep the parser in `cli.py` and validate with focused CLI workflow regressions.
+
+The parser remains in `cli.py`, while capture, triage, today, risk radar, sync, external ingestion, and inbox processing presentation live in `cli_workflow.py`.
+
+## Final CLI Thin-Entry Cleanup
+
+Purpose: finish reducing `cli.py` by reviewing remaining command bodies and extracting only clearly cohesive groups that do not create circular dependencies.
+
+Implemented scope:
+
+- Review remaining parser-adjacent helpers, operational setup commands, and daily convenience commands.
+- Keep risky orchestration code stable unless a clean dependency boundary is obvious.
+- Run final full validation and release hygiene before committing.
+
+The parser and dependency-heavy orchestration commands remain in `cli.py`. Daily/review presentation now lives in `cli_review.py`, including close-day, morning brief, at-risk/waiting/delegation views, executive brief, stop-doing review, reports, metrics, evidence review, commitment resolution, weekly review, renegotiation, and next-action guidance.
+
+## Operational Orchestration Module Split
+
+Purpose: only after this refactor is committed, consider moving dependency-heavy operational commands with explicit dependency injection.
+
+Implemented scope:
+
+- Evaluate `run-day`, `setup-live`, `go-live`, `launchd-install`, and `doctor` for clean dependency boundaries.
+- Prefer no extraction if it would increase coupling or obscure safety checks.
+- Preserve all existing command text and release gates.
+
+The first safe operational slice moves run-day, go-live, workflow queue, workflow run listing, workflow orchestration, and worker execution into `cli_operations.py`. The module receives environment loading through an explicit dependency object, while OS-service and broad health commands remain in `cli.py`.
+
+## Next Slice: Operational Setup And Health Boundary Review
+
+Purpose: review the remaining operational commands that were intentionally left in `cli.py` because they touch setup, launch agents, dashboard serving, restore, and system health.
+
+Scope:
+
+- Evaluate `setup-live`, `activate`, `start`, `stop`, `launchd-*`, `doctor`, `sanity`, `dashboard`, backup, and restore for clean boundaries.
+- Keep OS-service writes and safety/restore checks obvious at the entrypoint unless extraction improves clarity.
+- Preserve all existing command text and validation gates.
