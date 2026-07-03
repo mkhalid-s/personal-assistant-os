@@ -366,12 +366,24 @@ Implemented scope:
 
 The first safe operational slice moves run-day, go-live, workflow queue, workflow run listing, workflow orchestration, and worker execution into `cli_operations.py`. The module receives environment loading through an explicit dependency object, while OS-service and broad health commands remain in `cli.py`.
 
-## Next Slice: Operational Setup And Health Boundary Review
+## Operational Setup And Health Boundary Review
 
 Purpose: review the remaining operational commands that were intentionally left in `cli.py` because they touch setup, launch agents, dashboard serving, restore, and system health.
 
-Scope:
+Implemented scope:
 
 - Evaluate `setup-live`, `activate`, `start`, `stop`, `launchd-*`, `doctor`, `sanity`, `dashboard`, backup, and restore for clean boundaries.
 - Keep OS-service writes and safety/restore checks obvious at the entrypoint unless extraction improves clarity.
 - Preserve all existing command text and validation gates.
+
+The first safe health slice moves doctor, sanity, snapshot, cutover readiness, UAT quality, and tuning recommendations into `cli_health.py`. Setup, restore, dashboard serving, and launchd commands remain in `cli.py` because they perform broad system checks, OS-service writes, file restores, or long-running serving.
+
+## Next Slice: Operational Setup And Runtime Boundary Review
+
+Purpose: evaluate the remaining setup/runtime commands that still sit in the parser entrypoint and decide whether any can move without hiding safety-critical behavior.
+
+Scope:
+
+- Review `setup-live`, `activate`, `start`, `stop`, `launchd-*`, `dashboard`, backup, restore, `runbook`, and cleanup.
+- Prefer keeping restore and OS-service writes in the entrypoint unless extraction makes the safety checks clearer.
+- Preserve all existing command text, dry-run defaults, and validation gates.

@@ -82,6 +82,7 @@ class CommandRegistryTest(unittest.TestCase):
             cli_autopilot,
             cli_diagnostics,
             cli_factory,
+            cli_health,
             cli_knowledge,
             cli_operations,
             cli_planning,
@@ -124,6 +125,11 @@ class CommandRegistryTest(unittest.TestCase):
         self.assertTrue(callable(cli_operations.cmd_go_live))
         self.assertTrue(callable(cli_operations.cmd_orchestrate))
         self.assertTrue(callable(cli_operations.cmd_worker))
+        self.assertTrue(callable(cli_health.cmd_doctor))
+        self.assertTrue(callable(cli_health.cmd_sanity))
+        self.assertTrue(callable(cli_health.cmd_snapshot))
+        self.assertTrue(callable(cli_health.cmd_uat))
+        self.assertTrue(callable(cli_health.cmd_tune))
         parser = cli.build_parser()
         autonomy_args = parser.parse_args(["autonomy", "eval", "--no-record"])
         loop_args = parser.parse_args(["loop", "status"])
@@ -171,6 +177,12 @@ class CommandRegistryTest(unittest.TestCase):
         workflow_runs_args = parser.parse_args(["workflow-runs"])
         queue_add_args = parser.parse_args(["queue-add", "--workflow", "daily"])
         worker_args = parser.parse_args(["worker"])
+        doctor_args = parser.parse_args(["doctor"])
+        sanity_args = parser.parse_args(["sanity"])
+        snapshot_args = parser.parse_args(["snapshot"])
+        cutover_args = parser.parse_args(["cutover-check"])
+        uat_args = parser.parse_args(["uat"])
+        tune_args = parser.parse_args(["tune"])
         self.assertIs(autonomy_args.func, cli.cmd_autonomy)
         self.assertIs(loop_args.func, cli.cmd_loop)
         self.assertIs(autopilot_args.func, cli.cmd_autopilot)
@@ -217,6 +229,12 @@ class CommandRegistryTest(unittest.TestCase):
         self.assertIs(workflow_runs_args.func, cli.cmd_workflow_runs)
         self.assertIs(queue_add_args.func, cli.cmd_queue_add)
         self.assertIs(worker_args.func, cli.cmd_worker)
+        self.assertIs(doctor_args.func, cli.cmd_doctor)
+        self.assertIs(sanity_args.func, cli.cmd_sanity)
+        self.assertIs(snapshot_args.func, cli.cmd_snapshot)
+        self.assertIs(cutover_args.func, cli.cmd_cutover_check)
+        self.assertIs(uat_args.func, cli.cmd_uat)
+        self.assertIs(tune_args.func, cli.cmd_tune)
 
 
 if __name__ == "__main__":
