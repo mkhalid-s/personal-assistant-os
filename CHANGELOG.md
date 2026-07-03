@@ -49,6 +49,7 @@ All notable changes to this project will be documented in this file.
 - Run-day, go-live, workflow queue, worker, and workflow orchestration presentation moved into a focused operations module with explicit environment-loading dependencies.
 - Doctor, sanity, snapshot, cutover, UAT, and tuning readiness presentation moved into a focused health module.
 - Dashboard, runbook, launchd status, health alias, and UI alias presentation moved into a focused runtime module.
+- Backup, restore, migrations, config initialization, and cleanup presentation moved into a focused local-data module while preserving restore safety checks.
 - Local router models now receive a full command mapper with subcommands, required args, examples, tiers, intents, and safety metadata.
 
 ### Validation
