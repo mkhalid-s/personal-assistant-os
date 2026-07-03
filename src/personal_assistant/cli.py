@@ -24,7 +24,7 @@ from .ingest.audio import transcribe_audio
 from .ingest.image import extract_image_text
 from .pulse import detect_mode, run_cycle
 from .retrieval import hybrid_score
-from . import assistant, autonomy, autonomy_loop, claims, cli_agent, cli_autonomy, cli_autopilot, cli_diagnostics, cli_factory, cli_health, cli_knowledge, cli_operations, cli_planning, cli_review, cli_workflow, command_registry, context as ctx, em, entities, factory, graphrag, intents, model_setup, observability, plans, providers, queries, relationships, router, watch
+from . import assistant, autonomy, autonomy_loop, claims, cli_agent, cli_autonomy, cli_autopilot, cli_diagnostics, cli_factory, cli_health, cli_knowledge, cli_operations, cli_planning, cli_review, cli_runtime, cli_workflow, command_registry, context as ctx, em, entities, factory, graphrag, intents, model_setup, observability, plans, providers, queries, relationships, router, watch
 # Helpers extracted out of this module (refactor #12); re-imported so existing
 # call sites (and tests importing them from cli) keep working unchanged.
 from .inbox import (
@@ -1454,25 +1454,8 @@ def cmd_activate(args: argparse.Namespace) -> None:
         )
 
 
-def cmd_launchd_status(_: argparse.Namespace) -> None:
-    labels = ["com.myos.sync", "com.myos.pulse", "com.myos.autopilot"]
-    print("Launchd status:")
-    launchctl = shutil.which("launchctl")
-    if not launchctl:
-        for label in labels:
-            print(f"- {label}: unavailable (launchctl not found)")
-        return
-    for label in labels:
-        proc = subprocess.run(
-            [launchctl, "list", label],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if proc.returncode == 0:
-            print(f"- {label}: loaded")
-        else:
-            print(f"- {label}: not_loaded")
+def cmd_launchd_status(args: argparse.Namespace) -> None:
+    cli_runtime.cmd_launchd_status(args)
 
 
 def cmd_start(args: argparse.Namespace) -> None:
@@ -1500,15 +1483,7 @@ def cmd_stop(args: argparse.Namespace) -> None:
 
 
 def cmd_dashboard(args: argparse.Namespace) -> None:
-    conn = get_connection()
-    if args.once:
-        output_path = Path(args.output_html) if args.output_html else (Path(__file__).resolve().parents[2] / "data" / "dashboard.html")
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(render_dashboard_html(conn, report_dir=args.report_dir))
-        print(f"Dashboard snapshot written: {output_path}")
-        return
-    print(f"Serving dashboard at http://{args.host}:{args.port}")
-    serve_dashboard(conn, host=args.host, port=args.port, report_dir=args.report_dir)
+    cli_runtime.cmd_dashboard(args)
 
 
 def cmd_sanity(args: argparse.Namespace) -> None:
@@ -1516,31 +1491,7 @@ def cmd_sanity(args: argparse.Namespace) -> None:
 
 
 def cmd_runbook(args: argparse.Namespace) -> None:
-    print("MYOS Operational Runbook")
-    print("\nDaily startup")
-    print("1) myos sanity")
-    print("2) myos run-day --env-file <path> --meeting-hours <n>")
-    print("3) myos brief --meeting-hours <n>")
-    print("4) myos dashboard --once --output-html ./data/dashboard.html")
-    print("\nMidday")
-    print("- myos at-risk")
-    print("- myos stop-doing --capacity <n> --deep-budget <n>")
-    print("\nEnd of day")
-    print("- myos close-day --mode <maker|hybrid|meeting-heavy|recovery> --note \"...\"")
-    print("- myos report --meeting-hours <n>")
-    print("\nWeekly")
-    print("- myos weekly-review --days 7")
-    print("- myos metrics --days 7")
-    print("- myos review-evidence --person self")
-    print("\nGo-live activation")
-    print("- myos activate --env-file <path> --install-launchd --load-launchd")
-    if args.short:
-        return
-    print("\nTroubleshooting")
-    print("- myos onboard")
-    print("- myos doctor")
-    print("- myos sync --connector all --env-file <path>")
-    print("- myos launchd-uninstall --apply (if launch agent reset needed)")
+    cli_runtime.cmd_runbook(args)
 
 
 def cmd_cleanup(args: argparse.Namespace) -> None:
@@ -1646,22 +1597,12 @@ def cmd_live(args: argparse.Namespace) -> None:
     )
 
 
-def cmd_health(_: argparse.Namespace) -> None:
-    cmd_sanity(argparse.Namespace(strict=False, report_dir=""))
-    print()
-    cmd_doctor(argparse.Namespace(strict=False))
+def cmd_health(args: argparse.Namespace) -> None:
+    cli_runtime.cmd_health(args)
 
 
 def cmd_ui(args: argparse.Namespace) -> None:
-    cmd_dashboard(
-        argparse.Namespace(
-            host="127.0.0.1",
-            port=args.port,
-            report_dir="",
-            once=False,
-            output_html="",
-        )
-    )
+    cli_runtime.cmd_ui(args)
 
 
 def cmd_orchestrate(args: argparse.Namespace) -> None:

@@ -378,12 +378,24 @@ Implemented scope:
 
 The first safe health slice moves doctor, sanity, snapshot, cutover readiness, UAT quality, and tuning recommendations into `cli_health.py`. Setup, restore, dashboard serving, and launchd commands remain in `cli.py` because they perform broad system checks, OS-service writes, file restores, or long-running serving.
 
-## Next Slice: Operational Setup And Runtime Boundary Review
+## Operational Setup And Runtime Boundary Review
 
 Purpose: evaluate the remaining setup/runtime commands that still sit in the parser entrypoint and decide whether any can move without hiding safety-critical behavior.
 
-Scope:
+Implemented scope:
 
 - Review `setup-live`, `activate`, `start`, `stop`, `launchd-*`, `dashboard`, backup, restore, `runbook`, and cleanup.
 - Prefer keeping restore and OS-service writes in the entrypoint unless extraction makes the safety checks clearer.
 - Preserve all existing command text, dry-run defaults, and validation gates.
+
+The first safe runtime slice moves dashboard presentation, launchd status, runbook output, and the health/ui aliases into `cli_runtime.py`. Setup, activation, start/stop, launchd install/uninstall, cleanup, backup, restore, and dashboard serving safety remain parser-adjacent where their side effects are easiest to audit.
+
+## Next Slice: Setup And Local Data Safety Boundary Review
+
+Purpose: review the remaining side-effecting setup and local-data operations for dependency injection opportunities without obscuring safety checks.
+
+Scope:
+
+- Evaluate `setup-live`, backup, restore, cleanup, and config initialization.
+- Keep restore verification, dry-run behavior, local artifact checks, and filesystem writes obvious.
+- Preserve all existing command text and validation gates.
