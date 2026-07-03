@@ -41,6 +41,12 @@ All notable changes to this project will be documented in this file.
 - Autopilot CLI orchestration moved into a focused module while preserving lock, digest, and goal-wrapper behavior.
 - Factory CLI command dispatch moved into a focused module while preserving autonomy prompts, recommendations, and policy output.
 - Agent, action, approval, receipt, learning, coaching, and local role-run CLI presentation moved into a focused module.
+- Intent, plan, evidence, and review-packet CLI presentation moved into a focused module.
+- Entity, relationship, and claim CLI presentation moved into a focused knowledge module.
+- Router, model setup, trace, graph link, context, why, and retrieval-run CLI presentation moved into a focused diagnostics module.
+- Capture, triage, today, risk radar, sync, external ingestion, and inbox processing CLI presentation moved into a focused workflow module.
+- Daily/review presentation moved into a focused review module while dependency-heavy operational orchestration remains in the parser entrypoint.
+- Run-day, go-live, workflow queue, worker, and workflow orchestration presentation moved into a focused operations module with explicit environment-loading dependencies.
 - Local router models now receive a full command mapper with subcommands, required args, examples, tiers, intents, and safety metadata.
 
 ### Validation
