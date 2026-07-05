@@ -111,6 +111,26 @@ def cmd_delegate(args: argparse.Namespace) -> None:
             print(f"- {source} score={score:.3f}: {snippet}")
 
 
+def cmd_code(args: argparse.Namespace) -> None:
+    conn = get_connection()
+    backend = getattr(args, "backend", "") or "zero"
+    result = assistant.delegate_to_agent(
+        conn,
+        backend,
+        args.objective,
+        cwd=args.repo,
+        timeout=args.timeout,
+    )
+    if result.get("error"):
+        print(f"Coding delegation failed: {result['error']}")
+        raise SystemExit(1)
+    print(result.get("summary", "Coding task delegated."))
+    for aid in result.get("proposed_action_ids", []):
+        print(f"- proposed action #{aid} (review with `myos approve --list`)")
+    if result.get("diff"):
+        print("Patch remains approval-gated; apply only with `myos approve --action <id> --execute`.")
+
+
 def cmd_act(args: argparse.Namespace) -> None:
     conn = get_connection()
     if args.list:

@@ -162,6 +162,7 @@ def create_review_packet(
     *,
     plan_id: int,
     retrieval_run_id: int | None = None,
+    executor_artifacts: list[dict[str, Any]] | None = None,
 ) -> int:
     plan = get_plan(conn, int(plan_id))
     if plan is None:
@@ -200,6 +201,7 @@ def create_review_packet(
         },
         "evidence": intent["evidence"],
         "retrieval_sources": retrieval_sources,
+        "executor_artifacts": executor_artifacts or [],
         "approval_required": True,
         "rollback_note": "Do not mutate external systems without explicit approval and an execution receipt.",
     }
@@ -226,6 +228,39 @@ def create_review_packet(
         json.dumps({"plan_id": int(plan_id), "intent_id": int(intent["id"])}, ensure_ascii=True),
     )
     return packet_id
+
+
+def attach_executor_artifact(conn: sqlite3.Connection, *, packet_id: int, artifact: dict[str, Any]) -> None:
+    row = conn.execute("SELECT summary, packet_json FROM review_packets WHERE id = ?", (int(packet_id),)).fetchone()
+    if row is None:
+        raise ValueError(f"review packet #{packet_id} not found")
+    try:
+        packet = json.loads(row["packet_json"] or "{}")
+    except (TypeError, ValueError):
+        packet = {}
+    artifacts = packet.get("executor_artifacts")
+    if not isinstance(artifacts, list):
+        artifacts = []
+    artifacts.append(artifact)
+    packet["executor_artifacts"] = artifacts
+    conn.execute(
+        """
+        UPDATE review_packets
+        SET packet_json = ?
+        WHERE id = ?
+        """,
+        (
+            json.dumps(packet, ensure_ascii=True),
+            int(packet_id),
+        ),
+    )
+    append_event(
+        conn,
+        "review_packet_executor_artifact",
+        "review_packet",
+        int(packet_id),
+        json.dumps({"artifact_type": str(artifact.get("type") or "executor")}, ensure_ascii=True),
+    )
 
 
 def get_review_packet(conn: sqlite3.Connection, packet_id: int) -> dict[str, Any] | None:

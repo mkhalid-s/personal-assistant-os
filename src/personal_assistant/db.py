@@ -4,7 +4,7 @@ import sqlite3
 import os
 from pathlib import Path
 
-EXPECTED_SCHEMA_VERSION = 35
+EXPECTED_SCHEMA_VERSION = 36
 
 
 def resolve_db_path() -> Path:
@@ -1233,6 +1233,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
                 plan_id INTEGER,
                 mode TEXT NOT NULL DEFAULT 'review_first',
                 workflow_pack TEXT NOT NULL DEFAULT 'intent_execution',
+                executor_backend TEXT NOT NULL DEFAULT 'local',
+                executor_context_json TEXT NOT NULL DEFAULT '{}',
                 status TEXT NOT NULL DEFAULT 'running',
                 summary TEXT,
                 outcome TEXT,
@@ -1550,6 +1552,18 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
             (35, "add_recommendation_feedback"),
+        )
+
+    if current < 36:
+        columns = conn.execute("PRAGMA table_info(factory_runs)").fetchall()
+        names = {row["name"] for row in columns}
+        if "executor_backend" not in names:
+            conn.execute("ALTER TABLE factory_runs ADD COLUMN executor_backend TEXT NOT NULL DEFAULT 'local'")
+        if "executor_context_json" not in names:
+            conn.execute("ALTER TABLE factory_runs ADD COLUMN executor_context_json TEXT NOT NULL DEFAULT '{}'")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (36, "add_factory_executor_backend"),
         )
 
     _ensure_fts5(conn)  # self-heal: build the FTS index if a no-FTS5 run stranded migration 17

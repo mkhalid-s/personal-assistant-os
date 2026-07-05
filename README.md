@@ -130,9 +130,11 @@ export MYOS_CONNECTOR_BACKOFF_SEC="1.2"
 export MYOS_CONNECTOR_TIMEOUT_SEC="25"
 
 # Optional reasoning providers.
-export MYOS_AGENT_BACKEND="cursor"  # claude|claude-sdk|claude-code-sdk|cursor|claude-code|copilot|command
+export MYOS_AGENT_BACKEND="cursor"  # claude|claude-sdk|claude-code-sdk|cursor|zero|claude-code|copilot|command
 export MYOS_AI_COMMAND="/path/to/your-ai-wrapper"
 export MYOS_AGENT_CMD_CURSOR="agent --print --trust --mode ask --output-format text"
+export MYOS_AGENT_CMD_ZERO="zero exec --output-format text --auto low --no-notify"
+export MYOS_AGENT_EXEC_ZERO="zero exec --output-format text --auto low --no-notify"
 export MYOS_AGENT_CMD_CLAUDE_CODE="claude -p"
 export MYOS_CLAUDE_MODEL="claude-opus-4-8"
 export MYOS_SDK_LOAD_SETTINGS="0"
@@ -193,6 +195,7 @@ Most daily use should start with one of these surfaces instead of memorizing the
 - `myos voice`: voice-first assistant using the same routed chat loop.
 - `myos autopilot --factory`: proactive loop that selects a factory workflow pack from detected signals.
 - `myos do "plan my day and draft follow-ups"`: one-shot natural-language router for CLI users.
+- `myos code "fix the failing tests" --backend zero`: optional coding-agent handoff that runs in an isolated worktree and proposes a patch for approval.
 - `myos approve --list`: review anything that could mutate external systems.
 
 Use `myos help daily`, `myos help workflows`, `myos help expert`, or `myos help diagnostic` to see a smaller tiered command list.

@@ -128,6 +128,10 @@ def get_backend(name: str | None = None):
         from .cursor import CursorBackend
 
         return CursorBackend()
+    if resolved == "zero":
+        from .zero import ZeroBackend
+
+        return ZeroBackend()
     if resolved in ("claude-code", "claude_code", "claudecode"):
         from .claude_code import ClaudeCodeBackend
 
@@ -150,7 +154,7 @@ def get_backend(name: str | None = None):
 def available_backends() -> list[dict]:
     """Best-effort availability probe for ``myos doctor``."""
     out = []
-    for name in ("claude", "claude-sdk", "claude-code-sdk", "cursor", "claude-code", "copilot", "command"):
+    for name in ("claude", "claude-sdk", "claude-code-sdk", "cursor", "zero", "claude-code", "copilot", "command"):
         try:
             ok, detail = get_backend(name).available()
         except Exception as exc:  # pragma: no cover - defensive

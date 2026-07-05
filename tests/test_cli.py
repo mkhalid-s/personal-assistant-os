@@ -73,6 +73,32 @@ class CliFlowTest(unittest.TestCase):
         self.assertIn("subcommands=--once,--factory,--loop-goal", out)
         self.assertNotIn("raw_text", out)
 
+    def test_code_command_and_factory_executor_help(self) -> None:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(Path.cwd() / "src")
+        code_help = subprocess.run(
+            [sys.executable, "-m", "personal_assistant.cli", "code", "--help"],
+            cwd=Path.cwd(),
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        self.assertIn("--backend", code_help)
+        self.assertIn("--repo", code_help)
+        self.assertIn("zero", code_help)
+
+        factory_help = subprocess.run(
+            [sys.executable, "-m", "personal_assistant.cli", "factory", "start", "--help"],
+            cwd=Path.cwd(),
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        self.assertIn("--executor", factory_help)
+        self.assertIn("--repo", factory_help)
+
     def test_release_check_validates_console_entrypoint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
@@ -902,7 +928,8 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("33 add_autonomy_decision_calibration", list_out)
             self.assertIn("34 add_autonomy_run_ledger", list_out)
             self.assertIn("35 add_recommendation_feedback", list_out)
-            self.assertIn("Current version: 35 / expected 35", list_out)
+            self.assertIn("36 add_factory_executor_backend", list_out)
+            self.assertIn("Current version: 36 / expected 36", list_out)
 
             backup_out = run("backup", "--output", str(backup_path))
             self.assertIn("Backup created", backup_out)
@@ -3022,7 +3049,7 @@ class CliFlowTest(unittest.TestCase):
             schema_version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
             conn.close()
             self.assertEqual(ledger_count, 3)
-            self.assertEqual(schema_version, 35)
+            self.assertEqual(schema_version, 36)
 
     def test_autopilot_loop_goal_wrapper(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3194,7 +3221,7 @@ class CliFlowTest(unittest.TestCase):
             self.assertTrue(row[0])
             self.assertEqual(row[1], len("Helpful next step"))
             self.assertNotIn("Helpful next step", raw)
-            self.assertEqual(schema_version, 35)
+            self.assertEqual(schema_version, 36)
 
 
 if __name__ == "__main__":
