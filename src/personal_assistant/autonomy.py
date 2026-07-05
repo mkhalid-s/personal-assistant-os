@@ -15,7 +15,10 @@ Callers pass the active ``level`` (read from the ``assistant_policies`` table).
 from __future__ import annotations
 
 import hashlib
+import json
 import re
+
+from . import command_registry
 
 AUTO = "auto"
 CONFIRM = "confirm"
@@ -108,6 +111,28 @@ _READ_TOOLS = {
 _READ_HINTS = ("get", "list", "search", "read", "fetch", "view", "grep", "glob", "recall", "describe", "show")
 _READ_TOKENS = frozenset(_READ_HINTS)  # token-exact membership (see classify_tool step 4)
 _WRITE_HINTS = ("write", "edit", "create", "update", "comment", "post", "send", "add", "apply", "set")
+
+
+def _command_metadata(command: str) -> dict:
+    spec = command_registry.find_command((command or "").strip().lower())
+    if not spec:
+        return {
+            "side_effects": [],
+            "dry_run_by_default": False,
+            "long_running": False,
+            "examples": [],
+        }
+    return {
+        "side_effects": list(spec.side_effects),
+        "dry_run_by_default": bool(spec.dry_run_by_default),
+        "long_running": bool(spec.long_running),
+        "examples": list(spec.examples),
+    }
+
+
+def _with_command_metadata(decision: dict, command: str) -> dict:
+    decision.update(_command_metadata(command))
+    return decision
 
 # Dangerous shell/VCS/infra patterns for free-form bash tool calls. Matched against
 # a normalized command (see _normalize_cmd) so $IFS / quote-splitting evasions
@@ -205,62 +230,81 @@ def decide_command(
     """
     level = _norm_level(level)
     command_name = (command or "").strip().lower()
+    spec = command_registry.find_command(command_name)
+    if spec:
+        safety = safety or spec.safety
+        requires_confirmation = requires_confirmation or bool(spec.requires_confirmation)
+    metadata = _command_metadata(command_name)
+    side_effects = set(metadata["side_effects"])
+    dry_run_by_default = bool(metadata["dry_run_by_default"])
     safety = (safety or "").strip()
     requested_mode = (requested_mode or "").strip()
     if not command_name:
-        return {
+        return _with_command_metadata({
             "decision": BLOCKED,
             "tier": BLOCKED,
             "requires_approval": True,
             "reason": "missing command",
             "level": level,
             "safety": safety or "unknown",
-        }
+        }, command_name)
     if safety == "unknown" or (not safety and any(h in command_name for h in _DESTRUCTIVE_HINTS)):
-        return {
+        return _with_command_metadata({
             "decision": BLOCKED,
             "tier": BLOCKED,
             "requires_approval": True,
             "reason": f"unknown or destructive-looking command '{command_name}'",
             "level": level,
             "safety": safety or "unknown",
-        }
+        }, command_name)
     if safety in {"read_only", "diagnostic"}:
-        return {
+        return _with_command_metadata({
             "decision": "allowed",
             "tier": AUTO,
             "requires_approval": False,
             "reason": f"{safety} command allowed at autonomy_level={level}",
             "level": level,
             "safety": safety,
-        }
+        }, command_name)
+    if side_effects.intersection({"database_restore", "external_write"}) or (
+        "os_service_write" in side_effects and not dry_run_by_default
+    ):
+        suffix = f"; requested_mode={requested_mode}" if requested_mode else ""
+        return _with_command_metadata({
+            "decision": "needs_approval",
+            "tier": CONFIRM,
+            "requires_approval": True,
+            "reason": f"{command_name} touches {', '.join(sorted(side_effects))}; review safer diagnostics first{suffix}",
+            "level": level,
+            "safety": safety or "unknown",
+        }, command_name)
     if safety == "local_write" and not requires_confirmation:
-        return {
+        return _with_command_metadata({
             "decision": "allowed",
             "tier": AUTO,
             "requires_approval": False,
             "reason": f"local write command allowed; external effects remain gated (level={level})",
             "level": level,
             "safety": safety,
-        }
+        }, command_name)
     if safety in {"approval_gated", "external_write"} or requires_confirmation:
         suffix = f"; requested_mode={requested_mode}" if requested_mode else ""
-        return {
+        return _with_command_metadata({
             "decision": "needs_approval",
             "tier": CONFIRM,
             "requires_approval": True,
             "reason": f"{safety or 'command'} requires review/approval before risky effects{suffix}",
             "level": level,
             "safety": safety or "unknown",
-        }
-    return {
+        }, command_name)
+    return _with_command_metadata({
         "decision": "needs_approval",
         "tier": CONFIRM,
         "requires_approval": True,
         "reason": f"unrecognized command safety '{safety or 'unknown'}', defaulting to approval",
         "level": level,
         "safety": safety or "unknown",
-    }
+    }, command_name)
 
 
 def recommend_next_steps(
@@ -275,9 +319,41 @@ def recommend_next_steps(
     decision_name = str(decision.get("decision") or "")
     safety = str(decision.get("safety") or "")
     command_name = (command or "").strip()
+    metadata = _command_metadata(command_name)
+    side_effects = set(decision.get("side_effects") or metadata["side_effects"])
+    dry_run_by_default = bool(decision.get("dry_run_by_default") or metadata["dry_run_by_default"])
+    long_running = bool(decision.get("long_running") or metadata["long_running"])
     intent = (intent or "").strip()
     workflow_pack = (workflow_pack or "").strip()
     if decision_name == "allowed":
+        if command_name == "setup-live":
+            return [
+                {
+                    "label": "check_setup_live",
+                    "command": "myos setup-live --check",
+                    "reason": "Verify live readiness before applying setup or installing launch agents.",
+                    "side_effects": sorted(side_effects),
+                }
+            ]
+        if dry_run_by_default and side_effects:
+            example = metadata["examples"][0] if metadata["examples"] else f"myos {command_name}"
+            return [
+                {
+                    "label": "dry_run_first",
+                    "command": example,
+                    "reason": "Run the dry-run/default plan before enabling side effects.",
+                    "side_effects": sorted(side_effects),
+                }
+            ]
+        if long_running:
+            return [
+                {
+                    "label": "inspect_health_first",
+                    "command": "myos health",
+                    "reason": "Run a bounded health check before starting a long-running command.",
+                    "side_effects": ["long_running"],
+                }
+            ]
         if command_name == "do" and intent in {"capture", "plan_intent"}:
             return [
                 {
@@ -290,19 +366,75 @@ def recommend_next_steps(
     if decision_name == "needs_approval":
         if command_name == "factory" or intent == "factory_run":
             review = f"myos factory review --id {factory_run_id}" if factory_run_id else "myos factory review --id <run_id>"
+            factory_side_effects = ["local_db_write"]
+            if workflow_pack in {"connector_ops", "daily_ops", "software_delivery"}:
+                factory_side_effects.append("external_write")
             return [
                 {
                     "label": "review_factory",
                     "command": review,
                     "reason": "Review the generated packet before approving execution.",
+                    "side_effects": factory_side_effects,
                 }
             ]
+        if "database_restore" in side_effects:
+            return [
+                {
+                    "label": "backup_before_restore",
+                    "command": "myos backup",
+                    "reason": "Create a fresh local backup before attempting a database restore.",
+                    "side_effects": ["database_restore"],
+                },
+                {
+                    "label": "verify_migrations",
+                    "command": "myos migrations verify --strict",
+                    "reason": "Verify schema health before and after restore work.",
+                    "side_effects": ["database_restore"],
+                },
+            ]
+        if "os_service_write" in side_effects:
+            steps = [
+                {
+                    "label": "inspect_launchd_status",
+                    "command": "myos launchd-status",
+                    "reason": "Inspect current launchd state before changing OS service files.",
+                    "side_effects": ["os_service_write"],
+                },
+                {
+                    "label": "read_runtime_runbook",
+                    "command": "myos runbook --short",
+                    "reason": "Review the runtime runbook before applying service changes.",
+                    "side_effects": ["os_service_write"],
+                },
+            ]
+            if dry_run_by_default:
+                example = metadata["examples"][0] if metadata["examples"] else f"myos {command_name}"
+                steps.insert(
+                    0,
+                    {
+                        "label": "dry_run_runtime_change",
+                        "command": example,
+                        "reason": "Review the dry-run plan before applying OS service changes.",
+                        "side_effects": ["os_service_write"],
+                    },
+                )
+            return steps
         if intent == "connector_update" or workflow_pack == "connector_ops" or safety == "external_write":
             return [
                 {
                     "label": "review_approvals",
                     "command": "myos approve --list",
                     "reason": "Inspect approval-gated connector actions before anything is sent.",
+                    "side_effects": ["external_write"],
+                }
+            ]
+        if long_running:
+            return [
+                {
+                    "label": "prefer_one_shot_runtime",
+                    "command": f"myos {command_name} --once" if command_name == "pulse" else "myos health",
+                    "reason": "Prefer a bounded one-shot or health check before starting a long-running loop.",
+                    "side_effects": ["long_running"],
                 }
             ]
         return [
@@ -318,11 +450,13 @@ def recommend_next_steps(
                 "label": "inspect_safe_commands",
                 "command": "myos help diagnostic",
                 "reason": "Use read-only diagnostics instead of a blocked or unknown operation.",
+                "side_effects": [],
             },
             {
                 "label": "inspect_recent_traces",
                 "command": "myos trace list",
                 "reason": "Review recent local activity before choosing a safer command.",
+                "side_effects": [],
             },
         ]
     return []
@@ -350,17 +484,159 @@ def _feedback_scores(conn) -> dict[str, int]:
     return {str(row["recommendation_key"]): int(row["score"] or 0) for row in rows}
 
 
+def _learning_side_effect_scores(conn) -> dict[str, int]:
+    try:
+        rows = conn.execute(
+            """
+            SELECT outcome, retrospective_json
+            FROM factory_learning
+            ORDER BY id DESC
+            LIMIT 50
+            """
+        ).fetchall()
+    except Exception:
+        return {}
+    scores: dict[str, int] = {}
+    for row in rows:
+        outcome = str(row["outcome"] or "")
+        try:
+            retro = json.loads(row["retrospective_json"] or "{}")
+        except (TypeError, ValueError):
+            retro = {}
+        receipt_side_effects = retro.get("receipt_side_effects") or {}
+        if not isinstance(receipt_side_effects, dict):
+            receipt_side_effects = {}
+        receipts = retro.get("recent_receipts") or []
+        if isinstance(receipts, list):
+            for receipt in receipts:
+                if not isinstance(receipt, dict):
+                    continue
+                status = str(receipt.get("final_status") or "")
+                if status not in {"blocked", "failed"}:
+                    continue
+                side_effects = receipt.get("side_effects") or []
+                if not isinstance(side_effects, list):
+                    continue
+                for side_effect in side_effects:
+                    key = str(side_effect)
+                    scores[key] = scores.get(key, 0) + 2
+        if outcome in {"failed", "partial"}:
+            for side_effect, count in receipt_side_effects.items():
+                key = str(side_effect)
+                try:
+                    value = int(count or 0)
+                except (TypeError, ValueError):
+                    value = 0
+                scores[key] = scores.get(key, 0) + max(1, value)
+    return scores
+
+
+def _step_side_effects(step: dict) -> list[str]:
+    side_effects = step.get("side_effects") or []
+    if not isinstance(side_effects, list):
+        return []
+    return [str(side_effect) for side_effect in side_effects if side_effect]
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+def _command_side_effects(command: str) -> list[str]:
+    text = (command or "").strip()
+    if text.startswith("myos "):
+        text = text.split(" ", 1)[1]
+    command_name = text.split(" ", 1)[0]
+    return list(_command_metadata(command_name)["side_effects"])
+
+
+def _recommendation_side_effects(label: str, command: str) -> list[str]:
+    label_effects = {
+        "review_approvals": ["external_write"],
+        "review_factory": ["local_db_write", "external_write"],
+        "backup_before_restore": ["database_restore"],
+        "verify_migrations": ["database_restore"],
+        "dry_run_runtime_change": ["os_service_write"],
+        "inspect_launchd_status": ["os_service_write"],
+        "read_runtime_runbook": ["os_service_write"],
+        "prefer_one_shot_runtime": ["long_running"],
+        "inspect_health_first": ["long_running"],
+        "run_goal_cycle": ["local_db_write"],
+    }.get((label or "").strip(), [])
+    return _dedupe_strings(label_effects + _command_side_effects(command))
+
+
+DAILY_RECOMMENDATION_COMMANDS = ("myos next-action", "myos now")
+DAILY_RECOMMENDATION_LABEL_PREFIX = "daily_"
+DAILY_RECOMMENDATION_FEEDBACK_WINDOW_DAYS = 30
+DAILY_RECOMMENDATION_FEEDBACK_SCORE_LIMIT = 3
+GOAL_SCHEDULER_RECOMMENDATION_LABELS = ("run_goal_cycle", "review_goals")
+RECOMMENDATION_SUMMARY_MIN_LIMIT = 2
+
+
+def is_daily_recommendation(label: str, command: str) -> bool:
+    clean_label = (label or "").strip()
+    clean_command = (command or "").strip()
+    return clean_label.startswith(DAILY_RECOMMENDATION_LABEL_PREFIX) and clean_command in DAILY_RECOMMENDATION_COMMANDS
+
+
+def is_goal_scheduler_recommendation(label: str, command: str) -> bool:
+    clean_label = (label or "").strip()
+    clean_command = (command or "").strip()
+    if clean_label == "run_goal_cycle":
+        return clean_command.startswith("myos loop run-goal")
+    if clean_label == "review_goals":
+        return clean_command == "myos goal list"
+    return False
+
+
+def _recommendation_surface(label: str, command: str) -> str:
+    if is_daily_recommendation(label, command):
+        return "daily"
+    if is_goal_scheduler_recommendation(label, command):
+        return "goal_scheduler"
+    return "general"
+
+
+def _learning_score_for_side_effects(conn, side_effects: list[str]) -> int:
+    if not side_effects:
+        return 0
+    scores = _learning_side_effect_scores(conn)
+    return sum(scores.get(side_effect, 0) for side_effect in side_effects)
+
+
+_RECOMMENDATION_SUMMARY_RECENT_DAYS = DAILY_RECOMMENDATION_FEEDBACK_WINDOW_DAYS
+_RECOMMENDATION_SUMMARY_MIN_LIMIT = RECOMMENDATION_SUMMARY_MIN_LIMIT
+
+
 def ranked_recommendations(conn, steps: list[dict]) -> list[dict]:
     scores = _feedback_scores(conn)
-    ranked: list[tuple[int, int, dict]] = []
+    learning_scores = _learning_side_effect_scores(conn)
+    ranked: list[tuple[int, int, int, dict]] = []
     for index, step in enumerate(steps):
         key = recommendation_key(step)
         enriched = dict(step)
         enriched["key"] = key
         enriched["score"] = scores.get(key, 0)
-        ranked.append((-int(enriched["score"]), index, enriched))
-    ranked.sort(key=lambda item: (item[0], item[1]))
-    return [item[2] for item in ranked]
+        step_side_effects = _step_side_effects(enriched) or _recommendation_side_effects(
+            str(enriched.get("label") or ""),
+            str(enriched.get("command") or ""),
+        )
+        learning_score = sum(learning_scores.get(side_effect, 0) for side_effect in step_side_effects)
+        enriched["learning_score"] = learning_score
+        if learning_score:
+            matched = [side_effect for side_effect in step_side_effects if learning_scores.get(side_effect, 0)]
+            suffix = " Prior factory learning flagged " + ", ".join(matched) + "; treat this as advisory."
+            enriched["reason"] = (str(enriched.get("reason") or "").rstrip(".") + "." + suffix).strip()
+        ranked.append((-int(enriched["score"]), -int(learning_score), index, enriched))
+    ranked.sort(key=lambda item: (item[0], item[1], item[2]))
+    return [item[3] for item in ranked]
 
 
 def record_recommendation_feedback(
@@ -401,22 +677,99 @@ def record_recommendation_feedback(
     return int(cur.lastrowid)
 
 
+def _recommendation_feedback_summary_rows(
+    conn,
+    *,
+    limit: int,
+    daily_only: bool = False,
+    active_daily_only: bool = False,
+) -> list[dict]:
+    daily_commands_sql = ", ".join(f"'{command}'" for command in DAILY_RECOMMENDATION_COMMANDS)
+    daily_filter = (
+        f"WHERE label LIKE '{DAILY_RECOMMENDATION_LABEL_PREFIX}%' AND command IN ({daily_commands_sql})"
+        if daily_only
+        else ""
+    )
+    active_daily_filter = (
+        "HAVING recent_score != 0 OR (recent_useful_count > 0 AND recent_not_useful_count > 0)"
+        if active_daily_only
+        else ""
+    )
+    return [
+        dict(row)
+        for row in conn.execute(
+            f"""
+            SELECT recommendation_key, label, command,
+                   SUM(CASE WHEN useful = 1 THEN 1 ELSE 0 END) AS useful_count,
+                   SUM(CASE WHEN useful = 0 THEN 1 ELSE 0 END) AS not_useful_count,
+                   SUM(CASE WHEN useful = 1 THEN 1 ELSE -1 END) AS score,
+                   SUM(
+                       CASE
+                           WHEN datetime(created_at) >= datetime('now', ?)
+                           THEN CASE WHEN useful = 1 THEN 1 ELSE -1 END
+                           ELSE 0
+                       END
+                   ) AS recent_score,
+                   SUM(
+                       CASE
+                           WHEN datetime(created_at) >= datetime('now', ?) AND useful = 1
+                           THEN 1
+                           ELSE 0
+                       END
+                   ) AS recent_useful_count,
+                   SUM(
+                       CASE
+                           WHEN datetime(created_at) >= datetime('now', ?) AND useful = 0
+                           THEN 1
+                           ELSE 0
+                       END
+                   ) AS recent_not_useful_count,
+                   MAX(created_at) AS last_feedback_at
+            FROM recommendation_feedback
+            {daily_filter}
+            GROUP BY recommendation_key, label, command
+            {active_daily_filter}
+            ORDER BY ABS(recent_score) DESC, recent_score DESC, score DESC, last_feedback_at DESC, label ASC, command ASC
+            LIMIT ?
+            """,
+            (
+                f"-{_RECOMMENDATION_SUMMARY_RECENT_DAYS} days",
+                f"-{_RECOMMENDATION_SUMMARY_RECENT_DAYS} days",
+                f"-{_RECOMMENDATION_SUMMARY_RECENT_DAYS} days",
+                max(1, int(limit)),
+            ),
+        ).fetchall()
+    ]
+
+
+def _sort_summary_rows(rows: list[dict]) -> None:
+    rows.sort(key=lambda item: (str(item.get("label") or ""), str(item.get("command") or "")))
+    rows.sort(key=lambda item: str(item.get("last_feedback_at") or ""), reverse=True)
+    rows.sort(key=lambda item: (-int(item.get("recent_score") or 0), -int(item.get("score") or 0)))
+
+
 def recommendation_feedback_summary(conn, *, limit: int = 20) -> list[dict]:
-    rows = conn.execute(
-        """
-        SELECT recommendation_key, label, command,
-               SUM(CASE WHEN useful = 1 THEN 1 ELSE 0 END) AS useful_count,
-               SUM(CASE WHEN useful = 0 THEN 1 ELSE 0 END) AS not_useful_count,
-               SUM(CASE WHEN useful = 1 THEN 1 ELSE -1 END) AS score,
-               MAX(created_at) AS last_feedback_at
-        FROM recommendation_feedback
-        GROUP BY recommendation_key, label, command
-        ORDER BY score DESC, last_feedback_at DESC
-        LIMIT ?
-        """,
-        (max(1, int(limit)),),
-    ).fetchall()
-    return [dict(row) for row in rows]
+    display_limit = max(_RECOMMENDATION_SUMMARY_MIN_LIMIT, int(limit))
+    rows = _recommendation_feedback_summary_rows(conn, limit=display_limit)
+    daily_rows = _recommendation_feedback_summary_rows(conn, limit=1, daily_only=True, active_daily_only=True)
+    if daily_rows and not any(row["recommendation_key"] == daily_rows[0]["recommendation_key"] for row in rows):
+        if len(rows) >= display_limit:
+            rows[-1] = daily_rows[0]
+        else:
+            rows.append(daily_rows[0])
+        _sort_summary_rows(rows)
+    result = []
+    for item in rows:
+        side_effects = _recommendation_side_effects(str(item.get("label") or ""), str(item.get("command") or ""))
+        item["side_effects"] = side_effects
+        item["surface"] = _recommendation_surface(str(item.get("label") or ""), str(item.get("command") or ""))
+        item["recent_score_window_days"] = _RECOMMENDATION_SUMMARY_RECENT_DAYS
+        item["mixed_recent_feedback"] = bool(
+            int(item.get("recent_useful_count") or 0) > 0 and int(item.get("recent_not_useful_count") or 0) > 0
+        )
+        item["learning_score"] = _learning_score_for_side_effects(conn, side_effects)
+        result.append(item)
+    return result
 
 
 def _text_hash(text: str) -> str:

@@ -153,6 +153,7 @@ Work items:
 
 - Split agent roles: planner, researcher, executor, reviewer, critic, summarizer.
 - Require review packets before execution: intent, plan, evidence, risks, actions, rollback notes.
+- Add an external coding executor backend that can delegate software engineering tasks to `zero exec` while MYOS owns intent, memory, approvals, review packets, and audit.
 - Add policy gates per action type and per connector.
 - Add execution receipts for every external mutation.
 - Add outcome learning tied back to intents and plans.
@@ -162,6 +163,71 @@ Exit criteria:
 - Agents can work on bounded tasks without bypassing policy.
 - Every external action has approval and execution evidence.
 - Failed actions create follow-up work instead of disappearing.
+
+### Zero Coding Executor Integration
+
+Goal: reuse `Gitlawb/zero` as a high-quality coding worker for repository-scoped tasks without replacing MYOS's control plane. MYOS should decide what work is eligible, gather local context, start the run, consume structured events, create review artifacts, and keep acceptance/merge/commit/external mutation approval-gated.
+
+Research notes:
+
+- `zero exec` already exposes the right subprocess boundary: `--cwd`, `--worktree`, `--worktree-dir`, `--input-format stream-json`, `--output-format stream-json`, `--max-turns`, `--auto`, `--self-correct`, `--use-spec`, `--enabled-tools`, `--disabled-tools`, `--resume`, and `--fork`.
+- Zero stream JSON uses schema version `2` and emits run lifecycle, reasoning/text, tool calls, permission requests/decisions, tool results, usage, final output, warnings, errors, and run-end events.
+- Zero worktrees are detached git worktrees created outside the source repo by default, with optional naming and base directory controls.
+- Zero has distinct exit codes for success, usage error, provider error, incomplete work, and interrupted runs. MYOS should persist those as execution receipts instead of flattening them into text.
+- Zero can list visible tools without constructing a provider, so MYOS can preflight installed Zero capabilities before launching a live model run.
+
+Initial command shape:
+
+```bash
+myos code "Fix the failing tests" --repo /path/to/repo --backend zero --worktree
+myos factory start --pack software_delivery --executor zero
+```
+
+Adapter contract:
+
+| MYOS Responsibility | Zero Responsibility |
+| --- | --- |
+| Route the user request as a coding task and bind it to an intent, plan, or factory run. | Inspect and edit the target repository using its coding-agent tool loop. |
+| Retrieve relevant local memory, decisions, risks, tickets, and prior review packets. | Use repo-local context, tools, model/provider configuration, sandbox policy, and optional self-correction. |
+| Build a bounded prompt with success criteria, constraints, validation commands, and approval policy. | Emit stream JSON events and leave code changes uncommitted for MYOS review. |
+| Parse stream JSON into traces, observations, changed-file summaries, usage rows, and execution receipts. | Report final answer, changed files, tool results, permissions, warnings, and terminal status. |
+| Create MYOS review packets and require explicit approval before merge, commit, PR, or external connector mutation. | Optionally run in an isolated worktree and execute safe local verification commands under its own policy. |
+
+Event mapping:
+
+- `run_start`: create or link a MYOS `agent_runs` row with Zero version, provider, model, run ID, session ID, repo path, worktree path, and correlation ID.
+- `tool_call` and `tool_result`: append trace events; persist `changedFiles`, status, truncated/redacted flags, and compact outputs when privacy filters allow.
+- `permission_request` and `permission_decision`: mirror into MYOS autonomy traces and approval context so double-permission decisions are visible.
+- `usage`: store token/cost metadata when present.
+- `final`: attach the final summary to the agent run and seed the review packet.
+- `error` and `run_end`: write an execution receipt with exit code, terminal status, recoverability, and follow-up inbox item when blocked, incomplete, or failed.
+
+Guardrails:
+
+- Prefer subprocess integration over vendoring Zero code for the first implementation.
+- Pin or record the Zero binary version and stream JSON schema version for every run.
+- Default to `--auto low`; allow `--auto medium` only when MYOS policy allows semi-autonomous local coding work.
+- Do not pass `--skip-permissions-unsafe` from MYOS.
+- Prefer `--worktree` for non-trivial edits; keep commits, PR creation, merge, and external mutations in MYOS approval flow.
+- Store raw Zero output only behind an explicit debug flag; default persistence should be redacted summaries, event metadata, changed files, and receipts.
+- Treat Zero permission grants as executor-local only. They do not approve MYOS-level external actions.
+
+Implementation batches:
+
+1. Discovery and preflight: add `myos doctor` checks for `zero`, `zero exec --help`, stream JSON support, and provider readiness guidance.
+2. Minimal adapter: run `zero exec --cwd <repo> --output-format stream-json` from MYOS, parse events, and persist a read-only trace plus final summary.
+3. Worktree mode: add `--worktree`, capture worktree path, changed files, terminal status, and suggested verification commands.
+4. Review packet integration: attach Zero final output, changed files, tool summaries, verification status, risks, rollback notes, and approval instructions.
+5. Factory integration: allow the `software_delivery` workflow pack to use Zero for the executor role while planner/reviewer/critic remain MYOS-owned.
+6. Eval coverage: add offline fixtures for stream JSON parsing, failed/incomplete runs, permission events, worktree path handling, and review packet generation.
+
+Acceptance criteria:
+
+- A coding task can run through Zero from MYOS and produce a durable MYOS review packet without committing changes.
+- Failed, incomplete, blocked, and interrupted Zero runs create clear receipts and follow-up work.
+- MYOS can re-run or resume a task with a recorded Zero session/worktree reference.
+- No external connector mutation, commit, PR, or merge happens without MYOS approval.
+- The integration remains optional: MYOS still works when Zero is not installed.
 
 ## Phase 6: Product Hardening
 
@@ -181,6 +247,24 @@ Exit criteria:
 - A user can run it daily without hand-editing internals.
 - Data can be backed up, restored, and migrated safely.
 - Releases are reproducible.
+
+## External Inspiration Triage
+
+The most relevant inspiration from `Gitlawb/zero` and `agent0ai/agent-zero` should be borrowed as product patterns, contracts, and safety practices rather than copied wholesale. Any direct code reuse must preserve upstream license notices and fit MYOS's Apache-2.0 public baseline.
+
+| Priority | Source | Borrow | Reimplement In MYOS | Defer |
+| --- | --- | --- | --- | --- |
+| P0 | `Gitlawb/zero` | Schema-versioned headless run protocol with JSONL events for run lifecycle, text, tool calls, permission requests, usage, final output, and errors. | Add `myos do --output-format stream-json` and extend it to include retrieval sources, autonomy decisions, proposed actions, approvals, execution receipts, and trace IDs. | Full editor/CI ecosystem integration until the local CLI contract is stable. |
+| P0 | `Gitlawb/zero` | Mature coding-agent execution through `zero exec`, including repository tools, worktree mode, tool filters, self-correction, and machine-readable terminal status. | Add an optional Zero coding executor backend where MYOS owns task routing, retrieved context, review packets, approvals, and audit while Zero performs bounded repo edits. | Vendoring Zero internals or letting Zero commits/PRs bypass MYOS approval. |
+| P0 | `Gitlawb/zero` | Explicit permission and sandbox UX: visible side effects, write-root boundaries, network/destructive action gates, and structured denial reasons. | Keep MYOS policy-first, but make approval decisions and blocked-action reasons more machine-readable across CLI, trace, and review packet surfaces. | Broad filesystem sandboxing unless MYOS starts executing arbitrary shell work directly. |
+| P0 | `Gitlawb/zero` | Offline agent eval methodology with fixtures, expected/forbidden changed files, verification commands, trace-event checks, and model metadata. | Expand MYOS evals beyond retrieval and autonomy fixtures into repeatable agent-workflow suites for planning, review packets, approvals, and self-correction behavior. | Public pass-rate claims until task suites and model stamps are reproducible. |
+| P1 | `Gitlawb/zero` | Specialist manifests with scoped tools and project/user precedence. | Add markdown role manifests for planner, researcher, reviewer, critic, summarizer, and connector-specific reviewers, all bounded by existing approval policy. | Nested specialist spawning and autonomous specialist creation until the control layer is mature. |
+| P1 | `agent0ai/agent-zero` | Project isolation model: instructions, workspace, memory, variables, secrets, and model presets scoped to a project. | Add `myos project` records that bind goals, memory, connector config aliases, local paths, instructions, and default agent backend without leaking context globally. | Multi-tenant workspace management and hosted project administration. |
+| P1 | `agent0ai/agent-zero` | Memory curation practices: searchable memories, clear provenance, edit/delete flows, and guidance for stale or harmful memories. | Add memory inspection and cleanup commands for observations, insights, claims, conversation summaries, and retrieval traces with privacy-safe previews. | Rich dashboard editing until the CLI curation loop is useful. |
+| P2 | `Gitlawb/zero` | Spec-first and isolated worktree workflows for risky code changes. | Add optional worktree-backed factory runs that produce review packets and verification receipts before any merge or external mutation. | Automatic branch creation, commits, or PRs without explicit user approval. |
+| P2 | `Gitlawb/zero` | Provider/model registry, setup wizard, health checks, and capability metadata. | Replace scattered provider setup guidance with `myos providers`, `myos models`, and stricter `doctor` checks for configured backends and local model fallbacks. | Supporting dozens of providers before core provider abstractions are stable. |
+| P2 | `agent0ai/agent-zero` | Skills, profiles, plugins, and hooks as user-extensible behavior. | Start with small local markdown skills and lifecycle hooks that are visible in traces and governed by policy. | Plugin hub, Web UI plugin runtime, and arbitrary extension loading. |
+| P3 | `agent0ai/agent-zero` | Human-observable workbench concepts: live activity, intervention points, recoverable snapshots, and project-level time travel. | Translate into CLI-first audit views, rollback notes, backup/restore, and review packet diffs. | Docker desktop, browser canvas, LibreOffice integration, and full GUI coworking. |
 
 ## Non-Goals For Now
 

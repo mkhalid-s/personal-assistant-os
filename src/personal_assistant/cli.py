@@ -24,7 +24,7 @@ from .ingest.audio import transcribe_audio
 from .ingest.image import extract_image_text
 from .pulse import detect_mode, run_cycle
 from .retrieval import hybrid_score
-from . import assistant, autonomy, autonomy_loop, claims, cli_agent, cli_autonomy, cli_autopilot, cli_diagnostics, cli_factory, cli_health, cli_knowledge, cli_local_data, cli_operations, cli_planning, cli_review, cli_runtime, cli_workflow, command_registry, context as ctx, em, entities, factory, graphrag, intents, model_setup, observability, plans, providers, queries, relationships, router, watch
+from . import assistant, autonomy, autonomy_loop, claims, cli_agent, cli_autonomy, cli_autopilot, cli_diagnostics, cli_factory, cli_health, cli_knowledge, cli_launchd, cli_local_data, cli_operations, cli_planning, cli_review, cli_runtime, cli_setup_live, cli_workflow, command_registry, context as ctx, em, entities, factory, graphrag, intents, model_setup, observability, plans, providers, queries, relationships, router, watch
 # Helpers extracted out of this module (refactor #12); re-imported so existing
 # call sites (and tests importing them from cli) keep working unchanged.
 from .inbox import (
@@ -71,6 +71,22 @@ def _operations_dependencies() -> cli_operations.OperationsDependencies:
     return cli_operations.OperationsDependencies(
         load_env_file=load_env_file,
         orchestrate_command=cmd_orchestrate,
+    )
+
+
+def _setup_live_dependencies() -> cli_setup_live.SetupLiveDependencies:
+    return cli_setup_live.SetupLiveDependencies(
+        launchd_install_command=cmd_launchd_install,
+    )
+
+
+def _launchd_runtime_dependencies() -> cli_launchd.LaunchdRuntimeDependencies:
+    return cli_launchd.LaunchdRuntimeDependencies(
+        load_env_file=load_env_file,
+        onboard_command=cmd_onboard,
+        go_live_command=cmd_go_live,
+        launchd_status_command=cmd_launchd_status,
+        sanity_command=cmd_sanity,
     )
 
 
@@ -566,6 +582,7 @@ def _release_scan_files(root: Path) -> list[Path]:
         "src",
         "tests",
         "docs",
+        "deploy",
         ".github",
     ]
     files: list[Path] = []
@@ -639,6 +656,21 @@ def _tracked_local_artifacts(root: Path) -> list[str]:
         ):
             blocked.append(path)
     return blocked
+
+
+def _packaging_entrypoint_check(root: Path) -> tuple[bool, str]:
+    pyproject = root / "pyproject.toml"
+    if not pyproject.exists():
+        return False, "missing pyproject.toml"
+    text = pyproject.read_text(errors="ignore")
+    expected = 'myos = "personal_assistant.cli:main"'
+    if "[project.scripts]" not in text or expected not in text:
+        return False, "missing myos console script"
+    if importlib.util.find_spec("personal_assistant.cli") is None:
+        return False, "personal_assistant.cli not importable"
+    if not callable(globals().get("main")):
+        return False, "personal_assistant.cli:main not callable"
+    return True, "myos -> personal_assistant.cli:main"
 
 
 def _factory_release_smoke(conn: sqlite3.Connection) -> tuple[bool, str]:
@@ -752,6 +784,7 @@ def cmd_release_check(args: argparse.Namespace) -> None:
     schema = verify_schema(conn)
     hygiene = _release_hygiene_findings(root)
     artifacts = _tracked_local_artifacts(root)
+    packaging_ok, packaging_detail = _packaging_entrypoint_check(root)
     factory_smoke_ok, factory_smoke_detail = _factory_release_smoke(conn)
     required_files = [
         root / "LICENSE",
@@ -767,6 +800,7 @@ def cmd_release_check(args: argparse.Namespace) -> None:
         ("schema", bool(schema["ok"]), f"current={schema['current_version']} expected={schema['expected_version']}"),
         ("dependency_license", dependency_ok, "Apache-2.0 metadata"),
         ("required_files", all(path.exists() for path in required_files), "docs, changelog, license, workflows"),
+        ("package_entrypoint", packaging_ok, packaging_detail),
         ("public_hygiene", not hygiene, f"{len(hygiene)} finding(s)"),
         ("local_artifacts", not artifacts, f"{len(artifacts)} tracked local artifact(s)"),
         ("factory_smoke", factory_smoke_ok, factory_smoke_detail),
@@ -848,284 +882,31 @@ def cmd_config_init(args: argparse.Namespace) -> None:
 
 
 def _env_template(db_path: Path) -> str:
-    return "\n".join(
-        [
-            "# Personal Assistant OS live configuration",
-            f"MYOS_DB_PATH={db_path}",
-            "",
-            "# Jira",
-            "JIRA_BASE_URL=",
-            "JIRA_USER_EMAIL=",
-            "JIRA_API_TOKEN=",
-            "",
-            "# GitHub",
-            "GITHUB_TOKEN=",
-            "GITHUB_OWNER=",
-            "GITHUB_REPO=",
-            "",
-            "# Confluence",
-            "CONFLUENCE_BASE_URL=",
-            "CONFLUENCE_USER_EMAIL=",
-            "CONFLUENCE_API_TOKEN=",
-            "",
-            "# Aha",
-            "AHA_BASE_URL=",
-            "AHA_API_TOKEN=",
-            "",
-            "# Optional AI reasoning provider",
-            "MYOS_AI_PROVIDER=local",
-            "MYOS_AI_COMMAND=",
-            "",
-            "# Optional tiny local router model for intent finding",
-            "MYOS_ROUTER_BACKEND=",
-            "MYOS_ROUTER_MODEL=",
-            "MYOS_ROUTER_COMMAND=",
-            "MYOS_ROUTER_TIMEOUT_SEC=8",
-            "MYOS_ROUTER_MIN_CONFIDENCE=0.70",
-            "",
-            "# Safe default: approved external actions go to local outbox",
-            "MYOS_ACTION_PROVIDER=builtin",
-            "MYOS_ACTION_COMMAND=myos action-provider",
-            "",
-            "# Optional notification hook for assistant digests",
-            "MYOS_NOTIFY_COMMAND=",
-            "",
-        ]
-    ) + "\n"
+    return cli_setup_live._env_template(db_path)
 
 
 def _read_env_values(path: Path) -> dict[str, str]:
-    if not path.exists():
-        return {}
-    values: dict[str, str] = {}
-    for line in path.read_text().splitlines():
-        raw = line.strip()
-        if not raw or raw.startswith("#") or "=" not in raw:
-            continue
-        if raw.startswith("export "):
-            raw = raw[len("export ") :].strip()
-        key, value = raw.split("=", 1)
-        values[key.strip()] = value.strip().strip("'").strip('"')
-    return values
+    return cli_setup_live._read_env_values(path)
 
 
 def _upsert_env_lines(path: Path, lines: list[str], *, header: str = "# Managed tiny router model") -> None:
-    keys = {line.split("=", 1)[0].strip() for line in lines if "=" in line}
-    existing = path.read_text().splitlines() if path.exists() else []
-    kept = []
-    for line in existing:
-        raw = line.strip()
-        candidate = raw[len("export ") :].strip() if raw.startswith("export ") else raw
-        key = candidate.split("=", 1)[0].strip() if "=" in candidate else ""
-        if key in keys:
-            continue
-        kept.append(line)
-    if kept and kept[-1].strip():
-        kept.append("")
-    kept.append(header)
-    kept.extend(lines)
-    path.write_text("\n".join(kept).rstrip() + "\n")
+    cli_setup_live._upsert_env_lines(path, lines, header=header)
 
 
 def _setup_live_paths(args: argparse.Namespace) -> tuple[Path, Path, Path, Path]:
-    project_root = Path(__file__).resolve().parents[2]
-    data_dir = (Path(args.data_dir).expanduser() if args.data_dir else project_root / "data").resolve()
-    env_path = (Path(args.env_file).expanduser() if args.env_file else data_dir / ".env.myos").resolve()
-    env_values = _read_env_values(env_path)
-    configured_db = args.db_path or os.getenv("MYOS_DB_PATH", "") or env_values.get("MYOS_DB_PATH", "")
-    db_path = (Path(configured_db).expanduser() if configured_db else data_dir / "assistant.db").resolve()
-    watch_dir = (Path(args.watch_dir).expanduser() if args.watch_dir else data_dir / "inbox").resolve()
-    return data_dir, env_path, db_path, watch_dir
+    return cli_setup_live._setup_live_paths(args)
 
 
 def _env_or_file(key: str, values: dict[str, str]) -> str:
-    return os.getenv(key, "") or values.get(key, "")
+    return cli_setup_live._env_or_file(key, values)
 
 
 def _cmd_setup_live_check(env_path: Path, db_path: Path, watch_dir: Path) -> bool:
-    env_values = _read_env_values(env_path)
-    print("Live readiness check:")
-    ok_count = 0
-    total = 0
-
-    def check(name: str, ok: bool, detail: str, *, required: bool = True) -> None:
-        nonlocal ok_count, total
-        if not required:
-            print(f"- {'PASS' if ok else 'INFO'} {name}: {detail}")
-            return
-        total += 1
-        if ok:
-            ok_count += 1
-        print(f"- {'PASS' if ok else 'WARN'} {name}: {detail}")
-
-    check("env_file", env_path.exists(), str(env_path) if env_path.exists() else f"missing {env_path}")
-    if env_path.exists():
-        mode = env_path.stat().st_mode & 0o777
-        check("env_permissions", mode & 0o077 == 0, oct(mode))
-    else:
-        check("env_permissions", False, "env file missing")
-
-    credential_groups = {
-        "jira_credentials": ["JIRA_BASE_URL", "JIRA_USER_EMAIL", "JIRA_API_TOKEN"],
-        "github_credentials": ["GITHUB_TOKEN", "GITHUB_OWNER", "GITHUB_REPO"],
-        "confluence_credentials": ["CONFLUENCE_BASE_URL", "CONFLUENCE_USER_EMAIL", "CONFLUENCE_API_TOKEN"],
-        "aha_credentials": ["AHA_BASE_URL", "AHA_API_TOKEN"],
-    }
-    for name, keys in credential_groups.items():
-        missing = [key for key in keys if not _env_or_file(key, env_values)]
-        check(name, not missing, "ready" if not missing else "missing " + ", ".join(missing))
-
-    action_provider = _env_or_file("MYOS_ACTION_COMMAND", env_values)
-    check("action_provider", bool(action_provider), action_provider or "missing MYOS_ACTION_COMMAND")
-    check("watch_dir", watch_dir.exists(), str(watch_dir) if watch_dir.exists() else f"missing {watch_dir}")
-    check("database_file", db_path.exists(), str(db_path) if db_path.exists() else f"missing {db_path}")
-
-    if not db_path.exists():
-        print(f"Readiness summary: {ok_count}/{total} checks passing")
-        print("Next: run `myos setup-live --apply`, then fill the env file.")
-        return ok_count == total
-
-    try:
-        conn = sqlite3.connect(db_path)
-        active_goals = conn.execute("SELECT COUNT(*) FROM assistant_goals WHERE status='active'").fetchone()[0]
-        active_watch_dirs = conn.execute("SELECT COUNT(*) FROM assistant_watch_dirs WHERE status='active'").fetchone()[0]
-        recent_autopilot = conn.execute(
-            "SELECT COUNT(*) FROM autopilot_runs WHERE started_at >= datetime('now', '-24 hours')"
-        ).fetchone()[0]
-        conn.close()
-        check("standing_goals", active_goals > 0, f"active_goals={active_goals}")
-        check("watch_config", active_watch_dirs > 0, f"active_watch_dirs={active_watch_dirs}")
-        check("autopilot_smoke", recent_autopilot > 0, f"runs_24h={recent_autopilot}", required=False)
-    except sqlite3.Error as exc:
-        check("database_schema", False, str(exc))
-
-    print(f"Readiness summary: {ok_count}/{total} checks passing")
-    if ok_count == total:
-        print(f"Ready: myos autopilot --env-file {env_path} --once")
-    else:
-        print(f"Next: fix WARN items, then run `myos autopilot --env-file {env_path} --once`.")
-    return ok_count == total
+    return cli_setup_live._cmd_setup_live_check(env_path, db_path, watch_dir)
 
 
 def cmd_setup_live(args: argparse.Namespace) -> None:
-    data_dir, env_path, db_path, watch_dir = _setup_live_paths(args)
-    router_model_plan = None
-    if getattr(args, "router_model", False):
-        try:
-            router_model_plan = model_setup.setup_plan(
-                runtime=getattr(args, "router_runtime", "auto"),
-                model=getattr(args, "router_model_name", ""),
-            )
-        except ValueError as exc:
-            print(str(exc))
-            raise SystemExit(1) from exc
-    goals = [
-        (
-            "Keep my work commitments and risks current",
-            "Monitor synced work, notes, transcripts, due dates, blockers, and approval-needed updates.",
-            240,
-            1,
-        ),
-        (
-            "Prepare daily executive digest",
-            "Summarize what changed, what was handled, what needs approval, and the next best action.",
-            720,
-            2,
-        ),
-    ]
-
-    if args.check:
-        if not _cmd_setup_live_check(env_path, db_path, watch_dir):
-            raise SystemExit(1)
-        return
-
-    print("Live setup plan:")
-    print(f"- data_dir: {data_dir}")
-    print(f"- env_file: {env_path}")
-    print(f"- db_path: {db_path}")
-    print(f"- default_watch_dir: {watch_dir}")
-    print("- default action provider: MYOS_ACTION_COMMAND=myos action-provider")
-    print("- default goals: commitment/risk monitoring, daily digest")
-    if router_model_plan:
-        _print_model_plan(router_model_plan)
-    print("- launchd autopilot: " + ("yes" if args.install_launchd else "no"))
-    if not args.apply:
-        print("Dry run only. Re-run with --apply to create files and DB records.")
-        return
-
-    data_dir.mkdir(parents=True, exist_ok=True)
-    (data_dir / "autopilot").mkdir(parents=True, exist_ok=True)
-    (data_dir / "outbox").mkdir(parents=True, exist_ok=True)
-    watch_dir.mkdir(parents=True, exist_ok=True)
-    if not env_path.exists() or args.force:
-        env_path.write_text(_env_template(db_path))
-        env_path.chmod(0o600)
-        print(f"Wrote env template: {env_path}")
-    else:
-        env_path.chmod(0o600)
-        print(f"Env file already exists: {env_path}")
-    if router_model_plan:
-        setup_result = model_setup.apply_setup(router_model_plan, dry_run=False)
-        _upsert_env_lines(env_path, list(router_model_plan["env_lines"]))
-        env_path.chmod(0o600)
-        print(f"Router model setup: {setup_result['status']}")
-        if setup_result.get("wrapper"):
-            print(f"Router wrapper: {setup_result['wrapper']}")
-        if setup_result["status"] == "failed":
-            print(setup_result.get("stderr") or setup_result.get("stdout") or "model setup failed")
-            raise SystemExit(1)
-
-    os.environ["MYOS_DB_PATH"] = str(db_path)
-    conn = get_connection()
-    conn.execute(
-        """
-        INSERT INTO assistant_watch_dirs (path, label, status, updated_at)
-        VALUES (?, 'default-inbox', 'active', CURRENT_TIMESTAMP)
-        ON CONFLICT(path) DO UPDATE SET status='active', updated_at=CURRENT_TIMESTAMP
-        """,
-        (str(watch_dir),),
-    )
-    for objective, context, cadence, priority in goals:
-        existing = conn.execute(
-            "SELECT id FROM assistant_goals WHERE objective=? LIMIT 1",
-            (objective,),
-        ).fetchone()
-        if existing:
-            continue
-        conn.execute(
-            """
-            INSERT INTO assistant_goals (objective, context, cadence_minutes, priority, status)
-            VALUES (?, ?, ?, ?, 'active')
-            """,
-            (objective, context, cadence, priority),
-        )
-    conn.execute(
-        """
-        INSERT INTO assistant_policies (key, value, updated_at)
-        VALUES ('action_timeout_sec', '30', CURRENT_TIMESTAMP)
-        ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP
-        """
-    )
-    conn.commit()
-    print("Configured default watch directory, goals, and policy.")
-
-    if args.install_launchd:
-        cmd_launchd_install(
-            argparse.Namespace(
-                apply=True,
-                load=args.load_launchd,
-                env_file=str(env_path),
-                interval_sec=1800,
-                meeting_hours=0.0,
-                autopilot=True,
-                autopilot_interval_sec=args.autopilot_interval_sec,
-            )
-        )
-
-    print("Setup complete.")
-    print(f"Next: fill credentials in {env_path}")
-    print(f"Then: myos autopilot --env-file {env_path} --once")
-    print("Review: myos digest && myos approve --list && myos self-review")
+    cli_setup_live.cmd_setup_live(args, _setup_live_dependencies())
 
 
 def cmd_report(args: argparse.Namespace) -> None:
@@ -1161,184 +942,15 @@ def cmd_weekly_review(args: argparse.Namespace) -> None:
 
 
 def cmd_launchd_install(args: argparse.Namespace) -> None:
-    project_root = Path(__file__).resolve().parents[2]
-    env_file = args.env_file or str(project_root / "data" / ".env.myos")
-    env_file_q = str(Path(env_file).expanduser().resolve())
-    project_q = shlex.quote(str(project_root))
-    env_q = shlex.quote(str(env_file_q))
-    sync_cmd = f"cd {project_q} && source .venv/bin/activate && myos sync --connector all --env-file {env_q}"
-    pulse_cmd = (
-        f"cd {project_q} && source .venv/bin/activate && "
-        f"myos pulse --env-file {env_q} --interval-sec {int(args.interval_sec)} "
-        f"--meeting-hours {float(args.meeting_hours)}"
-    )
-    autopilot_cmd = (
-        f"cd {project_q} && source .venv/bin/activate && "
-        f"myos autopilot --env-file {env_q} --interval-sec {int(args.autopilot_interval_sec)}"
-    )
-    (project_root / "data").mkdir(parents=True, exist_ok=True)
-    target_dir = Path.home() / "Library" / "LaunchAgents"
-    dst_sync = target_dir / "com.myos.sync.plist"
-    dst_pulse = target_dir / "com.myos.pulse.plist"
-    dst_autopilot = target_dir / "com.myos.autopilot.plist"
-
-    sync_plist = f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
-<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
-<plist version=\"1.0\">
-<dict>
-  <key>Label</key>
-  <string>com.myos.sync</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/bin/zsh</string>
-    <string>-lc</string>
-    <string>{xml_escape(sync_cmd)}</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>StartInterval</key>
-  <integer>{args.interval_sec}</integer>
-  <key>StandardOutPath</key>
-  <string>{xml_escape(str(project_root / 'data' / 'sync.log'))}</string>
-  <key>StandardErrorPath</key>
-  <string>{xml_escape(str(project_root / 'data' / 'sync.err.log'))}</string>
-</dict>
-</plist>
-"""
-    pulse_plist = f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
-<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
-<plist version=\"1.0\">
-<dict>
-  <key>Label</key>
-  <string>com.myos.pulse</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/bin/zsh</string>
-    <string>-lc</string>
-    <string>{xml_escape(pulse_cmd)}</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>{xml_escape(str(project_root / 'data' / 'pulse.log'))}</string>
-  <key>StandardErrorPath</key>
-  <string>{xml_escape(str(project_root / 'data' / 'pulse.err.log'))}</string>
-</dict>
-</plist>
-"""
-    autopilot_plist = f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
-<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
-<plist version=\"1.0\">
-<dict>
-  <key>Label</key>
-  <string>com.myos.autopilot</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/bin/zsh</string>
-    <string>-lc</string>
-    <string>{xml_escape(autopilot_cmd)}</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>{xml_escape(str(project_root / 'data' / 'autopilot.log'))}</string>
-  <key>StandardErrorPath</key>
-  <string>{xml_escape(str(project_root / 'data' / 'autopilot.err.log'))}</string>
-</dict>
-</plist>
-"""
-
-    print("Launchd plan:")
-    print(f"- write {dst_sync}")
-    print(f"- write {dst_pulse}")
-    if args.autopilot:
-        print(f"- write {dst_autopilot}")
-    print(f"- env file for sync: {env_file_q}")
-    print(f"- env file for pulse: {env_file_q}")
-    if args.autopilot:
-        print(f"- env file for autopilot: {env_file_q}")
-    print(f"- load agents: {args.load}")
-    if not args.apply:
-        print("Dry run only. Re-run with --apply to execute.")
-        return
-
-    target_dir.mkdir(parents=True, exist_ok=True)
-    dst_sync.write_text(sync_plist)
-    dst_pulse.write_text(pulse_plist)
-    if args.autopilot:
-        dst_autopilot.write_text(autopilot_plist)
-    print("Copied launchd files.")
-    if args.load:
-        launchctl = shutil.which("launchctl")
-        if not launchctl:
-            print("launchctl unavailable; copied files but skipped loading launch agents.")
-            return
-        subprocess.run([launchctl, "unload", str(dst_sync)], check=False)
-        subprocess.run([launchctl, "unload", str(dst_pulse)], check=False)
-        if args.autopilot:
-            subprocess.run([launchctl, "unload", str(dst_autopilot)], check=False)
-        subprocess.run([launchctl, "load", str(dst_sync)], check=False)
-        subprocess.run([launchctl, "load", str(dst_pulse)], check=False)
-        if args.autopilot:
-            subprocess.run([launchctl, "load", str(dst_autopilot)], check=False)
-        print("Loaded launch agents.")
+    cli_launchd.cmd_launchd_install(args)
 
 
 def cmd_launchd_uninstall(args: argparse.Namespace) -> None:
-    target_dir = Path.home() / "Library" / "LaunchAgents"
-    dst_sync = target_dir / "com.myos.sync.plist"
-    dst_pulse = target_dir / "com.myos.pulse.plist"
-    dst_autopilot = target_dir / "com.myos.autopilot.plist"
-    print("Launchd uninstall plan:")
-    print(f"- remove {dst_sync}")
-    print(f"- remove {dst_pulse}")
-    print(f"- remove {dst_autopilot}")
-    if not args.apply:
-        print("Dry run only. Re-run with --apply to execute.")
-        return
-    if dst_sync.exists():
-        subprocess.run(["launchctl", "unload", str(dst_sync)], check=False, capture_output=True, text=True)
-        dst_sync.unlink()
-    if dst_pulse.exists():
-        subprocess.run(["launchctl", "unload", str(dst_pulse)], check=False, capture_output=True, text=True)
-        dst_pulse.unlink()
-    if dst_autopilot.exists():
-        subprocess.run(["launchctl", "unload", str(dst_autopilot)], check=False, capture_output=True, text=True)
-        dst_autopilot.unlink()
-    print("Launch agents removed.")
+    cli_launchd.cmd_launchd_uninstall(args)
 
 
 def cmd_activate(args: argparse.Namespace) -> None:
-    if args.env_file:
-        loaded = load_env_file(args.env_file)
-        print(f"Loaded {loaded} vars from {args.env_file}")
-    print("Activation flow: onboard -> go-live -> optional launchd install")
-    cmd_onboard(argparse.Namespace())
-    print()
-    cmd_go_live(
-        argparse.Namespace(
-            connector=args.connector,
-            env_file=args.env_file,
-            external_limit=args.external_limit,
-        )
-    )
-    if args.install_launchd:
-        print()
-        cmd_launchd_install(
-            argparse.Namespace(
-                apply=True,
-                load=args.load_launchd,
-                env_file=args.env_file,
-                interval_sec=1800,
-                meeting_hours=0.0,
-                autopilot=False,
-                autopilot_interval_sec=900,
-            )
-        )
+    cli_launchd.cmd_activate(args, _launchd_runtime_dependencies())
 
 
 def cmd_launchd_status(args: argparse.Namespace) -> None:
@@ -1346,27 +958,11 @@ def cmd_launchd_status(args: argparse.Namespace) -> None:
 
 
 def cmd_start(args: argparse.Namespace) -> None:
-    print("Starting MYOS runtime: activate -> launchd status -> sanity")
-    cmd_activate(
-        argparse.Namespace(
-            env_file=args.env_file,
-            connector=args.connector,
-            external_limit=args.external_limit,
-            install_launchd=args.install_launchd,
-            load_launchd=args.load_launchd,
-        )
-    )
-    print()
-    cmd_launchd_status(argparse.Namespace())
-    print()
-    cmd_sanity(argparse.Namespace(strict=False, report_dir=args.report_dir))
+    cli_launchd.cmd_start(args, _launchd_runtime_dependencies())
 
 
 def cmd_stop(args: argparse.Namespace) -> None:
-    print("Stopping MYOS runtime: unload/remove launchd -> status")
-    cmd_launchd_uninstall(argparse.Namespace(apply=True))
-    print()
-    cmd_launchd_status(argparse.Namespace())
+    cli_launchd.cmd_stop(args, _launchd_runtime_dependencies())
 
 
 def cmd_dashboard(args: argparse.Namespace) -> None:
@@ -1420,7 +1016,7 @@ def cmd_morning(args: argparse.Namespace) -> None:
 
 
 def cmd_now(args: argparse.Namespace) -> None:
-    cmd_next_action(argparse.Namespace(meeting_hours=args.meeting_hours, risk_threshold=60))
+    cmd_next_action(argparse.Namespace(meeting_hours=args.meeting_hours, risk_threshold=60, feedback_command="myos now"))
 
 
 def cmd_end(_: argparse.Namespace) -> None:
@@ -1449,15 +1045,7 @@ def cmd_weekly(_: argparse.Namespace) -> None:
 
 
 def cmd_live(args: argparse.Namespace) -> None:
-    cmd_activate(
-        argparse.Namespace(
-            env_file=args.env_file,
-            connector="all",
-            external_limit=100,
-            install_launchd=args.install_launchd,
-            load_launchd=args.load_launchd,
-        )
-    )
+    cli_launchd.cmd_live(args, _launchd_runtime_dependencies())
 
 
 def cmd_health(args: argparse.Namespace) -> None:
@@ -2192,7 +1780,16 @@ def build_parser() -> argparse.ArgumentParser:
     router_overrides = router_sub.add_parser("overrides", help="List active exact-hash route overrides.")
     router_overrides.add_argument("--limit", type=int, default=20)
     router_overrides.set_defaults(func=cmd_router)
-    router_commands = router_sub.add_parser("commands", help="List router-visible MYOS command metadata.")
+    router_commands = router_sub.add_parser(
+        "commands",
+        help="List router-visible MYOS command metadata.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "List model-safe command metadata for local router prompts.\n"
+            "Output includes tiers, intents, safety levels, side effects, required args, examples, and runtime flags.\n"
+            "It does not include raw user text."
+        ),
+    )
     router_commands.add_argument("--tier", choices=list(command_registry.TIERS), default="")
     router_commands.add_argument("--safety", choices=list(command_registry.SAFETY_LEVELS), default="")
     router_commands.add_argument("--intent", choices=list(router.ROUTABLE_INTENTS), default="")
@@ -2214,7 +1811,7 @@ def build_parser() -> argparse.ArgumentParser:
     trace_rollups.add_argument("--limit", type=int, default=20)
     trace_rollups.set_defaults(func=cmd_trace)
 
-    autonomy_parser = sub.add_parser("autonomy", help="Evaluate and calibrate autonomy decision policy.")
+    autonomy_parser = sub.add_parser("autonomy", help="Evaluate policy and record privacy-safe feedback.")
     autonomy_sub = autonomy_parser.add_subparsers(dest="autonomy_action", required=True)
     autonomy_eval = autonomy_sub.add_parser("eval", help="Evaluate local autonomy decision fixtures.")
     autonomy_eval.add_argument("--level", choices=list(autonomy.LEVELS), default=autonomy.DEFAULT_LEVEL)
@@ -2225,17 +1822,40 @@ def build_parser() -> argparse.ArgumentParser:
     autonomy_feedback.add_argument("--expected-decision", choices=list(autonomy.DECISIONS), required=True)
     autonomy_feedback.add_argument("--note", default="", help="Optional note; stored as hash and length only.")
     autonomy_feedback.set_defaults(func=cmd_autonomy)
-    recommendation_feedback = autonomy_sub.add_parser("recommendation-feedback", help="Record privacy-safe feedback on a printed recommendation.")
-    recommendation_feedback.add_argument("--label", required=True, help="Recommendation label printed by MYOS.")
-    recommendation_feedback.add_argument("--command", dest="recommendation_command", default="", help="Recommended command text, if any.")
+    recommendation_feedback = autonomy_sub.add_parser(
+        "recommendation-feedback",
+        help="Record privacy-safe feedback on a printed recommendation.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Record usefulness feedback for a recommendation printed by MYOS. "
+            "For daily recommendations, copy values from output like "
+            "[label=daily_reduce_risk command=\"myos next-action\"].\n"
+            "Common daily commands: myos next-action or myos now.\n"
+            "For approval handoffs, use --label review_approvals --command \"myos approve --list\".\n"
+            "For goal scheduler handoffs, use --label run_goal_cycle --command \"myos loop run-goal --goal 1\" "
+            "or --label review_goals --command \"myos goal list\"."
+        ),
+    )
+    recommendation_feedback.add_argument("--label", required=True, help="Printed label, e.g. daily_reduce_risk.")
+    recommendation_feedback.add_argument("--command", dest="recommendation_command", default="", help="Printed command text, e.g. myos next-action or myos now.")
     recommendation_feedback.add_argument("--decision", choices=["", *list(autonomy.DECISIONS)], default="")
     recommendation_feedback.add_argument("--intent", default="")
     recommendation_feedback.add_argument("--workflow-pack", default="")
     recommendation_feedback.add_argument("--useful", choices=["yes", "no"], required=True)
     recommendation_feedback.add_argument("--note", default="", help="Optional note; stored as hash and length only.")
     recommendation_feedback.set_defaults(func=cmd_autonomy)
-    recommendations = autonomy_sub.add_parser("recommendations", help="List recommendation feedback ranking summary.")
-    recommendations.add_argument("--limit", type=int, default=20)
+    recommendations = autonomy_sub.add_parser(
+        "recommendations",
+        help="List recommendation feedback ranking summary.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Show compact feedback summary fields such as surface, recent_score_30d, side_effects, and mixed_recent.\n"
+            "Command context is shown; raw notes, note_hash, and note_length are not shown.\n"
+            "Goal scheduler labels such as run_goal_cycle and review_goals appear as surface=goal_scheduler with command context.\n"
+            "Tiny limits still keep active daily feedback visible."
+        ),
+    )
+    recommendations.add_argument("--limit", type=int, default=20, help="Maximum summary rows to show; tiny limits still keep active daily feedback visible.")
     recommendations.set_defaults(func=cmd_autonomy)
 
     loop = sub.add_parser("loop", help="Run one bounded durable autonomy loop cycle.")
@@ -2255,20 +1875,56 @@ def build_parser() -> argparse.ArgumentParser:
     loop_status.add_argument("--task", type=int)
     loop_status.add_argument("--limit", type=int, default=10)
     loop_status.set_defaults(func=cmd_loop)
-    loop_goals = loop_sub.add_parser("goals", help="List eligible goals for a scheduler cycle.")
-    loop_goals.add_argument("--limit", type=int, default=5)
+    loop_goals = loop_sub.add_parser(
+        "goals",
+        help="List eligible goals for a scheduler cycle.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "List due goals and print the next handoff command for each one.\n"
+            "Feedback labels mark run-goal and goal-review handoffs for privacy-safe calibration.\n"
+            "If no goals are eligible, review standing goals with myos goal list.\n"
+            "Examples:\n"
+            "  myos loop goals\n"
+            "  myos loop run-goal --goal 1"
+        ),
+    )
+    loop_goals.add_argument("--limit", type=int, default=5, help="Maximum eligible goals to show.")
     loop_goals.set_defaults(func=cmd_loop)
-    loop_run_goal = loop_sub.add_parser("run-goal", help="Run one bounded goal-driven autonomy cycle.")
-    loop_run_goal.add_argument("--goal", type=int)
-    loop_run_goal.add_argument("--backend", choices=["", "claude", "claude-sdk", "claude-code-sdk", "cursor", "claude-code", "copilot", "command"], default="")
-    loop_run_goal.add_argument("--max-actions", type=int, default=autonomy_loop.DEFAULT_MAX_ACTIONS)
-    loop_run_goal.add_argument("--limit", type=int, default=5)
+    loop_run_goal = loop_sub.add_parser(
+        "run-goal",
+        help="Run one bounded goal-driven autonomy cycle.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Start or resume exactly one eligible goal loop, then stop for review.\n"
+            "Pending approvals remain gated and are handed off to myos approve --list."
+        ),
+    )
+    loop_run_goal.add_argument("--goal", type=int, help="Run a specific assistant goal id.")
+    loop_run_goal.add_argument("--backend", choices=["", "claude", "claude-sdk", "claude-code-sdk", "cursor", "claude-code", "copilot", "command"], default="", help="Optional reasoning backend for this bounded cycle.")
+    loop_run_goal.add_argument("--max-actions", type=int, default=autonomy_loop.DEFAULT_MAX_ACTIONS, help="Maximum proposed actions for the cycle.")
+    loop_run_goal.add_argument("--limit", type=int, default=5, help="Maximum eligible goals to consider when --goal is omitted.")
     loop_run_goal.set_defaults(func=cmd_loop)
-    loop_ledger = loop_sub.add_parser("ledger", help="Inspect recent autonomy run ledger decisions.")
-    loop_ledger.add_argument("--limit", type=int, default=20)
-    loop_ledger.add_argument("--goal", type=int)
-    loop_ledger.add_argument("--task", type=int)
-    loop_ledger.add_argument("--status", default="")
+    loop_ledger = loop_sub.add_parser(
+        "ledger",
+        help="Inspect recent autonomy run ledger decisions.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Inspect the read-only audit trail for bounded loop and goal scheduler decisions.\n"
+            "Filter by goal, task, or status; pending approval rows point to myos approve --list.\n"
+            "Examples:\n"
+            "  myos loop ledger --status waiting_approval\n"
+            "  myos loop ledger --status skipped --goal 1"
+        ),
+    )
+    loop_ledger.add_argument("--limit", type=int, default=20, help="Maximum ledger rows to show.")
+    loop_ledger.add_argument("--goal", type=int, help="Show ledger rows for one assistant goal id.")
+    loop_ledger.add_argument("--task", type=int, help="Show ledger rows for one autonomy loop task id.")
+    loop_ledger.add_argument(
+        "--status",
+        choices=list(autonomy_loop.LEDGER_STATUSES),
+        default="",
+        help="Filter by ledger status.",
+    )
     loop_ledger.set_defaults(func=cmd_loop)
 
     capture = sub.add_parser("capture", help="Capture an inbox item.")

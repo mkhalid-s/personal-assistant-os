@@ -23,6 +23,7 @@ import time
 import urllib.request
 
 from . import autonomy, observability
+from .approval_context import compact_action_review_context
 from .db import append_event, resolve_db_path
 from .inbox import insert_inbox_item_dedup
 from .privacy import apply_privacy_filters, get_policy_map, redact_obj
@@ -186,6 +187,11 @@ def _record_execution_receipt(conn, row, *, approved: bool, final_status: str, r
         "action_type": row["action_type"],
         "title": apply_privacy_filters(conn, row["title"]),
         "payload": redact_obj(conn, payload),
+        "approval_context": compact_action_review_context(
+            str(row["action_type"]),
+            payload,
+            requires_approval=bool(row["requires_approval"]),
+        ),
     }
     cur = conn.execute(
         """

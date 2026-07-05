@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 
 
@@ -38,8 +39,12 @@ class CommandRegistryTest(unittest.TestCase):
             self.assertIn("tier", item)
             self.assertIn("safety", item)
             self.assertIn("intent", item)
+            self.assertIn("side_effects", item)
+            self.assertIn("dry_run_by_default", item)
+            self.assertIn("long_running", item)
             self.assertIn("subcommands", item)
             self.assertIn("required_args", item)
+            self.assertIn("examples", item)
             self.assertNotIn("raw_text", item)
 
     def test_local_model_command_mapper_covers_all_registered_commands(self) -> None:
@@ -47,6 +52,9 @@ class CommandRegistryTest(unittest.TestCase):
 
         mapper = command_registry.local_model_command_mapper()
         self.assertEqual(mapper["schema"], "myos.command_mapper.v1")
+        self.assertEqual(set(mapper["tiers"]), set(command_registry.TIERS))
+        self.assertEqual(set(mapper["safety_levels"]), set(command_registry.SAFETY_LEVELS))
+        self.assertEqual(set(mapper["side_effect_types"]), set(command_registry.SIDE_EFFECT_TYPES))
         commands = mapper["commands"]
         self.assertEqual(len(commands), len(command_registry.all_commands()))
         by_name = {item["command"]: item for item in commands}
@@ -54,7 +62,64 @@ class CommandRegistryTest(unittest.TestCase):
         self.assertIn("policy", by_name["factory"]["subcommands"])
         self.assertIn("autopilot", by_name)
         self.assertIn("--loop-goal", by_name["autopilot"]["subcommands"])
+        self.assertIn("myos autopilot --once --loop-goal", by_name["autopilot"]["examples"])
+        self.assertIn("side_effect_types", mapper)
         self.assertNotIn("raw_text", str(mapper))
+
+    def test_runtime_command_mapper_marks_side_effect_boundaries(self) -> None:
+        from personal_assistant import command_registry
+
+        mapper = command_registry.local_model_command_mapper()
+        by_name = {item["command"]: item for item in mapper["commands"]}
+
+        setup_live = by_name["setup-live"]
+        self.assertTrue(setup_live["dry_run_by_default"])
+        self.assertIn("local_file_write", setup_live["side_effects"])
+        self.assertIn("local_db_write", setup_live["side_effects"])
+        self.assertIn("os_service_write", setup_live["side_effects"])
+
+        launchd_install = by_name["launchd-install"]
+        self.assertTrue(launchd_install["dry_run_by_default"])
+        self.assertTrue(launchd_install["requires_confirmation"])
+        self.assertIn("os_service_write", launchd_install["side_effects"])
+
+        start = by_name["start"]
+        self.assertTrue(start["requires_confirmation"])
+        self.assertIn("os_service_write", start["side_effects"])
+
+        stop = by_name["stop"]
+        self.assertTrue(stop["requires_confirmation"])
+        self.assertIn("os_service_write", stop["side_effects"])
+
+        restore = by_name["restore"]
+        self.assertTrue(restore["requires_confirmation"])
+        self.assertIn("database_restore", restore["side_effects"])
+
+        dashboard = by_name["dashboard"]
+        self.assertTrue(dashboard["long_running"])
+        self.assertIn("long_running", dashboard["side_effects"])
+
+        declared_effects = set(mapper["side_effect_types"])
+        for item in mapper["commands"]:
+            self.assertLessEqual(set(item["side_effects"]), declared_effects)
+
+    def test_local_model_command_mapper_public_hygiene(self) -> None:
+        from personal_assistant import command_registry
+
+        mapper_json = json.dumps(command_registry.local_model_command_mapper(), sort_keys=True)
+        forbidden = [
+            "Guide" + "wire",
+            "GW Bed" + "rock",
+            "/Users/" + "mshaikh",
+            "raw_text",
+            "raw_request",
+            "raw_command_args",
+            "request_json",
+            "note_hash",
+            "note_length",
+        ]
+        for pattern in forbidden:
+            self.assertNotIn(pattern, mapper_json)
 
     def test_filter_commands(self) -> None:
         from personal_assistant import command_registry
@@ -84,11 +149,13 @@ class CommandRegistryTest(unittest.TestCase):
             cli_factory,
             cli_health,
             cli_knowledge,
+            cli_launchd,
             cli_local_data,
             cli_operations,
             cli_planning,
             cli_review,
             cli_runtime,
+            cli_setup_live,
             cli_workflow,
         )
 
@@ -136,11 +203,18 @@ class CommandRegistryTest(unittest.TestCase):
         self.assertTrue(callable(cli_runtime.cmd_runbook))
         self.assertTrue(callable(cli_runtime.cmd_launchd_status))
         self.assertTrue(callable(cli_runtime.cmd_health))
+        self.assertTrue(callable(cli_launchd.cmd_launchd_install))
+        self.assertTrue(callable(cli_launchd.cmd_launchd_uninstall))
+        self.assertTrue(callable(cli_launchd.cmd_activate))
+        self.assertTrue(callable(cli_launchd.cmd_start))
+        self.assertTrue(callable(cli_launchd.cmd_stop))
+        self.assertTrue(callable(cli_launchd.cmd_live))
         self.assertTrue(callable(cli_local_data.cmd_backup))
         self.assertTrue(callable(cli_local_data.cmd_restore))
         self.assertTrue(callable(cli_local_data.cmd_migrations))
         self.assertTrue(callable(cli_local_data.cmd_config_init))
         self.assertTrue(callable(cli_local_data.cmd_cleanup))
+        self.assertTrue(callable(cli_setup_live.cmd_setup_live))
         parser = cli.build_parser()
         autonomy_args = parser.parse_args(["autonomy", "eval", "--no-record"])
         loop_args = parser.parse_args(["loop", "status"])
@@ -199,11 +273,18 @@ class CommandRegistryTest(unittest.TestCase):
         launchd_status_args = parser.parse_args(["launchd-status"])
         health_args = parser.parse_args(["health"])
         ui_args = parser.parse_args(["ui"])
+        launchd_install_args = parser.parse_args(["launchd-install"])
+        launchd_uninstall_args = parser.parse_args(["launchd-uninstall"])
+        activate_args = parser.parse_args(["activate"])
+        start_args = parser.parse_args(["start"])
+        stop_args = parser.parse_args(["stop"])
+        live_args = parser.parse_args(["live"])
         backup_args = parser.parse_args(["backup"])
         restore_args = parser.parse_args(["restore", "--from", "backup.db"])
         migrations_args = parser.parse_args(["migrations"])
         config_init_args = parser.parse_args(["config-init"])
         cleanup_args = parser.parse_args(["cleanup"])
+        setup_live_args = parser.parse_args(["setup-live"])
         self.assertIs(autonomy_args.func, cli.cmd_autonomy)
         self.assertIs(loop_args.func, cli.cmd_loop)
         self.assertIs(autopilot_args.func, cli.cmd_autopilot)
@@ -261,11 +342,18 @@ class CommandRegistryTest(unittest.TestCase):
         self.assertIs(launchd_status_args.func, cli.cmd_launchd_status)
         self.assertIs(health_args.func, cli.cmd_health)
         self.assertIs(ui_args.func, cli.cmd_ui)
+        self.assertIs(launchd_install_args.func, cli.cmd_launchd_install)
+        self.assertIs(launchd_uninstall_args.func, cli.cmd_launchd_uninstall)
+        self.assertIs(activate_args.func, cli.cmd_activate)
+        self.assertIs(start_args.func, cli.cmd_start)
+        self.assertIs(stop_args.func, cli.cmd_stop)
+        self.assertIs(live_args.func, cli.cmd_live)
         self.assertIs(backup_args.func, cli.cmd_backup)
         self.assertIs(restore_args.func, cli.cmd_restore)
         self.assertIs(migrations_args.func, cli.cmd_migrations)
         self.assertIs(config_init_args.func, cli.cmd_config_init)
         self.assertIs(cleanup_args.func, cli.cmd_cleanup)
+        self.assertIs(setup_live_args.func, cli.cmd_setup_live)
 
 
 if __name__ == "__main__":

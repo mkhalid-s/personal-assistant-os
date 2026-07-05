@@ -11,6 +11,83 @@ from pathlib import Path
 
 
 class CliFlowTest(unittest.TestCase):
+    def test_ci_release_readiness_smokes_installed_command(self) -> None:
+        workflow = Path(".github/workflows/ci.yml").read_text()
+        self.assertIn("Smoke installed myos command", workflow)
+        self.assertIn("myos --help >/dev/null", workflow)
+
+    def test_ci_hygiene_scans_new_commit_messages_only(self) -> None:
+        workflow = Path(".github/workflows/ci.yml").read_text()
+        self.assertIn('range="${{ github.event.before }}..${{ github.sha }}"', workflow)
+        self.assertIn('git log --format=%B "$range"', workflow)
+        self.assertNotIn("git log --format=%B | grep", workflow)
+
+    def test_ci_release_readiness_uses_installed_command_path(self) -> None:
+        workflow = Path(".github/workflows/ci.yml").read_text()
+        release_job = workflow.split("  release-readiness:", 1)[1]
+        self.assertLess(release_job.index("Smoke installed myos command"), release_job.index("Build wheel artifact smoke"))
+        self.assertLess(release_job.index("Build wheel artifact smoke"), release_job.index("Run release readiness gate"))
+        self.assertIn("run: myos release-check --strict", release_job)
+        self.assertNotIn("PYTHONPATH: src", release_job)
+
+    def test_ci_release_readiness_builds_wheel_artifact(self) -> None:
+        workflow = Path(".github/workflows/ci.yml").read_text()
+        self.assertIn("Build wheel artifact smoke", workflow)
+        self.assertIn("python -m pip wheel --no-deps . -w dist/wheel-smoke", workflow)
+        self.assertIn("wheel build produced no wheel", workflow)
+        self.assertIn("myos release-check --strict", workflow)
+
+    def test_release_workflow_aligns_with_ci_packaging_gates(self) -> None:
+        workflow = Path(".github/workflows/release.yml").read_text()
+        self.assertIn("Smoke installed myos command", workflow)
+        self.assertIn("myos --help >/dev/null", workflow)
+        self.assertIn("python -m pip wheel --no-deps . -w dist/wheel-smoke", workflow)
+        self.assertIn("myos dependency-check --strict", workflow)
+        self.assertIn("myos doctor --strict", workflow)
+        self.assertIn("myos migrations verify --strict", workflow)
+        self.assertIn("myos release-check --strict", workflow)
+        self.assertNotIn("PYTHONPATH: src", workflow)
+        self.assertNotIn("twine upload", workflow)
+
+    def test_standalone_binary_packaging_remains_explicit_decision(self) -> None:
+        readme = Path("README.md").read_text()
+        self.assertIn("packaged as a Python console application", readme)
+        self.assertIn("not a standalone signed binary", readme)
+        self.assertIn("Standalone executable packaging can be layered later", readme)
+
+    def test_router_commands_exposes_model_safe_metadata(self) -> None:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(Path.cwd() / "src")
+        out = subprocess.run(
+            [sys.executable, "-m", "personal_assistant.cli", "router", "commands", "--safety", "approval_gated", "--limit", "10"],
+            cwd=Path.cwd(),
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        self.assertIn("Router command registry:", out)
+        self.assertIn("myos autopilot", out)
+        self.assertIn("side_effects=local_db_write,long_running", out)
+        self.assertIn("long_running=yes", out)
+        self.assertIn("subcommands=--once,--factory,--loop-goal", out)
+        self.assertNotIn("raw_text", out)
+
+    def test_release_check_validates_console_entrypoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
+            out = subprocess.run(
+                [sys.executable, "-m", "personal_assistant.cli", "release-check", "--strict"],
+                cwd=Path.cwd(),
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+            self.assertIn("PASS package_entrypoint: myos -> personal_assistant.cli:main", out)
+
     def test_capture_triage_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
@@ -105,6 +182,21 @@ class CliFlowTest(unittest.TestCase):
             autonomy_eval = run("autonomy", "eval")
             self.assertIn("Autonomy eval:", autonomy_eval)
             self.assertIn("accuracy=100.00%", autonomy_eval)
+            recommendation_help = run("autonomy", "recommendation-feedback", "--help")
+            self.assertIn("[label=daily_reduce_risk command=\"myos next-action\"]", recommendation_help)
+            self.assertIn("Printed label, e.g. daily_reduce_risk.", recommendation_help)
+            self.assertIn("myos next-action or myos now", recommendation_help)
+            self.assertIn("--label review_approvals --command \"myos approve --list\"", recommendation_help)
+            self.assertIn("--label run_goal_cycle --command \"myos loop run-goal --goal 1\"", recommendation_help)
+            self.assertIn("--label review_goals --command \"myos goal list\"", recommendation_help)
+            recommendations_help = run("autonomy", "recommendations", "--help")
+            self.assertIn("recent_score_30d", recommendations_help)
+            self.assertIn("mixed_recent", recommendations_help)
+            self.assertIn("Command context is shown", recommendations_help)
+            self.assertIn("raw notes, note_hash, and note_length are not shown", recommendations_help)
+            self.assertIn("run_goal_cycle and review_goals", recommendations_help)
+            self.assertIn("surface=goal_scheduler", recommendations_help)
+            self.assertIn("active daily feedback visible", recommendations_help)
             conn = sqlite3.connect(db_path)
             trace_id = conn.execute("SELECT id FROM execution_traces WHERE command_path='do' ORDER BY id DESC LIMIT 1").fetchone()[0]
             conn.close()
@@ -173,11 +265,46 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("Router model setup plan:", live)
             self.assertIn("Dry run only", live)
 
+            live_data = Path(tmp) / "live-data"
+            live_env = live_data / ".env.myos"
+            live_db = live_data / "assistant.db"
+            live_watch = live_data / "inbox"
+            applied = run(
+                "setup-live",
+                "--apply",
+                "--data-dir",
+                str(live_data),
+                "--env-file",
+                str(live_env),
+                "--db-path",
+                str(live_db),
+                "--watch-dir",
+                str(live_watch),
+            )
+            self.assertIn("Setup complete.", applied)
+            check = run(
+                "setup-live",
+                "--check",
+                "--data-dir",
+                str(live_data),
+                "--env-file",
+                str(live_env),
+                "--db-path",
+                str(live_db),
+                "--watch-dir",
+                str(live_watch),
+            )
+            self.assertIn("Readiness summary:", check)
+            self.assertIn("INFO jira_credentials: missing", check)
+            self.assertNotIn("WARN jira_credentials", check)
+            self.assertIn("Ready: myos autopilot", check)
+
     def test_first_class_agent_backend_chat_smoke(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
             env["PYTHONPATH"] = str(Path.cwd() / "src")
-            env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
+            db_path = Path(tmp) / "assistant.db"
+            env["MYOS_DB_PATH"] = str(db_path)
             bin_dir = Path(tmp) / "bin"
             bin_dir.mkdir()
             agent = bin_dir / "agent"
@@ -245,11 +372,12 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("status=waiting_approval", started)
             self.assertIn("pending_approvals=", started)
             self.assertIn("Recommendation: review pending approvals -> myos approve --list", started)
+            self.assertIn("[label=review_approvals]", started)
 
             status = run("loop", "status", "--task", "1")
             self.assertIn("Autonomy loop tasks:", status)
             self.assertIn("task #1 status=waiting_approval", status)
-            self.assertIn("Recommendation: myos approve --list", status)
+            self.assertIn("Recommendation: myos approve --list [label=review_approvals]", status)
 
             resumed = run("loop", "resume", "--task", "1", "--max-actions", "2")
             self.assertIn("Autonomy loop task #1", resumed)
@@ -314,10 +442,12 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("Goal scheduler: action=started goal=#1", first)
             self.assertIn("pending_approvals=", first)
             self.assertIn("Recommendation: review pending approvals -> myos approve --list", first)
+            self.assertIn("[label=review_approvals]", first)
 
             second = run("loop", "run-goal", "--goal", "1")
             self.assertIn("Goal scheduler: action=skipped goal=#1", second)
             self.assertIn("Recommendation: review pending approvals -> myos approve --list", second)
+            self.assertIn("[label=review_approvals]", second)
 
             conn = sqlite3.connect(db_path)
             pending = conn.execute(
@@ -405,7 +535,8 @@ class CliFlowTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
             env["PYTHONPATH"] = str(Path.cwd() / "src")
-            env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
+            db_path = Path(tmp) / "assistant.db"
+            env["MYOS_DB_PATH"] = str(db_path)
 
             def run(*args: str) -> str:
                 out = subprocess.run(
@@ -430,6 +561,49 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("work_item#2", out)
             self.assertIn("reason: graph expansion", out)
             self.assertIn("path: work_item#1 -> depends_on:0.80 -> work_item#2", out)
+
+    def test_trace_cleanup_rolls_up_old_details(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            db_path = Path(tmp) / "assistant.db"
+            env["MYOS_DB_PATH"] = str(db_path)
+
+            def run(*args: str) -> str:
+                out = subprocess.run(
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
+                    cwd=Path.cwd(),
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                return out.stdout
+
+            run("capture", "Trace cleanup should retain aggregate audit visibility")
+            traces = run("trace", "list", "--command", "capture")
+            self.assertIn("Execution traces:", traces)
+            self.assertIn("capture", traces)
+
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                UPDATE execution_traces
+                SET started_at = '2000-01-01T00:00:00Z',
+                    finished_at = '2000-01-01T00:00:01Z'
+                WHERE command_path LIKE 'capture%'
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            cleanup = run("trace", "cleanup", "--retention-days", "1", "--max-rows", "100")
+            self.assertIn("Trace cleanup:", cleanup)
+            self.assertIn("rolled_up=1", cleanup)
+            rollups = run("trace", "rollups")
+            self.assertIn("Execution trace rollups:", rollups)
+            self.assertIn("capture", rollups)
+            self.assertIn("count=1", rollups)
 
     def test_why_graph_trace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -685,10 +859,16 @@ class CliFlowTest(unittest.TestCase):
 
             env_example = Path.cwd() / ".env.example"
             demo = Path.cwd() / "examples" / "demo-local.md"
+            launchd_sync = Path.cwd() / "deploy" / "launchd" / "com.myos.sync.plist"
+            launchd_pulse = Path.cwd() / "deploy" / "launchd" / "com.myos.pulse.plist"
             self.assertTrue(env_example.exists())
             self.assertTrue(demo.exists())
+            self.assertTrue(launchd_sync.exists())
+            self.assertTrue(launchd_pulse.exists())
             self.assertIn("MYOS_ACTION_COMMAND=myos action-provider", env_example.read_text())
             self.assertIn("myos doctor --strict", demo.read_text())
+            self.assertIn("/path/to/personal-assistant-os", launchd_sync.read_text())
+            self.assertIn("/path/to/personal-assistant-os", launchd_pulse.read_text())
 
     def test_backup_restore_and_migration_verify(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -733,10 +913,12 @@ class CliFlowTest(unittest.TestCase):
             db_path.with_name(db_path.name + "-wal").write_text("stale wal")
             db_path.with_name(db_path.name + "-shm").write_text("stale shm")
             restore_out = run("restore", "--from", str(backup_path))
+            self.assertIn("Current database backed up", restore_out)
             self.assertIn("Database restored from", restore_out)
             self.assertIn("Schema migrations verified", restore_out)
             self.assertFalse(db_path.with_name(db_path.name + "-wal").exists())
             self.assertFalse(db_path.with_name(db_path.name + "-shm").exists())
+            self.assertTrue(list((db_path.parent / "backups").glob("pre-restore-*.db")))
 
             conn = sqlite3.connect(db_path)
             work_count = conn.execute("SELECT COUNT(*) FROM work_items").fetchone()[0]
@@ -744,6 +926,17 @@ class CliFlowTest(unittest.TestCase):
             conn.close()
             self.assertEqual(work_count, 1)
             self.assertIn("keep backup restore reliable", title)
+
+            invalid_restore = subprocess.run(
+                [sys.executable, "-m", "personal_assistant.cli", "restore", "--from", str(Path(tmp) / "missing.db")],
+                cwd=Path.cwd(),
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(invalid_restore.returncode, 0)
+            self.assertIn("Restore refused", invalid_restore.stdout)
 
     def test_intent_lifecycle_and_redacted_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -937,6 +1130,9 @@ class CliFlowTest(unittest.TestCase):
 
             review = run("factory", "review", "--id", "2").stdout
             self.assertIn("Factory review #2:", review)
+            self.assertIn("Side effects: local_db_write, external_write", review)
+            self.assertIn("Review gate: factory_execution_approval_required", review)
+            self.assertIn("Safer next: myos approve --list; myos execution-receipt list", review)
             self.assertIn("Execution remains approval-gated.", review)
             learn = run("factory", "learn", "--id", "2", "--outcome", "partial", "--notes", "Reviewer caught missing validation").stdout
             self.assertIn("Factory learning #1 recorded for run #2: partial", learn)
@@ -1043,7 +1239,31 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("Factory learning", learn)
             insights = run("factory", "insights", "--intent", "2").stdout
             self.assertIn("outcomes={\"failed\": 1}", insights)
+            self.assertIn("side_effects=", insights)
+            self.assertIn("external_write", insights)
             self.assertIn("blocked connector update", insights)
+            feedback = run(
+                "autonomy",
+                "recommendation-feedback",
+                "--label",
+                "review_approvals",
+                "--command",
+                "myos approve --list",
+                "--useful",
+                "yes",
+                "--note",
+                "Approval review caught connector risk.",
+            ).stdout
+            self.assertIn("Recommendation feedback recorded:", feedback)
+            self.assertIn("Privacy: note text was hashed", feedback)
+            recommendations = run("autonomy", "recommendations").stdout
+            self.assertIn("Recommendation feedback summary:", recommendations)
+            self.assertIn("label=review_approvals command=myos approve --list", recommendations)
+            self.assertIn("learning_score=", recommendations)
+            self.assertIn("side_effects=external_write", recommendations)
+            self.assertNotIn("Approval review caught connector risk.", recommendations)
+            self.assertNotIn("note_hash", recommendations)
+            self.assertNotIn("note_length", recommendations)
 
             run("intent", "create", "Daily factory priority", "--priority", "1")
             autopilot = run(
@@ -1106,9 +1326,13 @@ class CliFlowTest(unittest.TestCase):
 
             listed = run("act", "--list").stdout
             self.assertIn("jira:PROJ-1 operation=comment mode=dry_run", listed)
+            self.assertIn("side_effects: external_write", listed)
+            self.assertIn("review_gate: external_write_requires_approval", listed)
+            self.assertIn("safer_next: myos approve --list; myos execution-receipt list", listed)
             self.assertIn("rollback: Remove Jira comment.", listed)
             approved_list = run("approve", "--list").stdout
             self.assertIn("github:owner/repo#7 operation=comment mode=dry_run", approved_list)
+            self.assertIn("dry_run: true", approved_list)
 
             for action_id in range(1, 5):
                 out = run("act", "--action", str(action_id), "--approve", "--execute").stdout
@@ -1119,6 +1343,8 @@ class CliFlowTest(unittest.TestCase):
 
             receipt = run("execution-receipt", "show", "--id", "1").stdout
             self.assertIn("Target: jira:PROJ-1 operation=comment mode=dry_run", receipt)
+            self.assertIn("Side Effects: external_write", receipt)
+            self.assertIn("Review Gate: external_write_requires_approval", receipt)
             self.assertIn("Outbox: #1 provider=connector:jira target=jira:PROJ-1 status=drafted", receipt)
 
             conn = sqlite3.connect(db_path)
@@ -1127,12 +1353,18 @@ class CliFlowTest(unittest.TestCase):
             follow_up = conn.execute(
                 "SELECT follow_up_required, follow_up_inbox_id FROM action_execution_receipts WHERE agent_action_id = 5"
             ).fetchone()
+            receipt_request = json.loads(
+                conn.execute("SELECT request_json FROM action_execution_receipts WHERE agent_action_id = 1").fetchone()[0]
+            )
             conn.close()
             self.assertEqual(outbox, {"aha": 1, "confluence": 1, "github": 1, "jira": 1})
             self.assertEqual(receipt_statuses.get("executed"), 4)
             self.assertEqual(receipt_statuses.get("blocked"), 1)
             self.assertEqual(follow_up[0], 1)
             self.assertIsNotNone(follow_up[1])
+            self.assertEqual(receipt_request["approval_context"]["side_effects"], ["external_write"])
+            self.assertTrue(receipt_request["approval_context"]["dry_run"])
+            self.assertEqual(receipt_request["approval_context"]["approval_reason"], "external_write_requires_approval")
 
             run("intent", "create", "Update Confluence launch note", "--priority", "1")
             conn = sqlite3.connect(db_path)
@@ -1241,7 +1473,8 @@ class CliFlowTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
             env["PYTHONPATH"] = str(Path.cwd() / "src")
-            env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
+            db_path = Path(tmp) / "assistant.db"
+            env["MYOS_DB_PATH"] = str(db_path)
 
             def run(*args: str) -> str:
                 out = subprocess.run(
@@ -1269,6 +1502,156 @@ class CliFlowTest(unittest.TestCase):
             weekly = run("weekly-review")
             self.assertIn("Weekly review", weekly)
             self.assertIn("open_intents=1 evidence_gaps=1", weekly)
+
+            run("capture", "Risk: dashboard escalation needs owner by tomorrow")
+            run("triage")
+            next_action = run("next-action")
+            self.assertIn("Next action recommendation", next_action)
+            self.assertIn("[label=daily_focus_block command=\"myos next-action\"]", next_action)
+            now = run("now")
+            self.assertIn("[label=daily_focus_block command=\"myos now\"]", now)
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                INSERT INTO work_items (title, kind, status, priority, risk_score, owner, due_date)
+                VALUES ('Waiting on launch owner', 'commitment', 'open', 1, 20, 'team-owner', date('now', '+1 day'))
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO work_items (title, kind, status, priority, risk_score, owner, due_date)
+                VALUES ('Escalation risk needs reduction', 'risk', 'open', 1, 95, NULL, date('now', '+2 days'))
+                """
+            )
+            conn.commit()
+            conn.close()
+            default_meeting = run("next-action", "--meeting-hours", "7")
+            self.assertIn("[label=daily_nudge_owner command=\"myos next-action\"]", default_meeting)
+            self.assertNotIn("ranking context:", default_meeting)
+            feedback_ack = run(
+                "autonomy",
+                "recommendation-feedback",
+                "--label",
+                "daily_reduce_risk",
+                "--command",
+                "myos next-action",
+                "--useful",
+                "yes",
+                "--note",
+                "Risk reduction was the better daily recommendation.",
+            )
+            self.assertIn("Recommendation feedback recorded:", feedback_ack)
+            self.assertIn("useful=True", feedback_ack)
+            self.assertIn("Privacy: note text was hashed; raw recommendation feedback text was not stored.", feedback_ack)
+            self.assertNotIn("Risk reduction was the better daily recommendation.", feedback_ack)
+            for _ in range(2):
+                run(
+                    "autonomy",
+                    "recommendation-feedback",
+                    "--label",
+                    "daily_reduce_risk",
+                    "--command",
+                    "myos next-action",
+                    "--useful",
+                    "yes",
+                    "--note",
+                    "Risk reduction was the better daily recommendation.",
+                )
+            tuned_meeting = run("next-action", "--meeting-hours", "7")
+            self.assertIn("[label=daily_reduce_risk command=\"myos next-action\"]", tuned_meeting)
+            self.assertIn(
+                "ranking context: feedback adjusted selection from daily_nudge_owner to daily_reduce_risk (selected_score=+3 baseline_score=+0)",
+                tuned_meeting,
+            )
+            self.assertNotIn("Risk reduction was the better daily recommendation.", tuned_meeting)
+            now_after_next_action_feedback = run("now", "--meeting-hours", "7")
+            self.assertIn("[label=daily_nudge_owner command=\"myos now\"]", now_after_next_action_feedback)
+            self.assertNotIn("ranking context:", now_after_next_action_feedback)
+            for _ in range(3):
+                run(
+                    "autonomy",
+                    "recommendation-feedback",
+                    "--label",
+                    "daily_reduce_risk",
+                    "--command",
+                    "myos now",
+                    "--useful",
+                    "yes",
+                    "--note",
+                    "Now should prefer the risk recommendation independently.",
+                )
+            tuned_now = run("now", "--meeting-hours", "7")
+            self.assertIn("[label=daily_reduce_risk command=\"myos now\"]", tuned_now)
+            self.assertIn(
+                "ranking context: feedback adjusted selection from daily_nudge_owner to daily_reduce_risk (selected_score=+3 baseline_score=+0)",
+                tuned_now,
+            )
+            self.assertNotIn("Now should prefer the risk recommendation independently.", tuned_now)
+            summary = run("autonomy", "recommendations", "--limit", "5")
+            self.assertIn("Recommendation feedback summary:", summary)
+            self.assertIn("surface=daily label=daily_reduce_risk command=myos next-action", summary)
+            self.assertIn("surface=daily label=daily_reduce_risk command=myos now", summary)
+            self.assertIn("recent_score_30d=3", summary)
+            self.assertIn("side_effects=none", summary)
+            self.assertNotIn("Risk reduction was the better daily recommendation.", summary)
+            self.assertNotIn("Now should prefer the risk recommendation independently.", summary)
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                UPDATE recommendation_feedback
+                SET created_at = datetime('now', '-90 days')
+                WHERE label = 'daily_reduce_risk' AND command IN ('myos next-action', 'myos now')
+                """
+            )
+            conn.commit()
+            conn.close()
+            decayed_meeting = run("next-action", "--meeting-hours", "7")
+            self.assertIn("[label=daily_nudge_owner command=\"myos next-action\"]", decayed_meeting)
+            self.assertNotIn("ranking context:", decayed_meeting)
+            decayed_now = run("now", "--meeting-hours", "7")
+            self.assertIn("[label=daily_nudge_owner command=\"myos now\"]", decayed_now)
+            self.assertNotIn("ranking context:", decayed_now)
+            decayed_summary = run("autonomy", "recommendations", "--limit", "5")
+            self.assertIn("score=3 useful=3 not_useful=0 recent_score_30d=0", decayed_summary)
+            for _ in range(3):
+                run(
+                    "autonomy",
+                    "recommendation-feedback",
+                    "--label",
+                    "daily_nudge_owner",
+                    "--command",
+                    "myos next-action",
+                    "--useful",
+                    "no",
+                    "--note",
+                    "Owner nudges were not useful for this daily surface.",
+                )
+            negative_signal = run("next-action", "--meeting-hours", "7")
+            self.assertIn("[label=daily_reduce_risk command=\"myos next-action\"]", negative_signal)
+            self.assertIn(
+                "ranking context: feedback adjusted selection from daily_nudge_owner to daily_reduce_risk (selected_score=+0 baseline_score=-3)",
+                negative_signal,
+            )
+            self.assertNotIn("Owner nudges were not useful for this daily surface.", negative_signal)
+            negative_summary = run("autonomy", "recommendations", "--limit", "1")
+            self.assertIn("surface=daily label=daily_nudge_owner command=myos next-action", negative_summary)
+            self.assertIn("score=-3 useful=0 not_useful=3 recent_score_30d=-3", negative_summary)
+            self.assertNotIn("Owner nudges were not useful for this daily surface.", negative_summary)
+            run(
+                "autonomy",
+                "recommendation-feedback",
+                "--label",
+                "daily_nudge_owner",
+                "--command",
+                "myos next-action",
+                "--useful",
+                "yes",
+                "--note",
+                "Owner nudges had one useful counter-signal.",
+            )
+            mixed_summary = run("autonomy", "recommendations", "--limit", "1")
+            self.assertIn("mixed_recent=yes", mixed_summary)
+            self.assertNotIn("Owner nudges had one useful counter-signal.", mixed_summary)
 
     def test_external_items_can_sync_into_intent_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1455,11 +1838,11 @@ class CliFlowTest(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
-            self.assertNotEqual(post_check.returncode, 0)
+            self.assertEqual(post_check.returncode, 0)
             self.assertIn("PASS env_file", post_check.stdout)
             self.assertIn("PASS action_provider", post_check.stdout)
             self.assertIn("PASS standing_goals", post_check.stdout)
-            self.assertIn("WARN jira_credentials", post_check.stdout)
+            self.assertIn("INFO jira_credentials", post_check.stdout)
 
             env_file.write_text(
                 "\n".join(
@@ -1726,6 +2109,11 @@ class CliFlowTest(unittest.TestCase):
             )
             self.assertIn("Sanity check", sanity.stdout)
             self.assertIn("MYOS Operational Runbook", runbook.stdout)
+            self.assertIn("myos setup-live --check", runbook.stdout)
+            self.assertIn("myos doctor --strict && myos migrations verify --strict", runbook.stdout)
+            self.assertIn("myos backup", runbook.stdout)
+            self.assertIn("myos approve --list", runbook.stdout)
+            self.assertIn("myos execution-receipt list", runbook.stdout)
 
     def test_launchd_status_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2165,6 +2553,7 @@ class CliFlowTest(unittest.TestCase):
             out = run("autopilot", "--once", "--no-sync", "--digest-dir", str(digest_dir))
             self.assertIn("Autopilot cycle complete", out)
             self.assertIn("digest_id=", out)
+            self.assertIn("Run: myos approve --list [label=review_approvals]", out)
             approvals = run("approve", "--list")
             self.assertIn("Approval queue", approvals)
             self.assertIn("preview:", approvals)
@@ -2573,6 +2962,20 @@ class CliFlowTest(unittest.TestCase):
                 )
                 return out.stdout
 
+            ledger_help = run("loop", "ledger", "--help")
+            self.assertIn("read-only audit trail", ledger_help)
+            self.assertIn("Filter by goal, task, or status", ledger_help)
+            self.assertIn("pending approval rows point to myos approve --list", ledger_help)
+            self.assertIn("myos loop ledger --status waiting_approval", ledger_help)
+            self.assertIn("myos loop ledger --status skipped --goal 1", ledger_help)
+            self.assertIn("completed", ledger_help)
+            self.assertIn("noop", ledger_help)
+            self.assertIn("waiting_approval", ledger_help)
+
+            empty_unfiltered = run("loop", "ledger")
+            self.assertIn("No autonomy ledger entries found.", empty_unfiltered)
+            self.assertNotIn("- filters:", empty_unfiltered)
+
             run(
                 "goal",
                 "add",
@@ -2596,9 +2999,23 @@ class CliFlowTest(unittest.TestCase):
             skipped = run("loop", "ledger", "--status", "skipped")
             self.assertIn("decision=goal_skipped status=skipped", skipped)
             self.assertNotIn("decision=goal_started", skipped)
+            empty_filtered = run("loop", "ledger", "--status", "completed", "--goal", "1")
+            self.assertIn("No autonomy ledger entries found.", empty_filtered)
+            self.assertIn("- filters: goal=#1, status=completed", empty_filtered)
+            invalid_status = subprocess.run(
+                [sys.executable, "-m", "personal_assistant.cli", "loop", "ledger", "--status", "unknown"],
+                cwd=Path.cwd(),
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(invalid_status.returncode, 0)
+            self.assertIn("invalid choice", invalid_status.stderr)
 
             task_rows = run("loop", "ledger", "--task", "1")
             self.assertIn("pending=2", task_rows)
+            self.assertIn("Recommendation: myos approve --list [label=review_approvals]", task_rows)
 
             conn = sqlite3.connect(db_path)
             ledger_count = conn.execute("SELECT COUNT(*) FROM autonomy_run_ledger").fetchone()[0]
@@ -2627,6 +3044,25 @@ class CliFlowTest(unittest.TestCase):
             rejected = run("autopilot", "--loop-goal", check=False)
             self.assertNotEqual(rejected.returncode, 0)
             self.assertIn("one-shot only", rejected.stdout)
+            goals_help = run("loop", "goals", "--help")
+            self.assertIn("print the next handoff command", goals_help.stdout)
+            self.assertIn("Feedback labels mark run-goal and goal-review handoffs", goals_help.stdout)
+            self.assertIn("review standing goals with myos goal list", goals_help.stdout)
+            self.assertIn("myos loop run-goal --goal 1", goals_help.stdout)
+            run_goal_help = run("loop", "run-goal", "--help")
+            self.assertIn("Start or resume exactly one eligible goal loop", run_goal_help.stdout)
+            self.assertIn("Pending approvals remain gated", run_goal_help.stdout)
+            no_goals = run("loop", "goals")
+            self.assertIn("No eligible assistant goals are due.", no_goals.stdout)
+            self.assertIn("Recommendation: review assistant goals -> myos goal list [label=review_goals]", no_goals.stdout)
+            no_goal_cycle = run("loop", "run-goal")
+            self.assertIn("Goal scheduler: action=noop", no_goal_cycle.stdout)
+            self.assertIn("Recommendation: review assistant goals -> myos goal list [label=review_goals]", no_goal_cycle.stdout)
+            no_goal_autopilot = run("autopilot", "--once", "--loop-goal")
+            self.assertIn("Autopilot goal wrapper complete", no_goal_autopilot.stdout)
+            self.assertIn("Goal scheduler: action=noop", no_goal_autopilot.stdout)
+            self.assertIn("Recommendation: review assistant goals -> myos goal list [label=review_goals]", no_goal_autopilot.stdout)
+            self.assertIn("Ledger: myos loop ledger --limit 1", no_goal_autopilot.stdout)
 
             added = run(
                 "goal",
@@ -2640,14 +3076,19 @@ class CliFlowTest(unittest.TestCase):
                 "1",
             )
             self.assertIn("Added assistant goal #1", added.stdout)
+            goals = run("loop", "goals")
+            self.assertIn("Eligible autonomy goals:", goals.stdout)
+            self.assertIn("Recommendation: myos loop run-goal --goal 1 [label=run_goal_cycle]", goals.stdout)
 
             first = run("autopilot", "--once", "--loop-goal", "--loop-goal-id", "1")
             self.assertIn("Autopilot goal wrapper complete", first.stdout)
             self.assertIn("Goal scheduler: action=started goal=#1", first.stdout)
+            self.assertIn("myos approve --list [label=review_approvals]", first.stdout)
             self.assertIn("Ledger: myos loop ledger --limit 1", first.stdout)
 
             second = run("autopilot", "--once", "--loop-goal", "--loop-goal-id", "1")
             self.assertIn("Goal scheduler: action=skipped goal=#1", second.stdout)
+            self.assertIn("myos approve --list [label=review_approvals]", second.stdout)
 
             conn = sqlite3.connect(db_path)
             pending = conn.execute(
@@ -2664,9 +3105,9 @@ class CliFlowTest(unittest.TestCase):
             event_count = conn.execute("SELECT COUNT(*) FROM event_log WHERE event_type='autopilot_loop_goal'").fetchone()[0]
             conn.close()
             self.assertEqual(pending, 2)
-            self.assertEqual(autopilot_runs, 2)
+            self.assertEqual(autopilot_runs, 3)
             self.assertEqual(skipped, 1)
-            self.assertEqual(event_count, 2)
+            self.assertEqual(event_count, 3)
 
     def test_recommendation_feedback_cli(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2705,6 +3146,45 @@ class CliFlowTest(unittest.TestCase):
             summary = run("autonomy", "recommendations")
             self.assertIn("Recommendation feedback summary:", summary)
             self.assertIn("label=inspect_recent_traces command=myos trace list score=1", summary)
+            self.assertIn("surface=general", summary)
+            self.assertIn("side_effects=none", summary)
+            self.assertNotIn("Helpful next step", summary)
+            self.assertNotIn("note_hash", summary)
+            self.assertNotIn("note_length", summary)
+
+            goal_run_feedback = run(
+                "autonomy",
+                "recommendation-feedback",
+                "--label",
+                "run_goal_cycle",
+                "--command",
+                "myos loop run-goal --goal 1",
+                "--useful",
+                "yes",
+                "--note",
+                "Run goal was the right scheduler handoff.",
+            )
+            self.assertIn("Recommendation feedback recorded", goal_run_feedback)
+            goal_review_feedback = run(
+                "autonomy",
+                "recommendation-feedback",
+                "--label",
+                "review_goals",
+                "--command",
+                "myos goal list",
+                "--useful",
+                "no",
+                "--note",
+                "Goal review was not useful right now.",
+            )
+            self.assertIn("Recommendation feedback recorded", goal_review_feedback)
+            goal_summary = run("autonomy", "recommendations")
+            self.assertIn("label=run_goal_cycle command=myos loop run-goal --goal 1 score=1", goal_summary)
+            self.assertIn("label=review_goals command=myos goal list score=-1", goal_summary)
+            self.assertIn("side_effects=local_db_write", goal_summary)
+            self.assertIn("surface=goal_scheduler", goal_summary)
+            self.assertNotIn("Run goal was the right scheduler handoff.", goal_summary)
+            self.assertNotIn("Goal review was not useful right now.", goal_summary)
 
             conn = sqlite3.connect(db_path)
             row = conn.execute("SELECT note_hash, note_length FROM recommendation_feedback LIMIT 1").fetchone()

@@ -50,7 +50,93 @@ All notable changes to this project will be documented in this file.
 - Doctor, sanity, snapshot, cutover, UAT, and tuning readiness presentation moved into a focused health module.
 - Dashboard, runbook, launchd status, health alias, and UI alias presentation moved into a focused runtime module.
 - Backup, restore, migrations, config initialization, and cleanup presentation moved into a focused local-data module while preserving restore safety checks.
+- Setup-live planning, readiness checks, env templating, and DB bootstrapping moved into a focused setup module with explicit launchd dependency injection.
+- Launchd install/uninstall plus activate/start/stop/live lifecycle presentation moved into a focused launchd module with explicit runtime dependencies.
+- Local model command mapper now includes dry-run, side-effect, restore, OS-service, and long-running metadata for runtime and recovery commands.
+- Runtime recommendations now use command side-effect metadata to prefer diagnostics, dry-runs, backups, and approval review before risky setup or service changes.
+- Approval, action, execution receipt, and factory review outputs now surface side-effect classes, dry-run status, and safer next commands.
+- Execution receipts now persist compact approval context for retrospective learning without adding schema or storing new raw command arguments.
+- Approval recommendations now use persisted side-effect learning as an advisory ranking signal while static policy still controls approval gates.
+- Recommendation feedback summaries now include advisory side-effect and learning scores while preserving hashed-note privacy.
+- Autonomy loop recommendation output now includes stable feedback labels for privacy-safe recommendation feedback.
+- Static operational guidance was audited and intentionally kept outside recommendation feedback unless it feeds ranking.
+- Daily `next-action` and `now` recommendations now include feedback labels and command context.
+- Daily next-action selection now uses bounded privacy-safe recommendation feedback to tune candidate ordering.
+- Daily feedback-tuned next-action recommendations now explain when feedback changed the selected label.
+- Daily feedback ranking now ignores stale feedback outside a bounded recency window.
+- Daily feedback ranking is now regression-tested as command-specific for `myos next-action` and `myos now`.
+- Recommendation feedback summaries now show compact daily surface and 30-day recent-score context.
+- Recommendation feedback summaries now order by recent score before all-time score for easier daily learning inspection.
+- Recommendation feedback summaries now keep active daily feedback visible even with tiny summary limits.
+- Negative daily recommendation feedback now lowers ranking and remains visible as signed summary context.
+- Mixed useful/not-useful daily feedback now appears as compact `mixed_recent` summary context.
+- Daily recommendation feedback constants and command-scope helpers are now centralized for ranking and summaries.
+- README now documents daily recommendation feedback commands, summary fields, and privacy guarantees.
+- Daily feedback docs and fixtures were reviewed for public hygiene and generic example data.
+- Daily feedback docs and tests now cover the full label-to-feedback-to-summary operator path.
+- `myos autonomy` help now documents daily recommendation feedback examples and summary fields.
+- Daily recommendation feedback received a final cohesive review across runtime behavior, docs, help, and tests.
+- `myos loop status` approval recommendations now include the stable `review_approvals` feedback label.
+- Recommendation feedback summaries now have coverage for approval, factory, runtime, and loop-status labels.
+- Recommendation feedback summary tests now verify command context is preserved for non-daily recommendation rows.
+- Recommendation feedback summary tests now explicitly guard against raw note and note metadata exposure.
+- `myos autonomy recommendations --help` now documents command context and raw-note privacy boundaries.
+- Recommendation feedback received a final contract review covering command context, side-effect context, and hidden note metadata in CLI summaries.
+- `myos loop ledger` now points pending-approval audit rows back to `myos approve --list` with the stable `review_approvals` feedback label.
+- `myos loop ledger --help` now documents read-only audit scope, filters, and pending-approval follow-up.
+- `myos loop ledger --status` now exposes bounded status choices and rejects unknown filters before querying.
+- `myos loop ledger --help` now includes status-filter examples for pending approvals and skipped goal cycles.
+- Empty filtered `myos loop ledger` results now show the applied filters so no-result audits are easier to interpret.
+- Empty filtered ledger help/docs were reviewed; existing help and README guidance already cover the recovery path.
+- Autonomy ledger output received a final contract review covering pending approvals, filters, help, and empty-result behavior.
+- `myos loop goals` now prints direct next-step recommendations for running eligible goals or reviewing pending approvals.
+- `myos loop goals --help` and `myos loop run-goal --help` now document scheduler handoff behavior and review gates.
+- Empty goal scheduler outputs now recommend `myos goal list` so no-eligible-goal states are actionable.
+- `myos loop goals --help` now documents `myos goal list` as the empty-state recovery path.
+- Goal scheduler handoff output received a final contract review, including autopilot goal-wrapper no-op coverage.
+- Autopilot approval handoff output now uses the stable `review_approvals` feedback label.
+- `myos autonomy recommendation-feedback --help` now documents how to submit feedback for approval handoffs.
+- Autonomy handoff surfaces received a final contract review covering approval labels, feedback help, and goal-wrapper paths.
+- Accumulated bounded-autonomy surfaces received a readiness review across docs, tests, validation gates, privacy, and approval boundaries.
+- Public readiness for bounded-autonomy surfaces was reviewed; README now documents approval-handoff feedback and release-check public hygiene remains clean.
+- Commit readiness for the accumulated bounded-autonomy work was reviewed without staging or committing, preserving the surgical commit boundary and attribution hygiene rules.
+- A staging plan for the accumulated bounded-autonomy work now groups the runtime, CLI, tests, and docs into one cohesive commit boundary without staging or committing.
+- The bounded-autonomy commit handoff was recorded with validation evidence and no staged, scripted, or unattended commit action.
+- Goal scheduler handoffs now include stable feedback labels for run-goal and goal-review recommendations.
+- Goal scheduler feedback labels received final summary-path coverage for command context and hidden raw notes.
+- `myos autonomy recommendations --help` and README guidance now document goal scheduler feedback labels in summary output.
+- Goal scheduler feedback summary surfaces received a final consistency review across help, README, tests, command context, and hidden raw notes.
+- Goal scheduler feedback labels received a public-hygiene review with release-check public hygiene remaining clean.
+- `run_goal_cycle` recommendation feedback now carries an advisory local-write learning signal without changing scheduler execution.
+- Goal scheduler feedback learning signals received a final review across metadata, summaries, docs, tests, and approval-gated execution.
+- Goal scheduler feedback work received a commit-readiness review without staging or committing.
+- Goal scheduler recommendation feedback now appears as a dedicated `goal_scheduler` summary surface.
+- Release readiness now checks the `myos` console entrypoint and README documents executable install options.
+- Executable packaging readiness received a final review across release-check output, README setup guidance, CI, and tests.
+- CI release readiness now performs a lightweight wheel artifact smoke build before the strict release-check gate.
+- CI release readiness now smokes the installed `myos` console command before artifact and strict release gates.
+- CI packaging gates now run installed command smoke, wheel smoke, and strict release-check in order without a release-job `PYTHONPATH` override.
+- Standalone executable packaging is explicitly deferred while Python console, wheel, and CI release-readiness gates remain the supported path.
+- Packaging changes received a commit-readiness review without staging or committing.
+- Packaging expansion paused at an operator gate, returning the next loop slice to bounded autonomy capability work.
 - Local router models now receive a full command mapper with subcommands, required args, examples, tiers, intents, and safety metadata.
+- `myos router commands` now surfaces model-safe side-effect and runtime metadata without raw user text.
+- Local router command mapper public hygiene now guards against private references and raw payload fields.
+- Local router command mapper changes received a commit-readiness review without staging or committing.
+- Local router command mapper expansion paused at an operator gate, returning the next loop slice to runtime recommendation safety.
+- Runtime recommendation side-effect ordering received final-review coverage for dry-runs, backups, approval review, diagnostics, and advisory-only behavior.
+- Runtime recommendation summaries now have public-hygiene coverage for raw notes, raw payload fields, private references, and local paths.
+- Runtime recommendation safety received a commit-readiness and operator-gate review without staging or committing.
+- `setup-live --check` now treats missing optional connector credentials as informational so local-only production readiness can pass safely.
+- Runtime service and scheduler readiness was reviewed across launchd dry-runs, service-write metadata, and one-shot goal scheduler handoffs.
+- External connector approval boundaries received a final review across approval lists, dry-run outbox writes, receipts, follow-ups, and factory connector smoke.
+- Recovery readiness now explicitly covers pre-restore safety backups and invalid restore refusal.
+- Audit and observability readiness now covers trace cleanup rollups, loop ledger links, receipts, follow-ups, and privacy-safe recommendation summaries.
+- README and `myos runbook` now include a local production checklist for setup, doctor, migrations, backup, approvals, receipts, trace cleanup, and optional launchd dry-run review.
+- Release workflow gates now align with CI packaging checks, installed command smoke, wheel smoke, dependency checks, doctor, migrations, and strict release readiness without publishing by default.
+- Final validation soak passed full tests, strict readiness gates, whitespace, wheel build, isolated install smoke, and explicit hygiene scans.
+- Sanitized launchd plist templates referenced by README were ported into `deploy/launchd/` and included in release hygiene scans.
+- CI public hygiene now scans commit-message trailers only across the pushed or PR commit range, avoiding failures from pre-existing history.
 
 ### Validation
 

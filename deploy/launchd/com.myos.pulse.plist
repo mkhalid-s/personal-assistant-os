@@ -20,3 +20,25 @@
   <string>/path/to/personal-assistant-os/data/pulse.err.log</string>
 </dict>
 </plist>
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.myos.pulse</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>cd /path/to/personal-assistant-os && source .venv/bin/activate && myos pulse --interval-sec 1800 --meeting-hours 0</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/path/to/personal-assistant-os/data/pulse.log</string>
+  <key>StandardErrorPath</key>
+  <string>/path/to/personal-assistant-os/data/pulse.err.log</string>
+</dict>
+</plist>

@@ -4,6 +4,7 @@ import argparse
 import json
 
 from . import autonomy, cli_autonomy, factory
+from .approval_context import format_factory_review_context
 from .db import get_connection
 
 
@@ -138,6 +139,8 @@ def cmd_factory(args: argparse.Namespace) -> None:
         print(f"review_packet=#{packet['artifact_id'] if packet else 'missing'}")
         if gaps:
             print("Open gaps: " + ", ".join(gaps))
+        for line in format_factory_review_context(str(run.get("workflow_pack") or "")):
+            print(line)
         print("Execution remains approval-gated.")
         return
 
@@ -244,6 +247,7 @@ def cmd_factory(args: argparse.Namespace) -> None:
         print(f"Factory insights ({scope}, {pack}): runs={insights['count']}")
         print(f"outcomes={json.dumps(insights['outcomes'], ensure_ascii=True, sort_keys=True)}")
         print(f"blockers={json.dumps(insights['blockers'], ensure_ascii=True, sort_keys=True)}")
+        print(f"side_effects={json.dumps(insights['side_effects'], ensure_ascii=True, sort_keys=True)}")
         print(f"useful_sources={json.dumps(insights['useful_sources'], ensure_ascii=True, sort_keys=True)}")
         if insights["notes"]:
             print("Notes:")

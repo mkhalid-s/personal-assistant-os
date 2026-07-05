@@ -15,10 +15,27 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install package
-        run: python -m pip install -e .
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+      - name: Smoke installed myos command
+        run: myos --help >/dev/null
       - name: Run tests
         run: python -m unittest discover -s tests
+      - name: Build wheel artifact smoke
+        run: |
+          python -m pip wheel --no-deps . -w dist/wheel-smoke
+          python - <<'PY'
+          from pathlib import Path
+          wheels = sorted(Path("dist/wheel-smoke").glob("*.whl"))
+          if not wheels:
+              raise SystemExit("wheel build produced no wheel")
+          print(f"Built wheel: {wheels[0].name}")
+          PY
+      - name: Verify dependency and license gate
+        run: myos dependency-check --strict
       - name: Verify local health commands
         run: |
           myos doctor --strict
+          myos migrations verify --strict
           myos release-check --strict

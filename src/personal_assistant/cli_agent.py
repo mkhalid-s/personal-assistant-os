@@ -4,6 +4,7 @@ import argparse
 import json
 
 from . import assistant, intents, plans
+from .approval_context import format_action_review_context, format_compact_action_review_context
 from .db import append_event, get_connection
 from .execution import _provider_target_summary, approve_and_execute
 from .planner import _agent_analogies, _ai_reason_artifacts
@@ -132,6 +133,12 @@ def cmd_act(args: argparse.Namespace) -> None:
             print(f"- action #{row['id']} task=#{row['agent_task_id']} [{row['action_type']}] {row['title']} status={row['status']} {approval}")
             payload = json.loads(row["payload_json"] or "{}")
             print(f"  target: {_provider_target_summary(payload)}")
+            for line in format_action_review_context(
+                str(row["action_type"]),
+                payload,
+                requires_approval=bool(row["requires_approval"]),
+            ):
+                print(f"  {line}")
             rollback = payload.get("rollback_note") or payload.get("rollback")
             if rollback:
                 print(f"  rollback: {rollback}")
@@ -297,6 +304,8 @@ def cmd_approve(args: argparse.Namespace) -> None:
             print(f"- action #{row['id']} task=#{row['agent_task_id']} [{row['action_type']}] {row['title']} status={row['status']}")
             payload = json.loads(row["payload_json"] or "{}")
             print(f"  target: {_provider_target_summary(payload)}")
+            for line in format_action_review_context(str(row["action_type"]), payload, requires_approval=True):
+                print(f"  {line}")
             rollback = payload.get("rollback_note") or payload.get("rollback")
             if rollback:
                 print(f"  rollback: {rollback}")
@@ -344,6 +353,18 @@ def cmd_execution_receipt(args: argparse.Namespace) -> None:
         payload = request.get("payload") if isinstance(request, dict) else {}
         if isinstance(payload, dict):
             print(f"Target: {_provider_target_summary(payload)}")
+            approval_context = request.get("approval_context") if isinstance(request, dict) else None
+            context_lines = (
+                format_compact_action_review_context(approval_context)
+                if isinstance(approval_context, dict)
+                else format_action_review_context(str(row["action_type"]), payload, requires_approval=bool(row["approved"]))
+            )
+            for line in context_lines:
+                if ": " in line:
+                    label, detail = line.split(": ", 1)
+                    print(f"{label.replace('_', ' ').title()}: {detail}")
+                else:
+                    print(line)
         outbox = conn.execute(
             """
             SELECT id, provider, target_type, target_ref, status
@@ -365,7 +386,7 @@ def cmd_execution_receipt(args: argparse.Namespace) -> None:
 
     rows = conn.execute(
         """
-        SELECT id, agent_action_id, action_type, final_status, approved, follow_up_required, follow_up_inbox_id, created_at
+        SELECT id, agent_action_id, action_type, final_status, approved, follow_up_required, follow_up_inbox_id, request_json, created_at
         FROM action_execution_receipts
         ORDER BY created_at DESC, id DESC
         LIMIT ?
@@ -383,6 +404,18 @@ def cmd_execution_receipt(args: argparse.Namespace) -> None:
             f"- #{row['id']} action=#{row['agent_action_id']} [{row['action_type']}] "
             f"status={row['final_status']} approved={bool(row['approved'])}{follow_up}{follow_up_id}"
         )
+        try:
+            request = json.loads(row["request_json"] or "{}")
+        except (TypeError, ValueError):
+            request = {}
+        approval_context = request.get("approval_context") if isinstance(request, dict) else None
+        context_lines = (
+            format_compact_action_review_context(approval_context)
+            if isinstance(approval_context, dict)
+            else format_action_review_context(str(row["action_type"]), {}, requires_approval=bool(row["approved"]))
+        )
+        for line in context_lines:
+            print(f"  {line}")
 
 
 def cmd_agent_run(args: argparse.Namespace) -> None:

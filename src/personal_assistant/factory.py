@@ -299,6 +299,7 @@ def learning_insights(
     ).fetchall()
     outcomes: dict[str, int] = {}
     blockers: dict[str, int] = {}
+    side_effects: dict[str, int] = {}
     useful_sources: dict[str, int] = {}
     notes: list[str] = []
     for row in rows:
@@ -311,16 +312,27 @@ def learning_insights(
             retro = json.loads(row["retrospective_json"] or "{}")
         except (TypeError, ValueError):
             retro = {}
+        receipt_side_effects = retro.get("receipt_side_effects") or {}
+        if not isinstance(receipt_side_effects, dict):
+            receipt_side_effects = {}
+        for side_effect, count in receipt_side_effects.items():
+            key = str(side_effect)
+            side_effects[key] = side_effects.get(key, 0) + int(count or 0)
         for receipt in retro.get("recent_receipts") or []:
             status = str(receipt.get("final_status") or "")
             if status in {"blocked", "failed"}:
                 blockers[status] = blockers.get(status, 0) + 1
+            if not receipt_side_effects:
+                for side_effect in receipt.get("side_effects") or []:
+                    key = str(side_effect)
+                    side_effects[key] = side_effects.get(key, 0) + 1
         for artifact_type in retro.get("useful_artifacts") or []:
             useful_sources[str(artifact_type)] = useful_sources.get(str(artifact_type), 0) + 1
     return {
         "count": len(rows),
         "outcomes": outcomes,
         "blockers": blockers,
+        "side_effects": side_effects,
         "useful_sources": useful_sources,
         "notes": notes[:5],
     }
@@ -829,6 +841,15 @@ def get_factory_run(conn: sqlite3.Connection, factory_run_id: int) -> dict[str, 
     return run
 
 
+def _receipt_approval_context(request_json: str | None) -> dict[str, Any]:
+    try:
+        request = json.loads(request_json or "{}")
+    except (TypeError, ValueError):
+        request = {}
+    context = request.get("approval_context") if isinstance(request, dict) else {}
+    return context if isinstance(context, dict) else {}
+
+
 def learn(
     conn: sqlite3.Connection,
     *,
@@ -841,17 +862,34 @@ def learn(
     run = get_factory_run(conn, int(factory_run_id))
     if run is None:
         raise ValueError(f"factory run #{factory_run_id} not found")
-    receipts = [
-        dict(r)
-        for r in conn.execute(
-            """
-            SELECT final_status, follow_up_required, follow_up_inbox_id
-            FROM action_execution_receipts
-            ORDER BY created_at DESC
-            LIMIT 20
-            """
-        ).fetchall()
-    ]
+    receipts: list[dict[str, Any]] = []
+    for r in conn.execute(
+        """
+        SELECT action_type, final_status, follow_up_required, follow_up_inbox_id, request_json
+        FROM action_execution_receipts
+        ORDER BY created_at DESC
+        LIMIT 20
+        """
+    ).fetchall():
+        context = _receipt_approval_context(r["request_json"])
+        side_effects = context.get("side_effects") or []
+        if not isinstance(side_effects, list):
+            side_effects = []
+        receipts.append(
+            {
+                "action_type": str(r["action_type"]),
+                "final_status": str(r["final_status"]),
+                "follow_up_required": bool(r["follow_up_required"]),
+                "follow_up_inbox_id": int(r["follow_up_inbox_id"]) if r["follow_up_inbox_id"] else None,
+                "side_effects": [str(side_effect) for side_effect in side_effects if side_effect],
+                "dry_run": bool(context.get("dry_run")),
+                "approval_reason": str(context.get("approval_reason") or ""),
+            }
+        )
+    receipt_side_effects: dict[str, int] = {}
+    for receipt in receipts:
+        for side_effect in receipt["side_effects"]:
+            receipt_side_effects[side_effect] = receipt_side_effects.get(side_effect, 0) + 1
     safe_notes = apply_privacy_filters(conn, notes or "")
     retrospective = {
         "factory_run_id": int(factory_run_id),
@@ -862,6 +900,7 @@ def learn(
         "useful_artifacts": sorted({str(a["artifact_type"]) for a in run["artifacts"]}),
         "stage_statuses": {str(s["stage_name"]): str(s["status"]) for s in run["stages"]},
         "recent_receipts": receipts,
+        "receipt_side_effects": receipt_side_effects,
     }
     conn.execute(
         """
