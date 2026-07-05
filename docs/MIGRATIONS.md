@@ -20,6 +20,13 @@ myos migrations list
 
 This prints each applied migration version, migration name, and timestamp, followed by the current and expected schema version.
 
+Current schema version: `36`.
+
+Recent production-readiness migrations:
+
+- `35 add_recommendation_feedback`: stores privacy-safe recommendation feedback metadata.
+- `36 add_factory_executor_backend`: stores factory executor backend and bounded executor context for coding-agent handoffs.
+
 ## Backup Before Risky Work
 
 Run:

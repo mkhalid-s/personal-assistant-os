@@ -246,6 +246,29 @@ class AgentCliBackendTest(unittest.TestCase):
         self.assertIn("advice", result["reply"])
         self.assertEqual(result["actions"], [])
 
+    def test_zero_backend_registered_and_executor_override(self):
+        from personal_assistant.providers import available_backends, get_backend
+        from personal_assistant.providers.zero import ZeroBackend
+
+        script = _write_script(
+            Path(self.tmp) / "zero",
+            '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "zero test"; exit 0; fi\necho "zero ok"\n',
+        )
+        old_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = self.tmp + os.pathsep + old_path
+        os.environ["MYOS_AGENT_EXEC_ZERO"] = script
+        try:
+            backend = get_backend("zero")
+            self.assertIsInstance(backend, ZeroBackend)
+            ok, detail = backend.available()
+            self.assertTrue(ok, detail)
+            self.assertIn("zero test", detail)
+            self.assertIn("zero", {row["name"] for row in available_backends()})
+            self.assertEqual(backend.executor_argv("fix tests"), [script, "fix tests"])
+        finally:
+            os.environ["PATH"] = old_path
+            os.environ.pop("MYOS_AGENT_EXEC_ZERO", None)
+
 
 class DelegateHarnessTest(unittest.TestCase):
     """A harnessed coding agent runs in a throwaway worktree; its changes are
@@ -296,6 +319,31 @@ class DelegateHarnessTest(unittest.TestCase):
         self.assertEqual(row["action_type"], "apply_patch")
         self.assertEqual(row["requires_approval"], 1)
 
+    def test_delegate_zero_backend_proposes_patch_without_mutating_real_tree(self):
+        from personal_assistant import assistant
+
+        exec_script = _write_script(
+            Path(self.repo) / "fake_zero_exec.sh",
+            '#!/bin/sh\necho "added by zero" > zeroed.txt\n',
+        )
+        os.environ["MYOS_AGENT_EXEC_ZERO"] = exec_script
+        try:
+            result = assistant.delegate_to_agent(self.conn, "zero", "add a zero file", cwd=self.repo)
+        finally:
+            os.environ.pop("MYOS_AGENT_EXEC_ZERO", None)
+
+        self.assertNotIn("error", result, msg=result.get("error", ""))
+        self.assertEqual(len(result["proposed_action_ids"]), 1)
+        self.assertIn("zeroed.txt", result["diff"])
+        self.assertFalse(Path(self.repo, "zeroed.txt").exists())
+        row = self.conn.execute(
+            "SELECT action_type, requires_approval, payload_json FROM agent_actions WHERE id = ?",
+            (result["proposed_action_ids"][0],),
+        ).fetchone()
+        self.assertEqual(row["action_type"], "apply_patch")
+        self.assertEqual(row["requires_approval"], 1)
+        self.assertIn('"agent": "zero"', row["payload_json"])
+
     def test_delegate_requires_git_repo(self):
         from personal_assistant import assistant
 
@@ -307,6 +355,69 @@ class DelegateHarnessTest(unittest.TestCase):
             os.environ.pop("MYOS_AGENT_CMD_COMMAND", None)
         self.assertIn("error", result)
         self.assertIn("git repo", result["error"])
+
+
+class ZeroExecutorStreamTest(unittest.TestCase):
+    def test_parse_zero_stream_collects_terminal_metadata(self):
+        from personal_assistant import zero_executor
+
+        stream = "\n".join(
+            [
+                '{"schemaVersion":2,"type":"run_start","runId":"run_1","sessionId":"s1","cwd":"/repo","provider":"openai","model":"gpt","apiModel":"gpt"}',
+                '{"schemaVersion":2,"type":"tool_result","runId":"run_1","id":"call_1","name":"write_file","status":"ok","changedFiles":["app.py"],"truncated":false}',
+                '{"schemaVersion":2,"type":"permission_request","runId":"run_1","id":"call_2","name":"bash","action":"prompt","permission":"prompt","sideEffect":"shell","reason":"verify"}',
+                '{"schemaVersion":2,"type":"usage","runId":"run_1","promptTokens":10,"completionTokens":5,"totalTokens":15}',
+                '{"schemaVersion":2,"type":"final","runId":"run_1","text":"done"}',
+                '{"schemaVersion":2,"type":"run_end","runId":"run_1","status":"success","exitCode":0}',
+            ]
+        )
+
+        result = zero_executor.parse_zero_stream(stream, exit_code=0)
+        self.assertTrue(result.terminal_ok())
+        self.assertEqual(result.run_id, "run_1")
+        self.assertEqual(result.session_id, "s1")
+        self.assertEqual(result.changed_files, ["app.py"])
+        self.assertEqual(result.final_text, "done")
+        self.assertEqual(result.usage["totalTokens"], 15)
+        self.assertEqual(len(result.permission_events), 1)
+
+    def test_parse_zero_stream_rejects_unknown_schema(self):
+        from personal_assistant import zero_executor
+
+        result = zero_executor.parse_zero_stream(
+            '{"schemaVersion":99,"type":"run_end","runId":"run_1","status":"success","exitCode":0}\n',
+            exit_code=0,
+        )
+        self.assertEqual(result.status, "protocol_error")
+        self.assertTrue(result.protocol_errors)
+
+
+class FactoryZeroExecutorTest(unittest.TestCase):
+    def setUp(self):
+        self.conn, self.db_path = _fresh_db_conn()
+
+    def tearDown(self):
+        self.conn.close()
+        os.unlink(self.db_path)
+        os.environ.pop("MYOS_DB_PATH", None)
+
+    def test_factory_start_persists_zero_executor_metadata(self):
+        from personal_assistant import factory, intents
+
+        intent_id = intents.create_intent(self.conn, objective="Fix repo tests")
+        result = factory.start_review_first_run(
+            self.conn,
+            intent_id=intent_id,
+            workflow_pack="software_delivery",
+            executor_backend="zero",
+            executor_context={"repo": "/tmp/repo", "timeout": 123},
+        )
+        self.conn.commit()
+
+        self.assertEqual(result["executor_backend"], "zero")
+        row = self.conn.execute("SELECT executor_backend, executor_context_json FROM factory_runs WHERE id = ?", (result["id"],)).fetchone()
+        self.assertEqual(row["executor_backend"], "zero")
+        self.assertIn("/tmp/repo", row["executor_context_json"])
 
 
 if __name__ == "__main__":

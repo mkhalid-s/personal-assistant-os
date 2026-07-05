@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 
 from . import autonomy, cli_autonomy, factory
 from .approval_context import format_factory_review_context
@@ -31,13 +32,21 @@ def cmd_factory(args: argparse.Namespace) -> None:
                 intent_id=args.intent,
                 mode=args.mode,
                 workflow_pack=args.pack,
+                executor_backend=getattr(args, "executor", "local"),
+                executor_context={
+                    "repo": os.path.abspath(getattr(args, "repo", ".")),
+                    "timeout": getattr(args, "timeout", 600),
+                    "max_turns": getattr(args, "max_turns", 0),
+                },
             )
         except ValueError as exc:
             print(str(exc))
             raise SystemExit(1) from exc
         conn.commit()
         print(f"Factory run #{result['id']} for intent #{result['intent_id']} status={result['status']}")
-        print(f"mode={args.mode} pack={args.pack} plan=#{result['plan_id']}")
+        executor = result.get("executor_backend", "local")
+        executor_part = f" executor={executor}" if executor != "local" else ""
+        print(f"mode={args.mode} pack={args.pack}{executor_part} plan=#{result['plan_id']}")
         if result["retrieval_run_id"] is not None:
             print(f"retrieval_run=#{result['retrieval_run_id']}")
         print(f"review_packet=#{result['review_packet_id']}")
@@ -59,9 +68,11 @@ def cmd_factory(args: argparse.Namespace) -> None:
         if run is None:
             print(f"Factory run #{args.id} not found.")
             raise SystemExit(1)
+        executor = run.get("executor_backend", "local")
+        executor_part = f" executor={executor}" if executor != "local" else ""
         print(
             f"Factory run #{run['id']} intent=#{run['intent_id']} plan=#{run['plan_id']} "
-            f"mode={run['mode']} pack={run['workflow_pack']} status={run['status']}"
+            f"mode={run['mode']} pack={run['workflow_pack']}{executor_part} status={run['status']}"
         )
         if run.get("summary"):
             print(f"Summary: {run['summary']}")

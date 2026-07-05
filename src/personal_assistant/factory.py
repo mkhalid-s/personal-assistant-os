@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
+import subprocess
+import tempfile
 from typing import Any
 
-from . import agentcore, autonomy, graphrag, intents, observability, plans, providers
+from . import agentcore, autonomy, graphrag, intents, observability, plans, providers, zero_executor
 from .db import append_event
 from .execution import approve_and_execute
 from .privacy import apply_privacy_filters
@@ -392,11 +395,18 @@ def start_review_first_run(
     intent_id: int,
     mode: str = "review_first",
     workflow_pack: str = "intent_execution",
+    executor_backend: str = "local",
+    executor_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if mode not in MODES:
         raise ValueError(f"unsupported factory mode: {mode}")
     if workflow_pack not in WORKFLOW_PACKS:
         raise ValueError(f"unsupported workflow pack: {workflow_pack}")
+    executor_backend = (executor_backend or "local").strip().lower()
+    if executor_backend not in {"local", "zero"}:
+        raise ValueError(f"unsupported executor backend: {executor_backend}")
+    if executor_backend != "local" and workflow_pack != "software_delivery":
+        raise ValueError("external coding executors are only supported for software_delivery runs")
     intent = intents.get_intent(conn, int(intent_id))
     if intent is None:
         raise ValueError(f"intent #{intent_id} not found")
@@ -408,14 +418,18 @@ def start_review_first_run(
     learning = _apply_learning_to_plan(conn, intent_id=int(intent_id), plan_id=int(plan_id), workflow_pack=workflow_pack)
     conn.execute(
         """
-        INSERT INTO factory_runs (intent_id, plan_id, mode, workflow_pack, status, summary)
-        VALUES (?, ?, ?, ?, 'running', ?)
+        INSERT INTO factory_runs (
+            intent_id, plan_id, mode, workflow_pack, executor_backend, executor_context_json, status, summary
+        )
+        VALUES (?, ?, ?, ?, ?, ?, 'running', ?)
         """,
         (
             int(intent_id),
             int(plan_id),
             mode,
             workflow_pack,
+            executor_backend,
+            json.dumps(executor_context or {}, ensure_ascii=True),
             f"{workflow_pack} factory run for intent #{intent_id}",
         ),
     )
@@ -526,7 +540,15 @@ def start_review_first_run(
         "factory_run_created",
         "factory_run",
         factory_run_id,
-        json.dumps({"intent_id": int(intent_id), "mode": mode, "workflow_pack": workflow_pack}, ensure_ascii=True),
+        json.dumps(
+            {
+                "intent_id": int(intent_id),
+                "mode": mode,
+                "workflow_pack": workflow_pack,
+                "executor_backend": executor_backend,
+            },
+            ensure_ascii=True,
+        ),
     )
     observability.link_current_trace(conn, factory_run_id=factory_run_id)
     return {
@@ -537,6 +559,7 @@ def start_review_first_run(
         "review_packet_id": review_packet_id,
         "agent_run_ids": agent_run_ids,
         "status": final_status,
+        "executor_backend": executor_backend,
         "learning_insights": learning,
     }
 
@@ -576,6 +599,122 @@ def _connector_specs_from_evidence(conn: sqlite3.Connection, intent: dict[str, A
             }
         )
     return specs
+
+
+def _factory_executor_context(run: dict[str, Any]) -> dict[str, Any]:
+    try:
+        parsed = json.loads(run.get("executor_context_json") or "{}")
+    except (TypeError, ValueError):
+        parsed = {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _git_root(cwd: str) -> str | None:
+    proc = subprocess.run(
+        ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.stdout.strip() if proc.returncode == 0 and proc.stdout.strip() else None
+
+
+def _review_packet_id_for_run(conn: sqlite3.Connection, factory_run_id: int) -> int | None:
+    ids = _artifact_ids(conn, int(factory_run_id), "review_packet")
+    return ids[0] if ids else None
+
+
+def _prepare_zero_software_action(
+    conn: sqlite3.Connection,
+    *,
+    run: dict[str, Any],
+    intent: dict[str, Any],
+    task_id: int,
+) -> tuple[int, int]:
+    context = _factory_executor_context(run)
+    repo = str(context.get("repo") or ".")
+    root = _git_root(repo)
+    if not root:
+        raise ValueError(f"zero executor requires a git repo: {repo}")
+    timeout = int(context.get("timeout") or zero_executor.DEFAULT_TIMEOUT)
+    max_turns = int(context.get("max_turns") or 0) or None
+    objective = f"{intent['objective']}\n\nLeave changes uncommitted. Run relevant local verification if safe."
+    worktree = tempfile.mkdtemp(prefix="myos-zero-wt-")
+    try:
+        subprocess.run(
+            ["git", "-C", root, "worktree", "add", "--detach", worktree],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        result = zero_executor.run_zero_stream(
+            objective,
+            cwd=worktree,
+            timeout=timeout,
+            max_turns=max_turns,
+        )
+        subprocess.run(["git", "-C", worktree, "add", "-A"], capture_output=True, text=True, check=False)
+        diff = subprocess.run(
+            ["git", "-C", worktree, "diff", "--cached"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout
+        agent_run_id = zero_executor.record_zero_agent_run(
+            conn,
+            task_id=int(task_id),
+            result=result,
+            factory_run_id=int(run["id"]),
+        )
+        payload = {
+            "agent": "zero",
+            "task": str(intent["objective"]),
+            "repo_root": root,
+            "factory_run_id": int(run["id"]),
+            "zero": zero_executor.result_payload(result),
+            "rollback_note": "Reject or revert the proposed patch before applying it to the source repository.",
+        }
+        if diff.strip():
+            action_type = "apply_patch"
+            title = f"Apply Zero patch for intent #{intent['id']}"
+            payload["diff"] = diff[:200000]
+        else:
+            action_type = "draft_external_update"
+            title = f"Review Zero output for intent #{intent['id']}"
+            payload.update(
+                {
+                    "target": "outbox",
+                    "draft": (result.final_text or result.stderr or "Zero produced no code changes.")[:8000],
+                }
+            )
+        action_id = agentcore.enqueue_proposal(
+            conn,
+            task_id=int(task_id),
+            action_type=action_type,
+            title=title,
+            payload=payload,
+            requires_approval=1,
+        )
+        packet_id = _review_packet_id_for_run(conn, int(run["id"]))
+        if packet_id is not None:
+            plans.attach_executor_artifact(
+                conn,
+                packet_id=int(packet_id),
+                artifact={
+                    "type": "zero_executor",
+                    "agent_run_id": int(agent_run_id),
+                    "agent_action_id": int(action_id),
+                    "status": result.status,
+                    "exit_code": result.exit_code,
+                    "changed_files": result.changed_files,
+                    "run_id": result.run_id,
+                    "summary": (result.final_text or "")[:1000],
+                },
+            )
+        return action_id, agent_run_id
+    finally:
+        subprocess.run(["git", "-C", root, "worktree", "remove", "--force", worktree], capture_output=True, text=True, check=False)
+        shutil.rmtree(worktree, ignore_errors=True)
 
 
 def _execution_action_specs(conn: sqlite3.Connection, run: dict[str, Any], intent: dict[str, Any]) -> list[dict[str, Any]]:
@@ -670,6 +809,18 @@ def prepare_execution_actions(conn: sqlite3.Connection, factory_run_id: int) -> 
     )
     task_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
     _artifact(conn, int(factory_run_id), "agent_task", task_id, "execution task")
+    if str(run.get("workflow_pack") or "") == "software_delivery" and str(run.get("executor_backend") or "local") == "zero":
+        action_id, agent_run_id = _prepare_zero_software_action(conn, run=run, intent=intent, task_id=task_id)
+        _artifact(conn, int(factory_run_id), "agent_run", agent_run_id, "zero executor")
+        _artifact(conn, int(factory_run_id), "agent_action", action_id, "zero apply_patch")
+        append_event(
+            conn,
+            "factory_actions_prepared",
+            "factory_run",
+            int(factory_run_id),
+            json.dumps({"actions": [action_id], "executor_backend": "zero"}, ensure_ascii=True),
+        )
+        return [action_id]
     action_ids: list[int] = []
     for spec in _execution_action_specs(conn, run, intent):
         action_id = agentcore.enqueue_proposal(

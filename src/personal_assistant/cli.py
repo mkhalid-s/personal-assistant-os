@@ -1220,6 +1220,9 @@ def cmd_action_provider(args: argparse.Namespace) -> None:
 def cmd_act(args: argparse.Namespace) -> None:
     cli_agent.cmd_act(args)
 
+def cmd_code(args: argparse.Namespace) -> None:
+    cli_agent.cmd_code(args)
+
 def cmd_learn(args: argparse.Namespace) -> None:
     cli_agent.cmd_learn(args)
 
@@ -1863,7 +1866,7 @@ def build_parser() -> argparse.ArgumentParser:
     loop_start = loop_sub.add_parser("start", help="Start a durable autonomous task loop.")
     loop_start.add_argument("objective")
     loop_start.add_argument("--context", default="")
-    loop_start.add_argument("--backend", choices=["", "claude", "claude-sdk", "claude-code-sdk", "cursor", "claude-code", "copilot", "command"], default="")
+    loop_start.add_argument("--backend", choices=["", "claude", "claude-sdk", "claude-code-sdk", "cursor", "zero", "claude-code", "copilot", "command"], default="")
     loop_start.add_argument("--max-actions", type=int, default=autonomy_loop.DEFAULT_MAX_ACTIONS)
     loop_start.add_argument("--mode", choices=list(autonomy_loop.MODES), default="safe")
     loop_start.set_defaults(func=cmd_loop)
@@ -1900,7 +1903,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     loop_run_goal.add_argument("--goal", type=int, help="Run a specific assistant goal id.")
-    loop_run_goal.add_argument("--backend", choices=["", "claude", "claude-sdk", "claude-code-sdk", "cursor", "claude-code", "copilot", "command"], default="", help="Optional reasoning backend for this bounded cycle.")
+    loop_run_goal.add_argument("--backend", choices=["", "claude", "claude-sdk", "claude-code-sdk", "cursor", "zero", "claude-code", "copilot", "command"], default="", help="Optional reasoning backend for this bounded cycle.")
     loop_run_goal.add_argument("--max-actions", type=int, default=autonomy_loop.DEFAULT_MAX_ACTIONS, help="Maximum proposed actions for the cycle.")
     loop_run_goal.add_argument("--limit", type=int, default=5, help="Maximum eligible goals to consider when --goal is omitted.")
     loop_run_goal.set_defaults(func=cmd_loop)
@@ -2393,6 +2396,10 @@ def build_parser() -> argparse.ArgumentParser:
     factory_start.add_argument("--intent", type=int, required=True)
     factory_start.add_argument("--mode", choices=list(factory.MODES), default="review_first")
     factory_start.add_argument("--pack", choices=list(factory.WORKFLOW_PACKS), default="intent_execution")
+    factory_start.add_argument("--executor", choices=["local", "zero"], default="local")
+    factory_start.add_argument("--repo", default=".", help="Repository path for coding executors.")
+    factory_start.add_argument("--timeout", type=int, default=600, help="Executor timeout in seconds.")
+    factory_start.add_argument("--max-turns", type=int, default=0, help="Optional Zero max-turns limit; 0 uses Zero default.")
     factory_start.set_defaults(func=cmd_factory)
     factory_status = factory_sub.add_parser("status", help="Show factory run stages and artifacts.")
     factory_status.add_argument("--id", type=int, required=True)
@@ -2447,8 +2454,15 @@ def build_parser() -> argparse.ArgumentParser:
     delegate.add_argument("--priority", type=int, default=2)
     delegate.add_argument("--max-actions", type=int, default=5)
     delegate.add_argument("--analogy-limit", type=int, default=5)
-    delegate.add_argument("--to", default="", help="Harness an external agent CLI (copilot|command|claude) to execute this objective.")
+    delegate.add_argument("--to", default="", help="Harness an external agent CLI (zero|cursor|claude-code|copilot|command) to execute this objective.")
     delegate.set_defaults(func=cmd_delegate)
+
+    code = sub.add_parser("code", help="Delegate a repository coding task to an external coding agent.")
+    code.add_argument("objective", help="Coding task objective.")
+    code.add_argument("--backend", choices=["zero", "cursor", "claude-code", "copilot", "command"], default="zero")
+    code.add_argument("--repo", default=".", help="Git repository path to run the coding task against.")
+    code.add_argument("--timeout", type=int, default=600, help="Maximum executor runtime in seconds.")
+    code.set_defaults(func=cmd_code)
 
     act = sub.add_parser("act", help="List, approve, and execute assistant-proposed actions.")
     act.add_argument("--task", type=int)
@@ -2618,12 +2632,12 @@ def build_parser() -> argparse.ArgumentParser:
     pulse.set_defaults(func=cmd_pulse)
 
     chat = sub.add_parser("chat", help="Interactive always-on assistant (text). Propose-and-approve.")
-    chat.add_argument("--backend", default="", help="claude|copilot|cursor|command (default: MYOS_AGENT_BACKEND or claude).")
+    chat.add_argument("--backend", default="", help="claude|copilot|cursor|zero|command (default: MYOS_AGENT_BACKEND or claude).")
     chat.add_argument("--env-file", default="")
     chat.set_defaults(func=cmd_chat)
 
     voice = sub.add_parser("voice", help="Interactive always-on assistant (push-to-talk voice).")
-    voice.add_argument("--backend", default="", help="claude|copilot|cursor|command (default: MYOS_AGENT_BACKEND or claude).")
+    voice.add_argument("--backend", default="", help="claude|copilot|cursor|zero|command (default: MYOS_AGENT_BACKEND or claude).")
     voice.add_argument("--env-file", default="")
     voice.add_argument("--text-reply", action="store_true", help="Print replies without speaking them.")
     voice.set_defaults(func=cmd_voice)
