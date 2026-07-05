@@ -340,11 +340,15 @@ def cmd_router(args: argparse.Namespace) -> None:
             return
         for spec in specs[: args.limit]:
             confirm = " confirmation=yes" if spec.requires_confirmation else ""
+            subcommands = f" subcommands={','.join(spec.subcommands)}" if spec.subcommands else ""
             required = f" required={','.join(spec.required_args)}" if spec.required_args else ""
+            effects = f" side_effects={','.join(spec.side_effects)}" if spec.side_effects else " side_effects=none"
+            dry_run = " dry_run=yes" if spec.dry_run_by_default else ""
+            long_running = " long_running=yes" if spec.long_running else ""
             example = f" example={spec.examples[0]}" if spec.examples else ""
             print(
                 f"- myos {spec.command} tier={spec.tier} safety={spec.safety} "
-                f"intent={spec.intent}{confirm}{required}{example}"
+                f"intent={spec.intent}{confirm}{subcommands}{required}{effects}{dry_run}{long_running}{example}"
             )
         return
     raise SystemExit("Unknown router command.")

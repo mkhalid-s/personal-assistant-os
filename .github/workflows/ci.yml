@@ -61,8 +61,14 @@ jobs:
 
       - name: Scan commit messages for co-author trailers
         run: |
+          range="HEAD~1..HEAD"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            range="origin/${{ github.base_ref }}..HEAD"
+          elif [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            range="${{ github.event.before }}..${{ github.sha }}"
+          fi
           trailer_pattern='^Co-authored-''by:'
-          ! git log --format=%B | grep -i "$trailer_pattern"
+          ! git log --format=%B "$range" | grep -i "$trailer_pattern"
 
       - name: Verify local-only artifacts are not tracked
         run: |
@@ -85,7 +91,19 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e .
 
+      - name: Smoke installed myos command
+        run: myos --help >/dev/null
+
+      - name: Build wheel artifact smoke
+        run: |
+          python -m pip wheel --no-deps . -w dist/wheel-smoke
+          python - <<'PY'
+          from pathlib import Path
+          wheels = sorted(Path("dist/wheel-smoke").glob("*.whl"))
+          if not wheels:
+              raise SystemExit("wheel build produced no wheel")
+          print(f"Built wheel: {wheels[0].name}")
+          PY
+
       - name: Run release readiness gate
-        env:
-          PYTHONPATH: src
         run: myos release-check --strict

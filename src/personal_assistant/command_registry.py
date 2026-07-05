@@ -5,6 +5,15 @@ from typing import Any
 
 TIERS = ("daily", "workflow", "expert", "diagnostic")
 SAFETY_LEVELS = ("read_only", "local_write", "approval_gated", "external_write", "diagnostic")
+SIDE_EFFECT_TYPES = (
+    "local_db_write",
+    "local_file_write",
+    "os_service_write",
+    "database_restore",
+    "external_read",
+    "external_write",
+    "long_running",
+)
 
 
 @dataclass(frozen=True)
@@ -18,12 +27,16 @@ class CommandSpec:
     required_args: tuple[str, ...] = ()
     examples: tuple[str, ...] = ()
     requires_confirmation: bool = False
+    side_effects: tuple[str, ...] = ()
+    dry_run_by_default: bool = False
+    long_running: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["subcommands"] = list(self.subcommands)
         data["required_args"] = list(self.required_args)
         data["examples"] = list(self.examples)
+        data["side_effects"] = list(self.side_effects)
         return data
 
 
@@ -31,7 +44,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec("chat", "daily", "read_only", "unknown", "Interactive assistant with routed intent awareness.", examples=("myos chat",)),
     CommandSpec("voice", "daily", "read_only", "unknown", "Voice-first assistant using the routed chat loop.", examples=("myos voice",)),
     CommandSpec("do", "daily", "local_write", "unknown", "Route a natural-language request to a MYOS workflow.", required_args=("text",), examples=("myos do 'what should I work on today?'",)),
-    CommandSpec("autopilot", "daily", "approval_gated", "factory_run", "Run proactive local cycles and leave risky actions for approval.", subcommands=("--once", "--factory", "--loop-goal"), examples=("myos autopilot --once --factory", "myos autopilot --once --loop-goal"), requires_confirmation=True),
+    CommandSpec("autopilot", "daily", "approval_gated", "factory_run", "Run proactive local cycles and leave risky actions for approval.", subcommands=("--once", "--factory", "--loop-goal"), examples=("myos autopilot --once --factory", "myos autopilot --once --loop-goal"), requires_confirmation=True, side_effects=("local_db_write", "long_running"), long_running=True),
     CommandSpec("approve", "daily", "approval_gated", "approval_review", "Review and optionally execute approval-gated actions.", subcommands=("--list", "--action", "--execute"), examples=("myos approve --list",), requires_confirmation=True),
     CommandSpec("capture", "daily", "local_write", "capture", "Capture an inbox item.", required_args=("text",), examples=("myos capture 'Follow up by Friday'",)),
     CommandSpec("morning", "daily", "read_only", "daily_brief", "Generate a morning focus brief.", examples=("myos morning",)),
@@ -46,9 +59,9 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec("loop", "workflow", "approval_gated", "factory_run", "Run a bounded durable autonomy loop cycle.", subcommands=("start", "resume", "status", "goals", "run-goal", "ledger"), examples=("myos loop start 'Handle blocked launch dependency'",), requires_confirmation=True),
     CommandSpec("agent-run", "workflow", "local_write", "factory_run", "Run one durable agent role for an intent.", required_args=("--intent", "--role"), examples=("myos agent-run --intent 1 --role planner",)),
     CommandSpec("evidence", "workflow", "local_write", "plan_intent", "Attach evidence artifacts to intents.", subcommands=("attach", "sync-external"), examples=("myos evidence sync-external --intent 1",)),
-    CommandSpec("sync", "workflow", "external_write", "retrieve_context", "Sync external connector context when credentials are configured.", examples=("myos sync --connector all",), requires_confirmation=True),
+    CommandSpec("sync", "workflow", "external_write", "retrieve_context", "Sync external connector context when credentials are configured.", examples=("myos sync --connector all",), requires_confirmation=True, side_effects=("external_read", "local_db_write")),
     CommandSpec("weekly-review", "workflow", "read_only", "daily_brief", "Generate weekly review health signals.", examples=("myos weekly-review",)),
-    CommandSpec("run-day", "workflow", "local_write", "daily_brief", "Run the daily pipeline end-to-end.", examples=("myos run-day",)),
+    CommandSpec("run-day", "workflow", "local_write", "daily_brief", "Run the daily pipeline end-to-end.", examples=("myos run-day",), side_effects=("external_read", "local_db_write")),
     CommandSpec("orchestrate", "workflow", "local_write", "factory_run", "Run a tracked workflow orchestration.", required_args=("--workflow",), examples=("myos orchestrate --workflow daily",)),
     CommandSpec("context", "expert", "read_only", "retrieve_context", "Find semantic context from indexed chunks.", required_args=("query",), examples=("myos context 'launch risks' --graph",)),
     CommandSpec("why", "expert", "read_only", "retrieve_context", "Explain why a work item exists.", required_args=("--item",), examples=("myos why --item 1 --graph",)),
@@ -95,26 +108,26 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec("reindex", "expert", "local_write", "retrieve_context", "Backfill graph nodes and chunks for existing data.", examples=("myos reindex",)),
     CommandSpec("model", "diagnostic", "local_write", "system_health", "Manage optional tiny local router models.", subcommands=("recommend", "setup", "status"), examples=("myos model status",)),
     CommandSpec("autonomy", "diagnostic", "diagnostic", "system_health", "Evaluate and calibrate autonomy decision policy.", subcommands=("eval", "feedback", "recommendation-feedback", "recommendations"), examples=("myos autonomy eval",)),
-    CommandSpec("config-init", "diagnostic", "local_write", "system_health", "Create a local connector env template.", examples=("myos config-init --path .env.myos",)),
+    CommandSpec("config-init", "diagnostic", "local_write", "system_health", "Create a local connector env template.", examples=("myos config-init --path .env.myos",), side_effects=("local_file_write",)),
     CommandSpec("onboard", "diagnostic", "read_only", "system_health", "Show connector onboarding diagnostics.", examples=("myos onboard",)),
-    CommandSpec("activate", "diagnostic", "approval_gated", "system_health", "Run go-live activation flow.", examples=("myos activate --env-file .env.myos",), requires_confirmation=True),
-    CommandSpec("go-live", "diagnostic", "approval_gated", "system_health", "Alias for live activation and cutover checks.", examples=("myos go-live --env-file .env.myos",), requires_confirmation=True),
-    CommandSpec("live", "diagnostic", "approval_gated", "system_health", "Simple live activation flow.", examples=("myos live --env-file .env.myos",), requires_confirmation=True),
-    CommandSpec("pulse", "diagnostic", "approval_gated", "factory_run", "Run continuous orchestration loop.", examples=("myos pulse --once",), requires_confirmation=True),
+    CommandSpec("activate", "diagnostic", "approval_gated", "system_health", "Run go-live activation flow.", examples=("myos activate --env-file .env.myos",), requires_confirmation=True, side_effects=("external_read", "local_db_write", "os_service_write")),
+    CommandSpec("go-live", "diagnostic", "approval_gated", "system_health", "Alias for live activation and cutover checks.", examples=("myos go-live --env-file .env.myos",), requires_confirmation=True, side_effects=("external_read", "local_db_write")),
+    CommandSpec("live", "diagnostic", "approval_gated", "system_health", "Simple live activation flow.", examples=("myos live --env-file .env.myos",), requires_confirmation=True, side_effects=("external_read", "local_db_write", "os_service_write")),
+    CommandSpec("pulse", "diagnostic", "approval_gated", "factory_run", "Run continuous orchestration loop.", examples=("myos pulse --once",), requires_confirmation=True, side_effects=("local_db_write", "long_running"), long_running=True),
     CommandSpec("ui", "diagnostic", "read_only", "system_health", "Open the simple dashboard server.", examples=("myos ui --port 8787",)),
     CommandSpec("metrics", "diagnostic", "read_only", "system_health", "Show KPI and connector metrics.", examples=("myos metrics --days 7",)),
-    CommandSpec("launchd-install", "diagnostic", "local_write", "system_health", "Install optional launchd service files.", examples=("myos launchd-install",), requires_confirmation=True),
-    CommandSpec("launchd-uninstall", "diagnostic", "local_write", "system_health", "Remove optional launchd service files.", examples=("myos launchd-uninstall",), requires_confirmation=True),
+    CommandSpec("launchd-install", "diagnostic", "local_write", "system_health", "Install optional launchd service files.", examples=("myos launchd-install",), requires_confirmation=True, side_effects=("local_file_write", "os_service_write"), dry_run_by_default=True),
+    CommandSpec("launchd-uninstall", "diagnostic", "local_write", "system_health", "Remove optional launchd service files.", examples=("myos launchd-uninstall",), requires_confirmation=True, side_effects=("local_file_write", "os_service_write"), dry_run_by_default=True),
     CommandSpec("launchd-status", "diagnostic", "read_only", "system_health", "Show launchd service status.", examples=("myos launchd-status",)),
-    CommandSpec("start", "diagnostic", "local_write", "system_health", "Start the local MYOS runtime plan.", examples=("myos start --env-file .env.myos",)),
-    CommandSpec("stop", "diagnostic", "local_write", "system_health", "Stop local MYOS runtime components.", examples=("myos stop",)),
+    CommandSpec("start", "diagnostic", "local_write", "system_health", "Start the local MYOS runtime plan.", examples=("myos start --env-file .env.myos",), requires_confirmation=True, side_effects=("external_read", "local_db_write", "os_service_write")),
+    CommandSpec("stop", "diagnostic", "local_write", "system_health", "Stop local MYOS runtime components.", examples=("myos stop",), requires_confirmation=True, side_effects=("os_service_write",)),
     CommandSpec("runbook", "diagnostic", "read_only", "system_health", "Print the operational runbook.", examples=("myos runbook --short",)),
-    CommandSpec("cleanup", "diagnostic", "local_write", "system_health", "Archive stale work and apply retention cleanup.", examples=("myos cleanup --days 30",)),
+    CommandSpec("cleanup", "diagnostic", "local_write", "system_health", "Archive stale work and apply retention cleanup.", examples=("myos cleanup --days 30",), side_effects=("local_db_write", "local_file_write")),
     CommandSpec("renegotiate", "workflow", "read_only", "daily_brief", "Find commitments that need renegotiation.", examples=("myos renegotiate --days-ahead 2",)),
     CommandSpec("snapshot", "diagnostic", "local_write", "system_health", "Write a local system snapshot.", examples=("myos snapshot --output snapshot.json",)),
     CommandSpec("workflow-runs", "workflow", "read_only", "factory_run", "List tracked workflow runs.", examples=("myos workflow-runs",)),
     CommandSpec("queue-add", "workflow", "local_write", "factory_run", "Queue a workflow job.", required_args=("workflow",), examples=("myos queue-add daily",)),
-    CommandSpec("worker", "workflow", "local_write", "factory_run", "Process queued workflow jobs.", examples=("myos worker --limit 1",)),
+    CommandSpec("worker", "workflow", "local_write", "factory_run", "Process queued workflow jobs.", examples=("myos worker --limit 1",), side_effects=("local_db_write", "long_running"), long_running=True),
     CommandSpec("act", "workflow", "approval_gated", "approval_review", "List, approve, or execute agent actions.", examples=("myos act --action 1 --execute",), requires_confirmation=True),
     CommandSpec("learn", "workflow", "local_write", "factory_run", "Record learning from an agent task.", required_args=("--task", "--outcome"), examples=("myos learn --task 1 --outcome success",)),
     CommandSpec("coach", "expert", "read_only", "retrieve_context", "Show assistant coaching from local context.", required_args=("query",), examples=("myos coach 'blocked launch dependency'",)),
@@ -133,10 +146,10 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec("dependency-check", "diagnostic", "diagnostic", "system_health", "Check dependency and license hygiene.", examples=("myos dependency-check --strict",)),
     CommandSpec("performance-baseline", "diagnostic", "diagnostic", "system_health", "Measure retrieval and readiness query timing.", examples=("myos performance-baseline",)),
     CommandSpec("migrations", "diagnostic", "diagnostic", "system_health", "Inspect and verify schema migration health.", subcommands=("verify", "list"), examples=("myos migrations verify --strict",)),
-    CommandSpec("backup", "diagnostic", "local_write", "system_health", "Create a verified SQLite database backup.", examples=("myos backup",)),
-    CommandSpec("restore", "diagnostic", "local_write", "system_health", "Restore the SQLite database from backup.", required_args=("--from",), examples=("myos restore --from backup.db",), requires_confirmation=True),
-    CommandSpec("dashboard", "diagnostic", "read_only", "system_health", "Serve or export local dashboard.", examples=("myos dashboard --once",)),
-    CommandSpec("setup-live", "diagnostic", "local_write", "system_health", "Prepare live config, folders, goals, and safe defaults.", examples=("myos setup-live --check",)),
+    CommandSpec("backup", "diagnostic", "local_write", "system_health", "Create a verified SQLite database backup.", examples=("myos backup",), side_effects=("local_file_write",)),
+    CommandSpec("restore", "diagnostic", "local_write", "system_health", "Restore the SQLite database from backup.", required_args=("--from",), examples=("myos restore --from backup.db",), requires_confirmation=True, side_effects=("database_restore", "local_file_write")),
+    CommandSpec("dashboard", "diagnostic", "read_only", "system_health", "Serve or export local dashboard.", examples=("myos dashboard --once",), side_effects=("local_file_write", "long_running"), long_running=True),
+    CommandSpec("setup-live", "diagnostic", "local_write", "system_health", "Prepare live config, folders, goals, and safe defaults.", examples=("myos setup-live --check",), side_effects=("local_file_write", "local_db_write", "os_service_write"), dry_run_by_default=True),
     CommandSpec("cutover-check", "diagnostic", "diagnostic", "system_health", "Check live credential and sync readiness.", examples=("myos cutover-check",)),
     CommandSpec("uat", "diagnostic", "diagnostic", "system_health", "Evaluate UAT quality metrics on recent data.", examples=("myos uat",)),
 )
@@ -179,6 +192,9 @@ def _model_safe_item(spec: CommandSpec) -> dict[str, Any]:
         "safety": spec.safety,
         "intent": spec.intent,
         "requires_confirmation": spec.requires_confirmation,
+        "side_effects": list(spec.side_effects),
+        "dry_run_by_default": spec.dry_run_by_default,
+        "long_running": spec.long_running,
         "summary": spec.summary[:160],
         "subcommands": list(spec.subcommands),
         "required_args": list(spec.required_args),
@@ -200,5 +216,6 @@ def local_model_command_mapper(*, limit: int = 0) -> dict[str, Any]:
         "description": "Local-model-safe MYOS CLI command map. It contains command metadata only, never user data.",
         "tiers": list(TIERS),
         "safety_levels": list(SAFETY_LEVELS),
+        "side_effect_types": list(SIDE_EFFECT_TYPES),
         "commands": compact_catalog(limit=limit),
     }

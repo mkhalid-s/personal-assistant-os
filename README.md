@@ -74,6 +74,23 @@ source .venv/bin/activate
 python -m pip install -e .
 ```
 
+This installs the `myos` console command from the package entrypoint:
+
+```bash
+myos doctor
+myos release-check --strict
+```
+
+For an isolated local CLI install, use `pipx` from the repository root:
+
+```bash
+pipx install .
+```
+
+CI also smokes the installed `myos` command with `myos --help`, then performs a lightweight wheel artifact build with `python -m pip wheel --no-deps .` before the strict release-readiness gate.
+
+MYOS is currently packaged as a Python console application, not a standalone signed binary. Standalone executable packaging can be layered later with tools such as zipapp, PyInstaller, or a Homebrew formula after the Python package boundary is stable.
+
 Install optional voice dependencies only if needed:
 
 ```bash
@@ -143,6 +160,31 @@ Do not commit local `.env` files, SQLite databases, logs, generated reports, or 
 
 For a no-network first run, follow `examples/demo-local.md`.
 
+## Local Production Checklist
+
+MYOS is local-first and operator-driven. A safe daily setup is:
+
+```bash
+myos setup-live --check
+myos setup-live --apply
+myos doctor --strict
+myos migrations verify --strict
+myos backup
+myos autopilot --once --no-sync
+myos approve --list
+myos execution-receipt list
+myos trace cleanup --retention-days 30 --max-rows 5000
+```
+
+Keep launch agents optional until the one-shot path is healthy:
+
+```bash
+myos launchd-install --autopilot
+myos launchd-status
+```
+
+The launchd install command is a dry run until `--apply` is supplied.
+
 ## Smart Daily Surface
 
 Most daily use should start with one of these surfaces instead of memorizing the full command catalog:
@@ -209,6 +251,14 @@ Autonomy: decision=needs_approval tier=confirm safety=approval_gated reason=...
 
 The decision uses command registry safety metadata and the existing `autonomy_level` policy. Local/read-only work can proceed, approval-gated and external-write work stays review-first, and destructive/unknown classifications remain blocked by the hard autonomy guards.
 
+Local router models receive a metadata-only command map. Inspect the same privacy-safe surface with:
+
+```bash
+myos router commands
+```
+
+The command map includes command names, subcommands, required arguments, examples, tiers, intents, safety levels, side-effect classes, dry-run defaults, and long-running flags. It does not include raw user text.
+
 Autonomy decisions can be calibrated locally:
 
 ```bash
@@ -219,6 +269,37 @@ myos autonomy feedback --trace 123 --expected-decision needs_approval --note "Ke
 `myos autonomy eval` uses packaged, non-private safety fixtures. Feedback stores the trace link, expected/actual decision metadata, note hash, and note length, not raw notes or command arguments.
 
 When a decision needs review, MYOS also prints deterministic recommendations such as `myos approve --list` or `myos factory review --id <run_id>`. These are suggestions only; MYOS never executes the recommended command automatically.
+
+### Daily Recommendation Feedback
+
+`myos next-action` and `myos now` print stable feedback labels on their selected daily recommendation:
+
+```bash
+myos next-action --meeting-hours 7
+myos now
+```
+
+Copy the `label` and `command` values from the bracketed output, for example `[label=daily_reduce_risk command="myos next-action"]`.
+
+If the recommendation was useful, record that locally:
+
+```bash
+myos autonomy recommendation-feedback \
+  --label daily_reduce_risk \
+  --command "myos next-action" \
+  --useful yes \
+  --note "Risk reduction was the better daily recommendation."
+```
+
+Use `--useful no` when the selected daily recommendation was not useful. Feedback is command-specific, so feedback for `myos next-action` does not tune `myos now` unless you submit feedback with `--command "myos now"`.
+
+Daily ranking uses only a bounded 30-day score window, clamped to `-3..+3`. Raw feedback notes are not stored; MYOS stores note hashes and lengths for audit/privacy. To inspect learning without exposing notes:
+
+```bash
+myos autonomy recommendations
+```
+
+Daily rows show `surface=daily`, `recent_score_30d`, signed useful/not-useful counts, and `mixed_recent=yes` when recent useful and not-useful feedback offset each other. If feedback changes a daily winner, MYOS prints a compact ranking context with the selected and baseline bounded scores.
 
 ## Quick Start
 
@@ -295,6 +376,7 @@ Assistant and automation:
 - `myos action-provider [--execute]` for explicit connector adapters; without `--execute`, it writes `data/outbox` drafts.
 - `myos model recommend|setup|status` for optional tiny local router model setup.
 - `myos router eval|feedback|overrides|commands` for privacy-safe router quality, learned exact-match corrections, and command awareness.
+- `myos autonomy recommendation-feedback|recommendations` for privacy-safe recommendation usefulness feedback and summaries.
 - `myos trace list|cleanup|rollups` for lightweight execution observability with retention budgets.
 - `myos autopilot [--env-file PATH] [--once] [--interval-sec N] [--factory]`
 - `myos autopilot-status [--limit N]`
@@ -349,7 +431,7 @@ myos loop ledger --goal 1
 myos approve --list
 ```
 
-The loop runs one bounded cycle at a time. It stores durable task state in the existing agent task/run/action tables, executes only safe local actions, links execution traces, and pauses on approval-gated work until you explicitly review it. Goal-driven runs pick one due active goal, start or resume its loop, and skip cleanly when that goal is waiting on approvals. The ledger gives a compact history of why each autonomy decision ran, paused, skipped, or no-oped.
+The loop runs one bounded cycle at a time. It stores durable task state in the existing agent task/run/action tables, executes only safe local actions, links execution traces, and pauses on approval-gated work until you explicitly review it. Goal-driven runs pick one due active goal, start or resume its loop, and skip cleanly when that goal is waiting on approvals. `myos loop goals` prints the next `run-goal` or approval-review command for each eligible goal with stable feedback labels; when no goals are eligible, review standing goals with `myos goal list`. The ledger gives a compact history of why each autonomy decision ran, paused, skipped, or no-oped, and pending approval rows point back to `myos approve --list`; use `myos loop ledger --status waiting_approval` to focus review work.
 
 ### Delegation and Approval
 
@@ -374,6 +456,12 @@ myos autonomy recommendations
 ```
 
 Recommendation feedback is privacy-safe calibration only. MYOS stores labels, command text, usefulness, and note hashes to rank already-deterministic guidance; it never executes a recommendation automatically or weakens approval gates.
+
+Approval handoffs use the stable `review_approvals` label. If `myos loop`, `myos autopilot`, or a ledger row points you to `myos approve --list`, you can submit feedback with `--label review_approvals --command "myos approve --list"`.
+
+Goal scheduler handoffs use `run_goal_cycle` for `myos loop run-goal --goal N` and `review_goals` for `myos goal list`, so scheduler guidance can be calibrated without changing approval gates.
+
+`myos autonomy recommendations` shows these labels as `surface=goal_scheduler` with their command context, compact scores, and advisory side-effect context while keeping raw feedback notes hidden.
 
 ### Autopilot
 

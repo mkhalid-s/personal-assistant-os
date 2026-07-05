@@ -20,6 +20,7 @@ from .privacy import apply_privacy_filters
 LOOP_SOURCE = "autonomy_loop"
 MODES = ("safe", "balanced")
 DEFAULT_MAX_ACTIONS = 5
+LEDGER_STATUSES = ("blocked", "completed", "noop", "skipped", "waiting", "waiting_approval")
 
 
 def _safe_int(value: object, default: int = 0) -> int:

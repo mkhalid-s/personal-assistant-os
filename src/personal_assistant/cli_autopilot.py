@@ -155,7 +155,7 @@ def run_autopilot_cycle(args: argparse.Namespace, deps: AutopilotCommandDependen
             ).fetchall()
             for row in pending:
                 print(f"- action #{row['id']} task=#{row['agent_task_id']} [{row['action_type']}] {row['title']}")
-            print("Run: myos approve --list")
+            print("Run: myos approve --list [label=review_approvals]")
         return {
             "run_id": run_id,
             "synced": synced,

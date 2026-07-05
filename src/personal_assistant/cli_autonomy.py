@@ -103,9 +103,14 @@ def cmd_autonomy(args: argparse.Namespace) -> None:
         print("Recommendation feedback summary:")
         for row in rows:
             command = f" command={row['command']}" if row["command"] else ""
+            side_effects = ",".join(row.get("side_effects") or []) or "none"
+            mixed_recent = " mixed_recent=yes" if row.get("mixed_recent_feedback") else ""
             print(
-                f"- key={row['recommendation_key'][:12]} label={row['label']}{command} "
+                f"- key={row['recommendation_key'][:12]} surface={row.get('surface', 'general')} "
+                f"label={row['label']}{command} "
                 f"score={row['score']} useful={row['useful_count']} not_useful={row['not_useful_count']} "
+                f"recent_score_{row.get('recent_score_window_days', 30)}d={row.get('recent_score', 0)} "
+                f"learning_score={row.get('learning_score', 0)} side_effects={side_effects}{mixed_recent} "
                 f"last={row['last_feedback_at']}"
             )
         return
@@ -122,9 +127,9 @@ def print_loop_result(result: dict[str, object]) -> None:
     if result.get("summary"):
         print(f"- summary: {result['summary']}")
     if result.get("pending_approvals"):
-        print("Recommendation: review pending approvals -> myos approve --list")
+        print("Recommendation: review pending approvals -> myos approve --list [label=review_approvals]")
     else:
-        print(f"Recommendation: inspect loop status -> myos loop status --task {result['task_id']}")
+        print(f"Recommendation: inspect loop status -> myos loop status --task {result['task_id']} [label=inspect_loop_status]")
 
 
 def print_goal_cycle_result(result: dict[str, object]) -> None:
@@ -138,7 +143,9 @@ def print_goal_cycle_result(result: dict[str, object]) -> None:
     if result.get("summary"):
         print(f"- summary: {result['summary']}")
     if action == "skipped" and result.get("pending_approvals"):
-        print("Recommendation: review pending approvals -> myos approve --list")
+        print("Recommendation: review pending approvals -> myos approve --list [label=review_approvals]")
+    elif action == "noop":
+        print("Recommendation: review assistant goals -> myos goal list [label=review_goals]")
 
 
 def cmd_loop(args: argparse.Namespace) -> None:
@@ -175,12 +182,13 @@ def cmd_loop(args: argparse.Namespace) -> None:
                     f"pending_approvals={row['pending_approvals']} objective={objective}"
                 )
                 if row["pending_approvals"]:
-                    print("  Recommendation: myos approve --list")
+                    print("  Recommendation: myos approve --list [label=review_approvals]")
             return
         if action == "goals":
             goals = autonomy_loop.eligible_goals(conn, limit=args.limit)
             if not goals:
                 print("No eligible assistant goals are due.")
+                print("Recommendation: review assistant goals -> myos goal list [label=review_goals]")
                 return
             print("Eligible autonomy goals:")
             for goal in goals:
@@ -195,6 +203,10 @@ def cmd_loop(args: argparse.Namespace) -> None:
                     f"- goal #{goal['goal_id']} priority={goal['priority']} "
                     f"cadence_min={goal['cadence_minutes']}{loop_summary} objective={objective}"
                 )
+                if int(loop.get("pending_approvals") or 0) > 0:
+                    print("  Recommendation: myos approve --list [label=review_approvals]")
+                else:
+                    print(f"  Recommendation: myos loop run-goal --goal {goal['goal_id']} [label=run_goal_cycle]")
             return
         if action == "run-goal":
             result = autonomy_loop.run_goal_cycle(
@@ -216,6 +228,15 @@ def cmd_loop(args: argparse.Namespace) -> None:
             )
             if not rows:
                 print("No autonomy ledger entries found.")
+                filters = []
+                if args.goal is not None:
+                    filters.append(f"goal=#{args.goal}")
+                if args.task is not None:
+                    filters.append(f"task=#{args.task}")
+                if args.status:
+                    filters.append(f"status={args.status}")
+                if filters:
+                    print(f"- filters: {', '.join(filters)}")
                 return
             print("Autonomy run ledger:")
             for row in rows:
@@ -234,6 +255,8 @@ def cmd_loop(args: argparse.Namespace) -> None:
                 )
                 if reason:
                     print(f"  reason: {reason}")
+                if int(row["pending_approvals"] or 0) > 0:
+                    print("  Recommendation: myos approve --list [label=review_approvals]")
             return
     except ValueError as exc:
         print(str(exc))

@@ -5,6 +5,7 @@ import json
 from datetime import date, datetime
 from pathlib import Path
 
+from . import autonomy
 from .db import append_event, get_connection
 from .privacy import apply_privacy_filters
 from .pulse import detect_mode
@@ -639,6 +640,64 @@ def cmd_renegotiate(args: argparse.Namespace) -> None:
     conn.commit()
 
 
+def _daily_feedback_suffix(args: argparse.Namespace, label: str) -> str:
+    command = getattr(args, "feedback_command", "myos next-action")
+    return f" [label={label} command=\"{command}\"]"
+
+
+def _daily_feedback_score(conn, *, label: str, command: str) -> int:
+    key = autonomy.recommendation_key({"label": label, "command": command})
+    row = conn.execute(
+        """
+        SELECT SUM(CASE WHEN useful = 1 THEN 1 ELSE -1 END) AS score
+        FROM recommendation_feedback
+        WHERE recommendation_key = ?
+          AND datetime(created_at) >= datetime('now', ?)
+        """,
+        (key, f"-{autonomy.DAILY_RECOMMENDATION_FEEDBACK_WINDOW_DAYS} days"),
+    ).fetchone()
+    raw_score = int(row["score"] or 0) if row else 0
+    score_limit = autonomy.DAILY_RECOMMENDATION_FEEDBACK_SCORE_LIMIT
+    return max(-score_limit, min(score_limit, raw_score))
+
+
+def _daily_candidate(
+    conn,
+    *,
+    args: argparse.Namespace,
+    label: str,
+    base_rank: int,
+    line: str,
+) -> dict[str, object]:
+    command = getattr(args, "feedback_command", "myos next-action")
+    feedback_score = _daily_feedback_score(conn, label=label, command=command)
+    return {
+        "label": label,
+        "base_rank": base_rank,
+        "feedback_score": feedback_score,
+        "score": base_rank + feedback_score,
+        "line": line + _daily_feedback_suffix(args, label),
+    }
+
+
+def _print_best_daily_candidate(candidates: list[dict[str, object]]) -> None:
+    if not candidates:
+        print("- No open items. Capture and triage first.")
+        return
+    baseline = sorted(candidates, key=lambda item: -int(item["base_rank"]))[0]
+    candidates.sort(key=lambda item: (-int(item["score"]), -int(item["base_rank"])))
+    winner = candidates[0]
+    print(str(winner["line"]))
+    if str(winner["label"]) != str(baseline["label"]):
+        selected_feedback_score = int(winner["feedback_score"])
+        baseline_feedback_score = int(baseline["feedback_score"])
+        print(
+            "  ranking context: feedback adjusted selection "
+            f"from {baseline['label']} to {winner['label']} "
+            f"(selected_score={selected_feedback_score:+d} baseline_score={baseline_feedback_score:+d})"
+        )
+
+
 def cmd_next_action(args: argparse.Namespace) -> None:
     conn = get_connection()
     mode = detect_mode(args.meeting_hours)
@@ -672,26 +731,68 @@ def cmd_next_action(args: argparse.Namespace) -> None:
     ).fetchone()
 
     print(f"Next action recommendation (mode={mode}):")
+    candidates: list[dict[str, object]] = []
     if mode == "meeting-heavy":
         if waiting:
-            print(
-                f"- Nudge owner: #{waiting['id']} {waiting['title']} (owner={waiting['owner']}, due={waiting['due_date'] or 'none'})"
+            candidates.append(
+                _daily_candidate(
+                    conn,
+                    args=args,
+                    label="daily_nudge_owner",
+                    base_rank=30,
+                    line=(
+                        f"- Nudge owner: #{waiting['id']} {waiting['title']} "
+                        f"(owner={waiting['owner']}, due={waiting['due_date'] or 'none'})"
+                    ),
+                )
             )
-        elif risk:
-            print(
-                f"- Renegotiate risk item: #{risk['id']} {risk['title']} (risk={risk['risk_score']}, due={risk['due_date'] or 'none'})"
+        if risk:
+            candidates.append(
+                _daily_candidate(
+                    conn,
+                    args=args,
+                    label="daily_reduce_risk",
+                    base_rank=28,
+                    line=(
+                        f"- Renegotiate risk item: #{risk['id']} {risk['title']} "
+                        f"(risk={risk['risk_score']}, due={risk['due_date'] or 'none'})"
+                    ),
+                )
             )
-        elif deep:
-            print(f"- Keep one tiny win only: #{deep['id']} {deep['title']}")
-        else:
-            print("- No open items. Capture and triage first.")
+        if deep:
+            candidates.append(
+                _daily_candidate(
+                    conn,
+                    args=args,
+                    label="daily_tiny_win",
+                    base_rank=20,
+                    line=f"- Keep one tiny win only: #{deep['id']} {deep['title']}",
+                )
+            )
+        _print_best_daily_candidate(candidates)
         return
 
     if risk:
-        print(
-            f"- Reduce top risk now: #{risk['id']} {risk['title']} (risk={risk['risk_score']}, due={risk['due_date'] or 'none'})"
+        candidates.append(
+            _daily_candidate(
+                conn,
+                args=args,
+                label="daily_reduce_risk",
+                base_rank=30,
+                line=(
+                    f"- Reduce top risk now: #{risk['id']} {risk['title']} "
+                    f"(risk={risk['risk_score']}, due={risk['due_date'] or 'none'})"
+                ),
+            )
         )
-    elif deep:
-        print(f"- Focus block target: #{deep['id']} {deep['title']} (kind={deep['kind']})")
-    else:
-        print("- No open items. Capture and triage first.")
+    if deep:
+        candidates.append(
+            _daily_candidate(
+                conn,
+                args=args,
+                label="daily_focus_block",
+                base_rank=20,
+                line=f"- Focus block target: #{deep['id']} {deep['title']} (kind={deep['kind']})",
+            )
+        )
+    _print_best_daily_candidate(candidates)
