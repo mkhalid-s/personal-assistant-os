@@ -56,14 +56,15 @@ myos factory start \
   --executor zero \
   --repo "$DEMO_REPO" \
   --timeout 600 \
-  --max-turns 3
+  --max-turns 3 \
+  --verify-command "git diff --check"
 
 myos factory status --id 1
 myos factory review --id 1
 myos approve --list
 ```
 
-At this point the disposable repo should still be unchanged. The review output should show a Zero executor artifact, changed files, an approval action id, and a command like:
+At this point the disposable repo should still be unchanged. The review and approval-list output should show a Zero executor artifact, changed files, patch size stats, run/session references, compact permission/warning/error signals, suggested verification commands, an approval action id, a safe MYOS retry command, and a command like:
 
 ```bash
 myos approve --action <action_id> --execute
@@ -76,6 +77,8 @@ myos factory status --id 1
 myos factory review --id 1
 myos inbox list
 ```
+
+If Zero produces a very large diff, MYOS keeps it as a review-only draft instead of enqueueing a truncated patch. Narrow the task scope and rerun before applying changes.
 
 Apply only if the proposed patch is acceptable and the repo is disposable:
 

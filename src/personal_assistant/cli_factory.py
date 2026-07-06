@@ -34,15 +34,61 @@ def _print_executor_artifacts(conn, run: dict) -> None:
         exit_code = artifact.get("exit_code")
         exit_part = f" exit_code={exit_code}" if exit_code is not None else ""
         print(f"- zero status={artifact.get('status', 'unknown')}{exit_part}{action}")
+        run_id = str(artifact.get("run_id") or "").strip()
+        session_id = str(artifact.get("session_id") or "").strip()
+        if run_id or session_id:
+            print(f"  zero_ref=run:{run_id or '-'} session:{session_id or '-'}")
+        if bool(artifact.get("executor_isolated_worktree")):
+            retained = bool(artifact.get("executor_worktree_retained"))
+            print(f"  executor_worktree=isolated retained={retained}")
+        permission_count = int(artifact.get("permission_events_count") or 0)
+        warning_count = len(artifact.get("warnings") or [])
+        error_count = len(artifact.get("errors") or [])
+        protocol_count = len(artifact.get("protocol_errors") or [])
+        if permission_count or warning_count or error_count or protocol_count:
+            print(
+                "  signals="
+                f"permissions:{permission_count} warnings:{warning_count} "
+                f"errors:{error_count} protocol_errors:{protocol_count}"
+            )
+        for warning in [str(item).strip().replace("\n", " ") for item in artifact.get("warnings") or [] if str(item).strip()][:2]:
+            print(f"  warning={warning[:200]}")
+        for error in artifact.get("errors") or []:
+            if not isinstance(error, dict):
+                continue
+            code = str(error.get("code") or "error")
+            message = str(error.get("message") or "").strip().replace("\n", " ")
+            print(f"  error={code}: {message[:200]}")
         changed_files = [str(item) for item in artifact.get("changed_files") or [] if str(item)]
         if changed_files:
             print(f"  changed_files={','.join(changed_files)}")
+        diff_stats = artifact.get("diff_stats") if isinstance(artifact.get("diff_stats"), dict) else {}
+        if diff_stats:
+            print(
+                "  diff_stats="
+                f"files:{int(diff_stats.get('files') or 0)} "
+                f"+{int(diff_stats.get('additions') or 0)} "
+                f"-{int(diff_stats.get('deletions') or 0)} "
+                f"binary:{int(diff_stats.get('binary_files') or 0)}"
+            )
+        if artifact.get("diff_too_large"):
+            print(
+                "  diff_notice="
+                f"oversized_patch bytes:{int(artifact.get('diff_bytes') or 0)} "
+                f"limit:{int(artifact.get('diff_limit_bytes') or 0)}"
+            )
+        verification_commands = [str(item).strip() for item in artifact.get("verification_commands") or [] if str(item).strip()]
+        for command in verification_commands[:5]:
+            print(f"  verify={command}")
         summary = str(artifact.get("summary") or "").strip().replace("\n", " ")
         if summary:
             print(f"  summary={summary[:240]}")
         approval_command = str(artifact.get("approval_command") or "").strip()
         if approval_command:
             print(f"  approve={approval_command}")
+        retry_command = str(artifact.get("retry_command") or "").strip()
+        if retry_command:
+            print(f"  retry={retry_command}")
         follow_up_id = artifact.get("follow_up_inbox_id")
         if follow_up_id:
             print(f"  follow_up=inbox_item#{follow_up_id}")
@@ -76,6 +122,7 @@ def cmd_factory(args: argparse.Namespace) -> None:
                     "repo": os.path.abspath(getattr(args, "repo", ".")),
                     "timeout": getattr(args, "timeout", 600),
                     "max_turns": getattr(args, "max_turns", 0),
+                    "verification_commands": getattr(args, "verify_command", []) or [],
                 },
             )
         except ValueError as exc:

@@ -2401,6 +2401,7 @@ def build_parser() -> argparse.ArgumentParser:
     factory_start.add_argument("--repo", default=".", help="Repository path for coding executors.")
     factory_start.add_argument("--timeout", type=int, default=600, help="Executor timeout in seconds.")
     factory_start.add_argument("--max-turns", type=int, default=0, help="Optional Zero max-turns limit; 0 uses Zero default.")
+    factory_start.add_argument("--verify-command", action="append", default=[], help="Suggested local verification command to include in the Zero review packet.")
     factory_start.set_defaults(func=cmd_factory)
     factory_status = factory_sub.add_parser("status", help="Show factory run stages and artifacts.")
     factory_status.add_argument("--id", type=int, required=True)

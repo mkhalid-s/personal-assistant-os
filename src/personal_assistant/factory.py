@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -19,6 +20,7 @@ WORKFLOW_PACKS = ("intent_execution", "daily_ops", "software_delivery", "connect
 STAGES = ("context", "planner", "researcher", "executor", "reviewer", "critic", "approval", "execution", "learning")
 _MODE_RANK = {mode: idx for idx, mode in enumerate(MODES)}
 _MAX_FULL_AUTO_ACTIONS = 5
+_MAX_ZERO_PATCH_BYTES = 200000
 
 
 def mode_allowed(conn: sqlite3.Connection, *, intent_id: int, requested_mode: str) -> tuple[bool, str]:
@@ -649,6 +651,53 @@ def _review_packet_id_for_run(conn: sqlite3.Connection, factory_run_id: int) -> 
     return ids[0] if ids else None
 
 
+def _zero_signal_text(conn: sqlite3.Connection, value: object, *, limit: int = 500) -> str:
+    return apply_privacy_filters(conn, str(value or "").strip().replace("\n", " "))[:limit]
+
+
+def _zero_error_signals(conn: sqlite3.Connection, errors: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    signals: list[dict[str, Any]] = []
+    for error in errors[:5]:
+        if not isinstance(error, dict):
+            continue
+        signals.append(
+            {
+                "code": _zero_signal_text(conn, error.get("code") or "error", limit=80),
+                "message": _zero_signal_text(conn, error.get("message") or ""),
+                "recoverable": error.get("recoverable"),
+            }
+        )
+    return signals
+
+
+def _zero_action_metadata(
+    conn: sqlite3.Connection,
+    result: zero_executor.ZeroRunResult,
+    *,
+    changed_files: list[str],
+) -> dict[str, Any]:
+    return {
+        "schema": "myos.zero_executor.action_metadata.v1",
+        "stream_schema_version": zero_executor.SCHEMA_VERSION,
+        "status": result.status,
+        "exit_code": result.exit_code,
+        "run_id": result.run_id,
+        "session_id": result.session_id,
+        "provider": result.provider,
+        "model": result.model,
+        "api_model": result.api_model,
+        "event_counts": result.event_counts,
+        "changed_files": changed_files,
+        "permission_events_count": len(result.permission_events),
+        "warnings": [_zero_signal_text(conn, warning) for warning in result.warnings if warning][:5],
+        "errors": _zero_error_signals(conn, result.errors),
+        "usage": result.usage,
+        "protocol_errors": [_zero_signal_text(conn, error) for error in result.protocol_errors[:5]],
+        "final_text": _zero_signal_text(conn, result.final_text or "", limit=1000),
+        "stderr_preview": _zero_signal_text(conn, result.stderr or "", limit=1000),
+    }
+
+
 def _prepare_zero_software_action(
     conn: sqlite3.Connection,
     *,
@@ -663,7 +712,41 @@ def _prepare_zero_software_action(
         raise ValueError(f"zero executor requires a git repo: {repo}")
     timeout = int(context.get("timeout") or zero_executor.DEFAULT_TIMEOUT)
     max_turns = int(context.get("max_turns") or 0) or None
-    objective = f"{intent['objective']}\n\nLeave changes uncommitted. Run relevant local verification if safe."
+    verification_commands = [
+        str(command).strip()
+        for command in (context.get("verification_commands") or [])
+        if str(command).strip()
+    ]
+    verification_block = ""
+    if verification_commands:
+        verification_block = "\nSuggested verification commands:\n" + "\n".join(f"- {command}" for command in verification_commands)
+    objective = (
+        f"{intent['objective']}\n\n"
+        "Leave changes uncommitted. Run relevant local verification if safe."
+        f"{verification_block}"
+    )
+    retry_parts = [
+        "myos",
+        "factory",
+        "start",
+        "--intent",
+        str(intent["id"]),
+        "--mode",
+        str(run.get("mode") or "review_first"),
+        "--pack",
+        "software_delivery",
+        "--executor",
+        "zero",
+        "--repo",
+        root,
+        "--timeout",
+        str(timeout),
+    ]
+    if max_turns is not None:
+        retry_parts.extend(["--max-turns", str(max_turns)])
+    for command in verification_commands:
+        retry_parts.extend(["--verify-command", command])
+    retry_command = " ".join(shlex.quote(part) for part in retry_parts)
     worktree = tempfile.mkdtemp(prefix="myos-zero-wt-")
     try:
         subprocess.run(
@@ -695,7 +778,27 @@ def _prepare_zero_software_action(
             ).stdout.splitlines()
             if line.strip()
         ]
-        changed_files = result.changed_files or diff_changed_files
+        changed_files = diff_changed_files or result.changed_files
+        numstat = subprocess.run(
+            ["git", "-C", worktree, "diff", "--cached", "--numstat"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.splitlines()
+        diff_stats = {"files": 0, "additions": 0, "deletions": 0, "binary_files": 0}
+        for line in numstat:
+            parts = line.split("\t")
+            if len(parts) < 3:
+                continue
+            diff_stats["files"] += 1
+            if parts[0] == "-" or parts[1] == "-":
+                diff_stats["binary_files"] += 1
+                continue
+            try:
+                diff_stats["additions"] += int(parts[0])
+                diff_stats["deletions"] += int(parts[1])
+            except ValueError:
+                diff_stats["binary_files"] += 1
         agent_run_id = zero_executor.record_zero_agent_run(
             conn,
             task_id=int(task_id),
@@ -707,21 +810,40 @@ def _prepare_zero_software_action(
             "task": str(intent["objective"]),
             "repo_root": root,
             "factory_run_id": int(run["id"]),
-            "zero": zero_executor.result_payload(result),
+            "zero": _zero_action_metadata(conn, result, changed_files=changed_files),
+            "verification_commands": verification_commands,
             "rollback_note": "Reject or revert the proposed patch before applying it to the source repository.",
         }
-        if diff.strip():
+        diff_too_large = len(diff) > _MAX_ZERO_PATCH_BYTES
+        if diff.strip() and not diff_too_large:
             action_type = "apply_patch"
             title = f"Apply Zero patch for intent #{intent['id']}"
-            payload["diff"] = diff[:200000]
+            payload["diff"] = diff
             payload["changed_files"] = changed_files
+            payload["diff_stats"] = diff_stats
         else:
             action_type = "draft_external_update"
-            title = f"Review Zero output for intent #{intent['id']}"
+            title = (
+                f"Review oversized Zero patch for intent #{intent['id']}"
+                if diff_too_large
+                else f"Review Zero output for intent #{intent['id']}"
+            )
+            draft = result.final_text or result.stderr or "Zero produced no code changes."
+            if diff_too_large:
+                draft = (
+                    f"Zero produced a {len(diff)} byte diff, above the MYOS approval patch limit "
+                    f"of {_MAX_ZERO_PATCH_BYTES} bytes. Review the changed files and rerun with a "
+                    "smaller scope before applying."
+                )
             payload.update(
                 {
                     "target": "outbox",
-                    "draft": (result.final_text or result.stderr or "Zero produced no code changes.")[:8000],
+                    "draft": draft[:8000],
+                    "changed_files": changed_files,
+                    "diff_stats": diff_stats,
+                    "diff_too_large": diff_too_large,
+                    "diff_bytes": len(diff),
+                    "diff_limit_bytes": _MAX_ZERO_PATCH_BYTES,
                 }
             )
         action_id = agentcore.enqueue_proposal(
@@ -778,9 +900,22 @@ def _prepare_zero_software_action(
                     "status": result.status,
                     "exit_code": result.exit_code,
                     "changed_files": changed_files,
+                    "diff_stats": diff_stats,
+                    "diff_too_large": diff_too_large,
+                    "diff_bytes": len(diff),
+                    "diff_limit_bytes": _MAX_ZERO_PATCH_BYTES,
                     "run_id": result.run_id,
-                    "summary": (result.final_text or "")[:1000],
+                    "session_id": result.session_id,
+                    "executor_isolated_worktree": True,
+                    "executor_worktree_retained": False,
+                    "permission_events_count": len(result.permission_events),
+                    "warnings": [_zero_signal_text(conn, warning) for warning in result.warnings if warning][:5],
+                    "errors": _zero_error_signals(conn, result.errors),
+                    "protocol_errors": [_zero_signal_text(conn, error) for error in result.protocol_errors[:5]],
+                    "verification_commands": verification_commands,
+                    "summary": _zero_signal_text(conn, result.final_text or "", limit=1000),
                     "approval_command": f"myos approve --action {action_id} --execute",
+                    "retry_command": retry_command,
                     "follow_up_inbox_id": int(follow_up_id) if follow_up_id is not None else None,
                 },
             )

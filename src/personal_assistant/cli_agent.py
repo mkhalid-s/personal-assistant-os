@@ -11,6 +11,41 @@ from .planner import _agent_analogies, _ai_reason_artifacts
 from .privacy import apply_privacy_filters, redact_obj
 
 
+def _print_zero_approval_context(payload: dict) -> None:
+    if not isinstance(payload, dict) or not (payload.get("zero") or payload.get("agent") == "zero"):
+        return
+    zero = payload.get("zero") if isinstance(payload.get("zero"), dict) else {}
+    status = str(zero.get("status") or "unknown")
+    exit_code = zero.get("exit_code")
+    run_id = str(zero.get("run_id") or "").strip()
+    session_id = str(zero.get("session_id") or "").strip()
+    ref = f" run={run_id}" if run_id else ""
+    if session_id:
+        ref += f" session={session_id}"
+    exit_part = f" exit_code={exit_code}" if exit_code is not None else ""
+    print(f"  zero: status={status}{exit_part}{ref}")
+    changed_files = [str(item) for item in payload.get("changed_files") or zero.get("changed_files") or [] if str(item)]
+    if changed_files:
+        print("  zero_changed_files: " + ",".join(changed_files[:20]))
+    diff_stats = payload.get("diff_stats") if isinstance(payload.get("diff_stats"), dict) else {}
+    if diff_stats:
+        print(
+            "  zero_diff_stats: "
+            f"files={int(diff_stats.get('files') or 0)} "
+            f"additions={int(diff_stats.get('additions') or 0)} "
+            f"deletions={int(diff_stats.get('deletions') or 0)} "
+            f"binary={int(diff_stats.get('binary_files') or 0)}"
+        )
+    if payload.get("diff_too_large"):
+        print(
+            "  zero_diff_notice: "
+            f"oversized bytes={int(payload.get('diff_bytes') or 0)} "
+            f"limit={int(payload.get('diff_limit_bytes') or 0)}"
+        )
+    for command in [str(item).strip() for item in payload.get("verification_commands") or [] if str(item).strip()][:5]:
+        print(f"  zero_verify: {command}")
+
+
 def cmd_delegate(args: argparse.Namespace) -> None:
     conn = get_connection()
     target = getattr(args, "to", "").strip().lower()
@@ -159,6 +194,7 @@ def cmd_act(args: argparse.Namespace) -> None:
                 requires_approval=bool(row["requires_approval"]),
             ):
                 print(f"  {line}")
+            _print_zero_approval_context(payload)
             rollback = payload.get("rollback_note") or payload.get("rollback")
             if rollback:
                 print(f"  rollback: {rollback}")
@@ -326,6 +362,7 @@ def cmd_approve(args: argparse.Namespace) -> None:
             print(f"  target: {_provider_target_summary(payload)}")
             for line in format_action_review_context(str(row["action_type"]), payload, requires_approval=True):
                 print(f"  {line}")
+            _print_zero_approval_context(payload)
             rollback = payload.get("rollback_note") or payload.get("rollback")
             if rollback:
                 print(f"  rollback: {rollback}")

@@ -34,7 +34,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
-- GitLawb Zero coding executor documentation now distinguishes text-mode `MYOS_AGENT_EXEC_ZERO` from structured streaming `MYOS_AGENT_EXEC_ZERO_STREAM`, adds a `doctor` preflight for `zero_stream_executor`, notes that this is distinct from Agent Zero, covers local repo patch proposals and failed-run follow-ups as approval-gated mutations, and includes `examples/` in release public-hygiene scans.
+- GitLawb Zero coding executor documentation now distinguishes text-mode `MYOS_AGENT_EXEC_ZERO` from structured streaming `MYOS_AGENT_EXEC_ZERO_STREAM`, adds a `doctor` preflight for `zero_stream_executor`, notes that this is distinct from Agent Zero, covers local repo patch proposals, oversized-diff review handling, git-derived changed-file reporting, patch size stats, recorded run/session references, compact permission counts, privacy-filtered warning/error signals, compact approval action metadata, suggested verification commands, retry guidance, and failed-run follow-ups as approval-gated mutations, and includes `examples/` in release public-hygiene scans.
 - External CLI execution now uses a generic command backend rather than a tool-specific provider surface.
 - Failed or blocked execution receipts create and retain links to follow-up inbox work.
 - README command guidance now starts with chat, voice, autopilot, smart routing, and approvals before the expert command catalog.
