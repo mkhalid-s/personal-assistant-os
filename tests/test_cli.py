@@ -112,6 +112,7 @@ class CliFlowTest(unittest.TestCase):
         ).stdout
         self.assertIn("--executor", factory_help)
         self.assertIn("--repo", factory_help)
+        self.assertIn("--verify-command", factory_help)
 
     def test_release_check_validates_console_entrypoint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1263,7 +1264,9 @@ class CliFlowTest(unittest.TestCase):
                 "pathlib.Path('cli-zero.txt').write_text('cli proof\\n')\n"
                 "events = [\n"
                 "  {'schemaVersion': 2, 'type': 'run_start', 'runId': 'cli_run', 'sessionId': 'cli_session', 'cwd': os.getcwd(), 'provider': 'fake', 'model': 'fake'},\n"
+                "  {'schemaVersion': 2, 'type': 'permission_request', 'runId': 'cli_run', 'id': 'perm_1', 'name': 'bash', 'permission': 'prompt', 'sideEffect': 'shell', 'reason': 'verify'},\n"
                 "  {'schemaVersion': 2, 'type': 'tool_result', 'runId': 'cli_run', 'id': 'tool_1', 'name': 'write_file', 'status': 'ok', 'changedFiles': ['cli-zero.txt']},\n"
+                "  {'schemaVersion': 2, 'type': 'warning', 'runId': 'cli_run', 'message': 'cli verification skipped'},\n"
                 "  {'schemaVersion': 2, 'type': 'final', 'runId': 'cli_run', 'text': 'cli fake zero finished'},\n"
                 "  {'schemaVersion': 2, 'type': 'run_end', 'runId': 'cli_run', 'status': 'success', 'exitCode': 0},\n"
                 "]\n"
@@ -1299,6 +1302,8 @@ class CliFlowTest(unittest.TestCase):
                 "30",
                 "--max-turns",
                 "1",
+                "--verify-command",
+                "python -m pytest",
             )
             self.assertIn("status=awaiting_approval", started)
             self.assertIn("executor=zero", started)
@@ -1309,14 +1314,33 @@ class CliFlowTest(unittest.TestCase):
             status = run("factory", "status", "--id", "1")
             self.assertIn("Executor artifacts:", status)
             self.assertIn("- zero status=success exit_code=0 action=#1", status)
+            self.assertIn("zero_ref=run:cli_run session:cli_session", status)
+            self.assertIn("executor_worktree=isolated retained=False", status)
+            self.assertIn("signals=permissions:1 warnings:1 errors:0 protocol_errors:0", status)
+            self.assertIn("warning=cli verification skipped", status)
             self.assertIn("changed_files=cli-zero.txt", status)
+            self.assertIn("diff_stats=files:1 +1 -0 binary:0", status)
+            self.assertIn("verify=python -m pytest", status)
             self.assertIn("approve=myos approve --action 1 --execute", status)
+            self.assertIn("retry=myos factory start --intent 1", status)
+            self.assertIn("--verify-command 'python -m pytest'", status)
 
             review = run("factory", "review", "--id", "1")
             self.assertIn("Factory review #1: ready_for_approval", review)
             self.assertIn("Executor artifacts:", review)
             self.assertIn("summary=cli fake zero finished", review)
+            self.assertIn("zero_ref=run:cli_run session:cli_session", review)
+            self.assertIn("signals=permissions:1 warnings:1 errors:0 protocol_errors:0", review)
+            self.assertIn("diff_stats=files:1 +1 -0 binary:0", review)
+            self.assertIn("verify=python -m pytest", review)
+            self.assertIn("retry=myos factory start --intent 1", review)
             self.assertIn("Execution remains approval-gated.", review)
+
+            approvals = run("approve", "--list")
+            self.assertIn("zero: status=success exit_code=0 run=cli_run session=cli_session", approvals)
+            self.assertIn("zero_changed_files: cli-zero.txt", approvals)
+            self.assertIn("zero_diff_stats: files=1 additions=1 deletions=0 binary=0", approvals)
+            self.assertIn("zero_verify: python -m pytest", approvals)
 
     def test_deep_factory_autonomous_execution_and_proactive_loop(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

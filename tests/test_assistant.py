@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import stat
 import subprocess
 import sys
@@ -446,7 +447,7 @@ class FactoryZeroExecutorTest(unittest.TestCase):
         self.conn, self.db_path = _fresh_db_conn()
         self.tmpdir = tempfile.TemporaryDirectory()
         self.tmp = Path(self.tmpdir.name)
-        self.repo = self.tmp / "repo"
+        self.repo = self.tmp / "repo with spaces"
         self.repo.mkdir()
         self._git("init", "-q", "-b", "main")
         self._git("config", "user.email", "t@example.com")
@@ -466,18 +467,28 @@ class FactoryZeroExecutorTest(unittest.TestCase):
     def _git(self, *args):
         subprocess.run(["git", "-C", str(self.repo), *args], capture_output=True, check=True)
 
-    def _install_fake_zero(self, *, changed_file: str = "zeroed.txt", text: str = "hello from zero\n") -> None:
+    def _install_fake_zero(
+        self,
+        *,
+        changed_file: str = "zeroed.txt",
+        text: str = "hello from zero\n",
+        reported_changed_file: str | None = None,
+    ) -> None:
         script = self.tmp / "fake_zero.py"
         script.write_text(
             "import json, os, pathlib\n"
             f"changed_file = {changed_file!r}\n"
+            f"reported_changed_file = {reported_changed_file!r}\n"
             f"text = {text!r}\n"
             "if changed_file:\n"
             "    pathlib.Path(changed_file).parent.mkdir(parents=True, exist_ok=True)\n"
             "    pathlib.Path(changed_file).write_text(text)\n"
+            "reported = reported_changed_file if reported_changed_file is not None else changed_file\n"
             "events = [\n"
             "    {'schemaVersion': 2, 'type': 'run_start', 'runId': 'run_fake', 'sessionId': 'session_fake', 'cwd': os.getcwd(), 'provider': 'fake', 'model': 'fake'},\n"
-            "    {'schemaVersion': 2, 'type': 'tool_result', 'runId': 'run_fake', 'id': 'tool_1', 'name': 'write_file', 'status': 'ok', 'changedFiles': [changed_file] if changed_file else []},\n"
+            "    {'schemaVersion': 2, 'type': 'permission_request', 'runId': 'run_fake', 'id': 'perm_1', 'name': 'bash', 'permission': 'prompt', 'sideEffect': 'shell', 'reason': 'verify'},\n"
+            "    {'schemaVersion': 2, 'type': 'tool_result', 'runId': 'run_fake', 'id': 'tool_1', 'name': 'write_file', 'status': 'ok', 'changedFiles': [reported] if reported else []},\n"
+            "    {'schemaVersion': 2, 'type': 'warning', 'runId': 'run_fake', 'message': 'verification skipped with token ' + 'ghp_' + 'abcdefghijklmnop'},\n"
             "    {'schemaVersion': 2, 'type': 'usage', 'runId': 'run_fake', 'totalTokens': 3},\n"
             "    {'schemaVersion': 2, 'type': 'final', 'runId': 'run_fake', 'text': 'fake zero finished'},\n"
             "    {'schemaVersion': 2, 'type': 'run_end', 'runId': 'run_fake', 'status': 'success', 'exitCode': 0},\n"
@@ -505,7 +516,12 @@ class FactoryZeroExecutorTest(unittest.TestCase):
             mode="semi_autonomous",
             workflow_pack="software_delivery",
             executor_backend="zero",
-            executor_context={"repo": str(self.repo), "timeout": 30, "max_turns": 1},
+            executor_context={
+                "repo": str(self.repo),
+                "timeout": 30,
+                "max_turns": 1,
+                "verification_commands": ["python -m pytest"],
+            },
         )
         self.conn.commit()
 
@@ -527,6 +543,13 @@ class FactoryZeroExecutorTest(unittest.TestCase):
         self.assertEqual(action["requires_approval"], 1)
         self.assertEqual(action["status"], "proposed")
         self.assertIn("zeroed.txt", action["payload_json"])
+        action_payload = json.loads(action["payload_json"])
+        self.assertEqual(action_payload["zero"]["schema"], "myos.zero_executor.action_metadata.v1")
+        self.assertNotIn("cwd", action_payload["zero"])
+        self.assertNotIn("permission_events", action_payload["zero"])
+        self.assertEqual(action_payload["zero"]["permission_events_count"], 1)
+        self.assertEqual(action_payload["zero"]["warnings"], ["verification skipped with token [REDACTED_SECRET]"])
+        self.assertNotIn("ghp_" + "abcdefghijklmnop", json.dumps(action_payload, sort_keys=True))
 
         packet = plans.get_review_packet(self.conn, result["review_packet_id"])
         artifacts = packet["packet"]["executor_artifacts"]
@@ -534,6 +557,22 @@ class FactoryZeroExecutorTest(unittest.TestCase):
         self.assertEqual(artifacts[0]["type"], "zero_executor")
         self.assertEqual(artifacts[0]["agent_action_id"], action_id)
         self.assertEqual(artifacts[0]["changed_files"], ["zeroed.txt"])
+        self.assertEqual(artifacts[0]["diff_stats"], {"files": 1, "additions": 1, "deletions": 0, "binary_files": 0})
+        self.assertEqual(artifacts[0]["run_id"], "run_fake")
+        self.assertEqual(artifacts[0]["session_id"], "session_fake")
+        self.assertTrue(artifacts[0]["executor_isolated_worktree"])
+        self.assertFalse(artifacts[0]["executor_worktree_retained"])
+        self.assertNotIn("executor_cwd", artifacts[0])
+        self.assertEqual(artifacts[0]["permission_events_count"], 1)
+        self.assertNotIn("permission_events", artifacts[0])
+        self.assertEqual(artifacts[0]["warnings"], ["verification skipped with token [REDACTED_SECRET]"])
+        self.assertNotIn("ghp_" + "abcdefghijklmnop", json.dumps(artifacts[0], sort_keys=True))
+        self.assertEqual(artifacts[0]["verification_commands"], ["python -m pytest"])
+        self.assertIn("myos factory start --intent", artifacts[0]["retry_command"])
+        self.assertIn("--executor zero", artifacts[0]["retry_command"])
+        self.assertIn("--verify-command 'python -m pytest'", artifacts[0]["retry_command"])
+        retry_argv = shlex.split(artifacts[0]["retry_command"])
+        self.assertEqual(retry_argv[retry_argv.index("--repo") + 1].split("/")[-1], "repo with spaces")
         self.assertEqual(artifacts[0]["approval_command"], f"myos approve --action {action_id} --execute")
 
         approved = approve_and_execute(self.conn, action_id, do_approve=True, execute=True)
@@ -547,6 +586,32 @@ class FactoryZeroExecutorTest(unittest.TestCase):
         self.assertGreaterEqual(learning_id, 1)
         self.assertEqual(retro["outcome"], "success")
         self.assertEqual(retro["retrospective"]["recent_receipts"][0]["final_status"], "executed")
+
+    def test_factory_zero_changed_files_come_from_git_diff(self):
+        from personal_assistant import factory, intents, plans
+
+        self._install_fake_zero(changed_file="actual.txt", text="actual\n", reported_changed_file="reported.txt")
+        intent_id = intents.create_intent(self.conn, objective="Use Zero with mismatched changedFiles")
+        result = factory.start_review_first_run(
+            self.conn,
+            intent_id=intent_id,
+            workflow_pack="software_delivery",
+            executor_backend="zero",
+            executor_context={"repo": str(self.repo), "timeout": 30},
+        )
+        self.conn.commit()
+
+        action_id = result["proposed_action_ids"][0]
+        action = self.conn.execute("SELECT payload_json FROM agent_actions WHERE id = ?", (action_id,)).fetchone()
+        payload = json.loads(action["payload_json"])
+        self.assertEqual(payload["changed_files"], ["actual.txt"])
+        self.assertEqual(payload["zero"]["changed_files"], ["actual.txt"])
+        self.assertNotIn("reported.txt", payload["changed_files"])
+
+        packet = plans.get_review_packet(self.conn, result["review_packet_id"])
+        artifact = packet["packet"]["executor_artifacts"][0]
+        self.assertEqual(artifact["changed_files"], ["actual.txt"])
+        self.assertNotIn("reported.txt", artifact["changed_files"])
 
     def test_factory_review_first_zero_prepares_action_before_approval(self):
         from personal_assistant import factory, intents
@@ -593,6 +658,35 @@ class FactoryZeroExecutorTest(unittest.TestCase):
         self.assertEqual(row["action_type"], "draft_external_update")
         self.assertIn("fake zero finished", row["payload_json"])
 
+    def test_factory_zero_oversized_diff_becomes_review_action(self):
+        from personal_assistant import factory, intents, plans
+
+        self._install_fake_zero(changed_file="large.txt", text="x" * 210000)
+        intent_id = intents.create_intent(self.conn, objective="Ask Zero for a large patch")
+        result = factory.start_review_first_run(
+            self.conn,
+            intent_id=intent_id,
+            workflow_pack="software_delivery",
+            executor_backend="zero",
+            executor_context={"repo": str(self.repo), "timeout": 30},
+        )
+        self.conn.commit()
+
+        action_id = result["proposed_action_ids"][0]
+        action = self.conn.execute("SELECT action_type, payload_json FROM agent_actions WHERE id = ?", (action_id,)).fetchone()
+        payload = json.loads(action["payload_json"])
+        self.assertEqual(action["action_type"], "draft_external_update")
+        self.assertTrue(payload["diff_too_large"])
+        self.assertNotIn("diff", payload)
+        self.assertIn("above the MYOS approval patch limit", payload["draft"])
+
+        packet = plans.get_review_packet(self.conn, result["review_packet_id"])
+        artifact = packet["packet"]["executor_artifacts"][0]
+        self.assertEqual(artifact["action_type"], "draft_external_update")
+        self.assertTrue(artifact["diff_too_large"])
+        self.assertGreater(artifact["diff_bytes"], artifact["diff_limit_bytes"])
+        self.assertEqual(artifact["diff_stats"]["files"], 1)
+
     def test_factory_zero_failed_run_creates_follow_up_work(self):
         from personal_assistant import factory, intents, plans
 
@@ -628,6 +722,7 @@ class FactoryZeroExecutorTest(unittest.TestCase):
         packet = plans.get_review_packet(self.conn, result["review_packet_id"])
         zero_artifact = packet["packet"]["executor_artifacts"][0]
         self.assertEqual(zero_artifact["status"], "missing")
+        self.assertEqual(zero_artifact["errors"][0]["code"], "missing_zero")
         self.assertEqual(zero_artifact["follow_up_inbox_id"], inbox["id"])
 
     def test_zero_apply_patch_guard_blocks_protected_paths(self):
