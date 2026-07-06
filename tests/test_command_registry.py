@@ -139,6 +139,19 @@ class CommandRegistryTest(unittest.TestCase):
         registry_commands = {spec.command for spec in command_registry.all_commands()}
         self.assertEqual(sorted(parser_commands - registry_commands), [])
 
+    def test_command_contract_report_covers_parser_and_metadata(self) -> None:
+        from personal_assistant import cli, command_registry
+
+        parser = cli.build_parser()
+        subparser_action = next(action for action in parser._actions if getattr(action, "dest", "") == "command")
+        parser_commands = set(subparser_action.choices)
+        report = command_registry.command_contract_report(parser_commands)
+        self.assertEqual(report["schema"], "myos.command_contract.v1")
+        self.assertTrue(report["ok"], report["issues"])
+        self.assertEqual(report["command_count"], len(parser_commands))
+        self.assertEqual(report["parser_command_count"], len(parser_commands))
+        self.assertTrue(all(not values for values in report["issues"].values()))
+
     def test_extracted_command_handlers_are_module_backed(self) -> None:
         from personal_assistant import (
             cli,

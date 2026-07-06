@@ -128,6 +128,8 @@ class CliFlowTest(unittest.TestCase):
                 text=True,
             ).stdout
             self.assertIn("PASS package_entrypoint: myos -> personal_assistant.cli:main", out)
+            self.assertIn("PASS command_contract:", out)
+            self.assertIn("commands covered", out)
 
     def test_capture_triage_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -55,6 +55,7 @@ All notable changes to this project will be documented in this file.
 - Launchd install/uninstall plus activate/start/stop/live lifecycle presentation moved into a focused launchd module with explicit runtime dependencies.
 - Local model command mapper now includes dry-run, side-effect, restore, OS-service, and long-running metadata for runtime and recovery commands.
 - Runtime recommendations now use command side-effect metadata to prefer diagnostics, dry-runs, backups, and approval review before risky setup or service changes.
+- Release readiness now includes a command contract audit so registered CLI commands keep parser coverage, examples, summaries, safety metadata, and confirmation boundaries in sync.
 - Approval, action, execution receipt, and factory review outputs now surface side-effect classes, dry-run status, and safer next commands.
 - Execution receipts now persist compact approval context for retrospective learning without adding schema or storing new raw command arguments.
 - Approval recommendations now use persisted side-effect learning as an advisory ranking signal while static policy still controls approval gates.

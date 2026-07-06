@@ -31,6 +31,7 @@ Implemented scope:
 - Include safety tier, command tier, required arguments, examples, and whether confirmation is needed.
 - Feed the registry into `myos help`, router command visibility, and the router model prompt.
 - Keep the registry static and cheap to load. Do not introspect argparse on every request.
+- Verify release readiness with a command contract audit that detects parser/registry drift, malformed examples, missing summaries, invalid safety metadata, and risky commands without confirmation.
 
 Useful command:
 
