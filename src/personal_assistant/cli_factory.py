@@ -4,9 +4,48 @@ import argparse
 import json
 import os
 
-from . import autonomy, cli_autonomy, factory
+from . import autonomy, cli_autonomy, factory, plans
 from .approval_context import format_factory_review_context
 from .db import get_connection
+
+
+def _executor_artifacts(conn, run: dict) -> list[dict]:
+    packet = next((a for a in run["artifacts"] if a["artifact_type"] == "review_packet"), None)
+    if not packet:
+        return []
+    review_packet = plans.get_review_packet(conn, int(packet["artifact_id"]))
+    if not review_packet:
+        return []
+    artifacts = review_packet.get("packet", {}).get("executor_artifacts") or []
+    return [artifact for artifact in artifacts if isinstance(artifact, dict)]
+
+
+def _print_executor_artifacts(conn, run: dict) -> None:
+    artifacts = _executor_artifacts(conn, run)
+    if not artifacts:
+        return
+    print("Executor artifacts:")
+    for artifact in artifacts:
+        if artifact.get("type") != "zero_executor":
+            print(f"- {artifact.get('type', 'executor')}: status={artifact.get('status', 'unknown')}")
+            continue
+        action_id = artifact.get("agent_action_id")
+        action = f" action=#{action_id}" if action_id else ""
+        exit_code = artifact.get("exit_code")
+        exit_part = f" exit_code={exit_code}" if exit_code is not None else ""
+        print(f"- zero status={artifact.get('status', 'unknown')}{exit_part}{action}")
+        changed_files = [str(item) for item in artifact.get("changed_files") or [] if str(item)]
+        if changed_files:
+            print(f"  changed_files={','.join(changed_files)}")
+        summary = str(artifact.get("summary") or "").strip().replace("\n", " ")
+        if summary:
+            print(f"  summary={summary[:240]}")
+        approval_command = str(artifact.get("approval_command") or "").strip()
+        if approval_command:
+            print(f"  approve={approval_command}")
+        follow_up_id = artifact.get("follow_up_inbox_id")
+        if follow_up_id:
+            print(f"  follow_up=inbox_item#{follow_up_id}")
 
 
 def cmd_factory(args: argparse.Namespace) -> None:
@@ -51,6 +90,11 @@ def cmd_factory(args: argparse.Namespace) -> None:
             print(f"retrieval_run=#{result['retrieval_run_id']}")
         print(f"review_packet=#{result['review_packet_id']}")
         print("agent_runs=" + ",".join(f"#{run_id}" for run_id in result["agent_run_ids"]))
+        action_ids = result.get("proposed_action_ids") or []
+        if action_ids:
+            print("approval_actions=" + ",".join(f"#{action_id}" for action_id in action_ids))
+            if len(action_ids) == 1:
+                print(f"approve=myos approve --action {action_ids[0]} --execute")
         print(f"stopped_before_execution={args.mode == 'review_first'}")
         cli_autonomy.print_recommendations(
             conn,
@@ -87,6 +131,7 @@ def cmd_factory(args: argparse.Namespace) -> None:
         for artifact in run["artifacts"]:
             label = f" {artifact['label']}" if artifact["label"] else ""
             print(f"- {artifact['artifact_type']}#{artifact['artifact_id']}{label}")
+        _print_executor_artifacts(conn, run)
         return
 
     if action == "run-stage":
@@ -152,6 +197,7 @@ def cmd_factory(args: argparse.Namespace) -> None:
             print("Open gaps: " + ", ".join(gaps))
         for line in format_factory_review_context(str(run.get("workflow_pack") or "")):
             print(line)
+        _print_executor_artifacts(conn, run)
         print("Execution remains approval-gated.")
         return
 

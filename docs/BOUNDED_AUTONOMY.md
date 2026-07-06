@@ -1499,3 +1499,19 @@ Scope:
 - Push the committed branch only if approved.
 - Monitor CI and fix failures if they occur.
 - Tag or create a release only if separately approved.
+
+## GitLawb Zero Coding Executor Safety Contract Review
+
+Purpose: review the committed GitLawb Zero coding executor as an autonomy boundary for repo-scoped code work.
+
+Implemented scope:
+
+- Validate that `myos code` and `factory start --executor zero` route generated code through isolated worktrees and approval-gated `apply_patch` proposals.
+- Clarify the operator config split between text-mode GitLawb Zero delegation and structured streaming GitLawb Zero factory execution.
+- Preserve explicit approval review before any local repo patch is applied.
+
+GitLawb Zero coding delegation is now reviewed as a bounded autonomy surface rather than an automatic coder. The simple `myos code ... --backend zero` path uses `MYOS_AGENT_EXEC_ZERO` and proposes diffs from an isolated worktree. The factory executor path uses the structured streaming adapter, configurable with `MYOS_AGENT_EXEC_ZERO_STREAM`, and still records an agent run plus an approval-required action. Approval review now explicitly covers local repository mutations as well as external systems. This `zero` backend is distinct from the Agent Zero framework.
+
+The canonical proof loop is `myos factory start --mode semi_autonomous --pack software_delivery --executor zero --repo <disposable_repo>`. That path binds a coding task to an intent, retrieval evidence, review packet, Zero executor artifact, proposed `apply_patch` action, execution receipt, and factory learning record. `myos factory status` and `myos factory review` surface the Zero changed files, failed-run follow-up inbox item when needed, and exact `myos approve --action <id> --execute` command, while the source repo remains unchanged until the MYOS approval command runs. See `examples/demo-zero-proof.md` for the disposable-repo smoke test.
+
+Public hygiene now includes `examples/` in the release scan so the Zero proof runbook is checked with README, docs, source, tests, deploy templates, and workflows before release readiness passes.

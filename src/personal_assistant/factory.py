@@ -11,6 +11,7 @@ from typing import Any
 from . import agentcore, autonomy, graphrag, intents, observability, plans, providers, zero_executor
 from .db import append_event
 from .execution import approve_and_execute
+from .inbox import insert_inbox_item_dedup
 from .privacy import apply_privacy_filters
 
 MODES = ("review_first", "semi_autonomous", "full_autonomous")
@@ -495,19 +496,42 @@ def start_review_first_run(
             agent_run_id=agent_run_id,
             output={"agent_run_id": agent_run_id},
         )
+    prepared_action_ids: list[int] = []
     if mode == "review_first":
+        if workflow_pack == "software_delivery" and executor_backend == "zero":
+            prepared_action_ids = prepare_execution_actions(conn, factory_run_id)
         _stage(
             conn,
             factory_run_id,
             "approval",
             status="waiting",
-            output={"reason": "review-first factory run stops before execution"},
+            output={
+                "reason": "review-first factory run stops before approved patch application",
+                "prepared_action_ids": prepared_action_ids,
+            },
         )
-        _stage(conn, factory_run_id, "execution", status="blocked", output={"reason": "approval required"})
+        _stage(
+            conn,
+            factory_run_id,
+            "execution",
+            status="blocked",
+            output={"reason": "approval required", "prepared_action_ids": prepared_action_ids},
+        )
         final_status = "awaiting_approval"
-        summary = f"Factory run #{factory_run_id} completed review-first stages and stopped before execution."
+        if prepared_action_ids:
+            summary = (
+                f"Factory run #{factory_run_id} prepared {len(prepared_action_ids)} "
+                "approval-gated Zero action(s) and stopped before patch application."
+            )
+        else:
+            summary = f"Factory run #{factory_run_id} completed review-first stages and stopped before execution."
     else:
         execution = advance_execution(conn, factory_run_id)
+        prepared_action_ids = [
+            int(item["action_id"])
+            for item in execution.get("results", [])
+            if item.get("action_id") is not None
+        ]
         _stage(
             conn,
             factory_run_id,
@@ -557,7 +581,8 @@ def start_review_first_run(
         "plan_id": int(plan_id),
         "retrieval_run_id": retrieval_run_id,
         "review_packet_id": review_packet_id,
-        "agent_run_ids": agent_run_ids,
+        "agent_run_ids": _artifact_ids(conn, factory_run_id, "agent_run") or agent_run_ids,
+        "proposed_action_ids": prepared_action_ids,
         "status": final_status,
         "executor_backend": executor_backend,
         "learning_insights": learning,
@@ -660,6 +685,17 @@ def _prepare_zero_software_action(
             text=True,
             check=False,
         ).stdout
+        diff_changed_files = [
+            line.strip()
+            for line in subprocess.run(
+                ["git", "-C", worktree, "diff", "--cached", "--name-only"],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout.splitlines()
+            if line.strip()
+        ]
+        changed_files = result.changed_files or diff_changed_files
         agent_run_id = zero_executor.record_zero_agent_run(
             conn,
             task_id=int(task_id),
@@ -678,6 +714,7 @@ def _prepare_zero_software_action(
             action_type = "apply_patch"
             title = f"Apply Zero patch for intent #{intent['id']}"
             payload["diff"] = diff[:200000]
+            payload["changed_files"] = changed_files
         else:
             action_type = "draft_external_update"
             title = f"Review Zero output for intent #{intent['id']}"
@@ -695,6 +732,39 @@ def _prepare_zero_software_action(
             payload=payload,
             requires_approval=1,
         )
+        follow_up_id = None
+        if not result.terminal_ok():
+            follow_up_text = (
+                f"Follow up on Zero executor {result.status} for factory run #{run['id']}: "
+                f"{intent['objective']}"
+            )
+            follow_up_id = insert_inbox_item_dedup(
+                conn,
+                text=follow_up_text,
+                kind="task",
+                owner=None,
+                due_date=None,
+                confidence=0.85,
+                source="zero_executor",
+            )
+            if follow_up_id is not None:
+                _artifact(conn, int(run["id"]), "inbox_item", follow_up_id, "zero follow-up")
+                append_event(
+                    conn,
+                    "zero_executor_follow_up_created",
+                    "inbox_item",
+                    follow_up_id,
+                    json.dumps(
+                        {
+                            "factory_run_id": int(run["id"]),
+                            "agent_run_id": int(agent_run_id),
+                            "agent_action_id": int(action_id),
+                            "status": result.status,
+                            "exit_code": result.exit_code,
+                        },
+                        ensure_ascii=True,
+                    ),
+                )
         packet_id = _review_packet_id_for_run(conn, int(run["id"]))
         if packet_id is not None:
             plans.attach_executor_artifact(
@@ -704,11 +774,14 @@ def _prepare_zero_software_action(
                     "type": "zero_executor",
                     "agent_run_id": int(agent_run_id),
                     "agent_action_id": int(action_id),
+                    "action_type": action_type,
                     "status": result.status,
                     "exit_code": result.exit_code,
-                    "changed_files": result.changed_files,
+                    "changed_files": changed_files,
                     "run_id": result.run_id,
                     "summary": (result.final_text or "")[:1000],
+                    "approval_command": f"myos approve --action {action_id} --execute",
+                    "follow_up_inbox_id": int(follow_up_id) if follow_up_id is not None else None,
                 },
             )
         return action_id, agent_run_id

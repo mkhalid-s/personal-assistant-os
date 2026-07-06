@@ -583,6 +583,7 @@ def _release_scan_files(root: Path) -> list[Path]:
         "tests",
         "docs",
         "deploy",
+        "examples",
         ".github",
     ]
     files: list[Path] = []

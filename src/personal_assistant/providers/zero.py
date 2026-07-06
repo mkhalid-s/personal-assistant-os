@@ -1,4 +1,4 @@
-"""Gitlawb Zero CLI adapter.
+"""GitLawb Zero CLI adapter.
 
 Zero is used as an optional coding executor. MYOS still owns routing, memory,
 review packets, approvals, and audit; Zero is only the repo-scoped worker.

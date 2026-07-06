@@ -55,6 +55,20 @@ class CliFlowTest(unittest.TestCase):
         self.assertIn("not a standalone signed binary", readme)
         self.assertIn("Standalone executable packaging can be layered later", readme)
 
+    def test_zero_proof_runbook_is_discoverable_and_approval_gated(self) -> None:
+        readme = Path("README.md").read_text()
+        runbook = Path("examples/demo-zero-proof.md").read_text()
+        bounded = Path("docs/BOUNDED_AUTONOMY.md").read_text()
+
+        self.assertIn("examples/demo-zero-proof.md", readme)
+        self.assertIn("examples/demo-zero-proof.md", bounded)
+        self.assertIn("myos factory start", runbook)
+        self.assertIn("--executor zero", runbook)
+        self.assertIn("myos approve --action <action_id> --execute", runbook)
+        self.assertIn("Do not commit, push, open PRs, or mutate external systems", runbook)
+        self.assertIn("MYOS approval is still required", runbook)
+        self.assertIn('"examples"', Path("src/personal_assistant/cli.py").read_text())
+
     def test_router_commands_exposes_model_safe_metadata(self) -> None:
         env = os.environ.copy()
         env["PYTHONPATH"] = str(Path.cwd() / "src")
@@ -324,6 +338,37 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("INFO jira_credentials: missing", check)
             self.assertNotIn("WARN jira_credentials", check)
             self.assertIn("Ready: myos autopilot", check)
+
+    def test_doctor_reports_zero_stream_executor_preflight(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
+            fake_zero = Path(tmp) / "zero"
+            fake_zero.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                "if '--help' in sys.argv:\n"
+                "    print('usage: zero exec --input-format stream-json --output-format stream-json')\n"
+                "    raise SystemExit(0)\n"
+                "print('zero fake')\n"
+            )
+            fake_zero.chmod(0o755)
+            env["PATH"] = f"{tmp}{os.pathsep}{env.get('PATH', '')}"
+            env["MYOS_AGENT_EXEC_ZERO_STREAM"] = "zero exec"
+
+            out = subprocess.run(
+                [sys.executable, "-m", "personal_assistant.cli", "doctor"],
+                cwd=Path.cwd(),
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+
+            self.assertIn("PASS zero_stream_executor:", out)
+            self.assertIn("stream-json support detected", out)
+            self.assertIn("input/output format flags", out)
 
     def test_first_class_agent_backend_chat_smoke(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1196,6 +1241,82 @@ class CliFlowTest(unittest.TestCase):
             self.assertEqual(stages["approval"], "waiting")
             self.assertEqual(stages["execution"], "blocked")
             self.assertEqual(pack, "software_delivery")
+
+    def test_factory_zero_review_surfaces_patch_approval_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            db_path = Path(tmp) / "assistant.db"
+            env["MYOS_DB_PATH"] = str(db_path)
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "main"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@example.com"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(repo), "config", "commit.gpgsign", "false"], check=True, capture_output=True)
+            Path(repo, "README.md").write_text("seed\n")
+            subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "init"], check=True, capture_output=True)
+            fake_zero = Path(tmp) / "fake_zero.py"
+            fake_zero.write_text(
+                "import json, os, pathlib\n"
+                "pathlib.Path('cli-zero.txt').write_text('cli proof\\n')\n"
+                "events = [\n"
+                "  {'schemaVersion': 2, 'type': 'run_start', 'runId': 'cli_run', 'sessionId': 'cli_session', 'cwd': os.getcwd(), 'provider': 'fake', 'model': 'fake'},\n"
+                "  {'schemaVersion': 2, 'type': 'tool_result', 'runId': 'cli_run', 'id': 'tool_1', 'name': 'write_file', 'status': 'ok', 'changedFiles': ['cli-zero.txt']},\n"
+                "  {'schemaVersion': 2, 'type': 'final', 'runId': 'cli_run', 'text': 'cli fake zero finished'},\n"
+                "  {'schemaVersion': 2, 'type': 'run_end', 'runId': 'cli_run', 'status': 'success', 'exitCode': 0},\n"
+                "]\n"
+                "for event in events:\n"
+                "    print(json.dumps(event), flush=True)\n"
+            )
+            env["MYOS_AGENT_EXEC_ZERO_STREAM"] = f"{sys.executable} {fake_zero}"
+
+            def run(*args: str) -> str:
+                out = subprocess.run(
+                    [sys.executable, "-m", "personal_assistant.cli", *args],
+                    cwd=Path.cwd(),
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                return out.stdout
+
+            run("intent", "create", "Use Zero for a CLI proof patch")
+            started = run(
+                "factory",
+                "start",
+                "--intent",
+                "1",
+                "--pack",
+                "software_delivery",
+                "--executor",
+                "zero",
+                "--repo",
+                str(repo),
+                "--timeout",
+                "30",
+                "--max-turns",
+                "1",
+            )
+            self.assertIn("status=awaiting_approval", started)
+            self.assertIn("executor=zero", started)
+            self.assertIn("approval_actions=#1", started)
+            self.assertIn("approve=myos approve --action 1 --execute", started)
+            self.assertFalse(Path(repo, "cli-zero.txt").exists())
+
+            status = run("factory", "status", "--id", "1")
+            self.assertIn("Executor artifacts:", status)
+            self.assertIn("- zero status=success exit_code=0 action=#1", status)
+            self.assertIn("changed_files=cli-zero.txt", status)
+            self.assertIn("approve=myos approve --action 1 --execute", status)
+
+            review = run("factory", "review", "--id", "1")
+            self.assertIn("Factory review #1: ready_for_approval", review)
+            self.assertIn("Executor artifacts:", review)
+            self.assertIn("summary=cli fake zero finished", review)
+            self.assertIn("Execution remains approval-gated.", review)
 
     def test_deep_factory_autonomous_execution_and_proactive_loop(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

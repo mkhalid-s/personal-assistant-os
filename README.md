@@ -135,6 +135,7 @@ export MYOS_AI_COMMAND="/path/to/your-ai-wrapper"
 export MYOS_AGENT_CMD_CURSOR="agent --print --trust --mode ask --output-format text"
 export MYOS_AGENT_CMD_ZERO="zero exec --output-format text --auto low --no-notify"
 export MYOS_AGENT_EXEC_ZERO="zero exec --output-format text --auto low --no-notify"
+export MYOS_AGENT_EXEC_ZERO_STREAM="zero exec"
 export MYOS_AGENT_CMD_CLAUDE_CODE="claude -p"
 export MYOS_CLAUDE_MODEL="claude-opus-4-8"
 export MYOS_SDK_LOAD_SETTINGS="0"
@@ -160,7 +161,7 @@ export MYOS_CONNECTOR_LIVE="0"
 
 Do not commit local `.env` files, SQLite databases, logs, generated reports, or agent/tool settings. The repository `.gitignore` is configured to keep those local artifacts out of source control.
 
-For a no-network first run, follow `examples/demo-local.md`.
+For a no-network first run, follow `examples/demo-local.md`. For a disposable coding-agent proof loop with GitLawb Zero, follow `examples/demo-zero-proof.md`.
 
 ## Local Production Checklist
 
@@ -172,6 +173,8 @@ myos setup-live --apply
 myos doctor --strict
 myos migrations verify --strict
 myos backup
+myos router eval
+myos autonomy eval
 myos autopilot --once --no-sync
 myos approve --list
 myos execution-receipt list
@@ -195,8 +198,11 @@ Most daily use should start with one of these surfaces instead of memorizing the
 - `myos voice`: voice-first assistant using the same routed chat loop.
 - `myos autopilot --factory`: proactive loop that selects a factory workflow pack from detected signals.
 - `myos do "plan my day and draft follow-ups"`: one-shot natural-language router for CLI users.
-- `myos code "fix the failing tests" --backend zero`: optional coding-agent handoff that runs in an isolated worktree and proposes a patch for approval.
-- `myos approve --list`: review anything that could mutate external systems.
+- `myos factory start --pack software_delivery --executor zero`: auditable coding proof path that binds Zero output to intent, retrieval, review packets, approvals, receipts, and learning.
+- `myos code "fix the failing tests" --backend zero`: quick coding-agent handoff that runs in an isolated worktree and proposes a patch for approval.
+- `myos approve --list`: review anything that could mutate your local repo or external systems.
+
+The `zero` backend here refers to [GitLawb Zero](https://github.com/gitlawb/zero), the coding agent CLI. It is distinct from the [Agent Zero framework](https://github.com/agent0ai/agent-zero). Use the factory path when you need the full MYOS loop; use `myos code` for a direct one-off patch proposal. `myos doctor` reports `zero_stream_executor` as an optional preflight for the structured factory path.
 
 Use `myos help daily`, `myos help workflows`, `myos help expert`, or `myos help diagnostic` to see a smaller tiered command list.
 
