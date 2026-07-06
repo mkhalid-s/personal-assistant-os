@@ -581,6 +581,15 @@ class FactoryZeroExecutorTest(unittest.TestCase):
 
         receipt_count = self.conn.execute("SELECT COUNT(*) AS c FROM action_execution_receipts").fetchone()["c"]
         self.assertEqual(receipt_count, 1)
+        receipt = self.conn.execute(
+            "SELECT request_json FROM action_execution_receipts WHERE agent_action_id = ?",
+            (action_id,),
+        ).fetchone()
+        receipt_request = json.loads(receipt["request_json"])
+        self.assertEqual(receipt_request["verification"]["schema"], "myos.verification_receipt.v1")
+        self.assertEqual(receipt_request["verification"]["status"], "not_run")
+        self.assertEqual(receipt_request["verification"]["commands"], ["python -m pytest"])
+        self.assertIn("does not auto-run", receipt_request["verification"]["reason"])
         learning_id = factory.learn(self.conn, factory_run_id=result["id"], outcome="success", notes="Fake Zero patch applied.")
         retro = factory.latest_retrospective(self.conn, result["id"])
         self.assertGreaterEqual(learning_id, 1)

@@ -175,6 +175,22 @@ def normalize_connector_mutation(payload: dict[str, object], *, title: str = "As
     }
 
 
+def _verification_receipt_context(conn, payload: dict[str, object]) -> dict[str, object] | None:
+    commands = [
+        apply_privacy_filters(conn, str(command).strip())[:300]
+        for command in (payload.get("verification_commands") or [])
+        if str(command).strip()
+    ][:5]
+    if not commands:
+        return None
+    return {
+        "schema": "myos.verification_receipt.v1",
+        "status": "not_run",
+        "reason": "Suggested verification is recorded for the operator; approval execution does not auto-run shell commands.",
+        "commands": commands,
+    }
+
+
 def _record_execution_receipt(conn, row, *, approved: bool, final_status: str, result: str) -> None:
     payload = json.loads(row["payload_json"] or "{}")
     rollback_note = str(payload.get("rollback_note") or payload.get("rollback") or "").strip()
@@ -193,6 +209,9 @@ def _record_execution_receipt(conn, row, *, approved: bool, final_status: str, r
             requires_approval=bool(row["requires_approval"]),
         ),
     }
+    verification = _verification_receipt_context(conn, payload)
+    if verification:
+        request["verification"] = verification
     cur = conn.execute(
         """
         INSERT INTO action_execution_receipts (
