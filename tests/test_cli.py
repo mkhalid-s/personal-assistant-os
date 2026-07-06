@@ -1342,6 +1342,16 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("zero_diff_stats: files=1 additions=1 deletions=0 binary=0", approvals)
             self.assertIn("zero_verify: python -m pytest", approvals)
 
+            executed = run("approve", "--action", "1", "--execute")
+            self.assertIn("Executed action #1: patch applied", executed)
+            receipts = run("execution-receipt", "list")
+            self.assertIn("verification: not_run", receipts)
+            self.assertIn("verification_command: python -m pytest", receipts)
+            receipt = run("execution-receipt", "show", "--id", "1")
+            self.assertIn("Verification: not_run", receipt)
+            self.assertIn("Verification Command: python -m pytest", receipt)
+            self.assertIn("Verification Reason: Suggested verification is recorded for the operator", receipt)
+
     def test_deep_factory_autonomous_execution_and_proactive_loop(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()

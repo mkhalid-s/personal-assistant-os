@@ -46,6 +46,23 @@ def _print_zero_approval_context(payload: dict) -> None:
         print(f"  zero_verify: {command}")
 
 
+def _receipt_verification_lines(request: dict) -> list[str]:
+    verification = request.get("verification") if isinstance(request, dict) else None
+    if not isinstance(verification, dict):
+        return []
+    commands = [str(item).strip() for item in verification.get("commands") or [] if str(item).strip()]
+    if not commands:
+        return []
+    status = str(verification.get("status") or "not_run")
+    lines = [f"verification: {status}"]
+    for command in commands[:5]:
+        lines.append(f"verification_command: {command}")
+    reason = str(verification.get("reason") or "").strip()
+    if reason:
+        lines.append(f"verification_reason: {reason}")
+    return lines
+
+
 def cmd_delegate(args: argparse.Namespace) -> None:
     conn = get_connection()
     target = getattr(args, "to", "").strip().lower()
@@ -422,6 +439,12 @@ def cmd_execution_receipt(args: argparse.Namespace) -> None:
                     print(f"{label.replace('_', ' ').title()}: {detail}")
                 else:
                     print(line)
+        for line in _receipt_verification_lines(request):
+            if ": " in line:
+                label, detail = line.split(": ", 1)
+                print(f"{label.replace('_', ' ').title()}: {detail}")
+            else:
+                print(line)
         outbox = conn.execute(
             """
             SELECT id, provider, target_type, target_ref, status
@@ -472,6 +495,8 @@ def cmd_execution_receipt(args: argparse.Namespace) -> None:
             else format_action_review_context(str(row["action_type"]), {}, requires_approval=bool(row["approved"]))
         )
         for line in context_lines:
+            print(f"  {line}")
+        for line in _receipt_verification_lines(request):
             print(f"  {line}")
 
 
