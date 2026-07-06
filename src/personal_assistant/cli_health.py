@@ -4,8 +4,10 @@ import argparse
 import importlib.util
 import json
 import os
+import shlex
 import shutil
 import sqlite3
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +28,43 @@ def _sqlite_fts5_available(conn: sqlite3.Connection) -> tuple[bool, str]:
 
 def _repo_file(path: str) -> Path:
     return Path(__file__).resolve().parents[2] / path
+
+
+def _zero_stream_preflight() -> tuple[bool, str]:
+    command = os.getenv("MYOS_AGENT_EXEC_ZERO_STREAM", "").strip() or "zero exec"
+    try:
+        argv = shlex.split(command)
+    except ValueError as exc:
+        return False, f"invalid command: {exc}"
+    if not argv:
+        return False, "not configured"
+    found = shutil.which(argv[0])
+    if not found:
+        return False, f"{argv[0]} not installed; set MYOS_AGENT_EXEC_ZERO_STREAM for structured Zero factory runs"
+    try:
+        proc = subprocess.run(
+            [*argv, "--help"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"{command} --help timed out"
+    output = f"{proc.stdout}\n{proc.stderr}"
+    if proc.returncode != 0:
+        return False, f"{command} --help exit={proc.returncode}: {output.strip()[:200]}"
+    if "stream-json" not in output:
+        return False, f"{command} help did not advertise stream-json support"
+    formats = []
+    if "--input-format" in output:
+        formats.append("input")
+    if "--output-format" in output:
+        formats.append("output")
+    detail = "stream-json support detected"
+    if formats:
+        detail += f" ({'/'.join(formats)} format flags)"
+    return True, f"{found}: {detail}"
 
 
 def cmd_doctor(args: argparse.Namespace) -> None:
@@ -108,6 +147,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             ),
         ]
     )
+    optional_checks.append(("zero_stream_executor", *_zero_stream_preflight()))
     router_status = model_setup.router_status()
     optional_checks.append(
         (

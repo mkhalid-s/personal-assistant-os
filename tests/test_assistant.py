@@ -7,6 +7,7 @@ Anthropic client, and the external agent CLIs are stubbed with shell scripts.
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 import subprocess
@@ -358,6 +359,21 @@ class DelegateHarnessTest(unittest.TestCase):
 
 
 class ZeroExecutorStreamTest(unittest.TestCase):
+    def test_zero_stream_argv_uses_streaming_executor_override(self):
+        from personal_assistant import zero_executor
+
+        os.environ["MYOS_AGENT_EXEC_ZERO_STREAM"] = "/tmp/zero-wrapper --flag"
+        try:
+            argv = zero_executor.zero_stream_argv(cwd="/repo", max_turns=2)
+        finally:
+            os.environ.pop("MYOS_AGENT_EXEC_ZERO_STREAM", None)
+
+        self.assertEqual(argv[:2], ["/tmp/zero-wrapper", "--flag"])
+        self.assertIn("--input-format", argv)
+        self.assertIn("stream-json", argv)
+        self.assertIn("--max-turns", argv)
+        self.assertIn("2", argv)
+
     def test_parse_zero_stream_collects_terminal_metadata(self):
         from personal_assistant import zero_executor
 
@@ -391,33 +407,261 @@ class ZeroExecutorStreamTest(unittest.TestCase):
         self.assertEqual(result.status, "protocol_error")
         self.assertTrue(result.protocol_errors)
 
+    def test_run_zero_stream_reports_missing_executable(self):
+        from personal_assistant import zero_executor
+
+        os.environ["MYOS_AGENT_EXEC_ZERO_STREAM"] = "/tmp/myos-definitely-missing-zero"
+        try:
+            result = zero_executor.run_zero_stream("do work", cwd=tempfile.gettempdir())
+        finally:
+            os.environ.pop("MYOS_AGENT_EXEC_ZERO_STREAM", None)
+
+        self.assertEqual(result.status, "missing")
+        self.assertEqual(result.exit_code, 127)
+        self.assertEqual(result.errors[0]["code"], "missing_zero")
+
+    def test_run_zero_stream_reports_timeout(self):
+        from personal_assistant import zero_executor
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = _write_script(
+                Path(tmp) / "sleepy_zero.py",
+                "#!/usr/bin/env python3\n"
+                "import time\n"
+                "time.sleep(5)\n",
+            )
+            os.environ["MYOS_AGENT_EXEC_ZERO_STREAM"] = f"{sys.executable} {script}"
+            try:
+                result = zero_executor.run_zero_stream("do work", cwd=tmp, timeout=1)
+            finally:
+                os.environ.pop("MYOS_AGENT_EXEC_ZERO_STREAM", None)
+
+        self.assertEqual(result.status, "timed_out")
+        self.assertTrue(result.timed_out)
+        self.assertEqual(result.exit_code, 124)
+
 
 class FactoryZeroExecutorTest(unittest.TestCase):
     def setUp(self):
         self.conn, self.db_path = _fresh_db_conn()
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.tmp = Path(self.tmpdir.name)
+        self.repo = self.tmp / "repo"
+        self.repo.mkdir()
+        self._git("init", "-q", "-b", "main")
+        self._git("config", "user.email", "t@example.com")
+        self._git("config", "user.name", "Test")
+        self._git("config", "commit.gpgsign", "false")
+        Path(self.repo, "README.md").write_text("seed\n")
+        self._git("add", "-A")
+        self._git("commit", "-qm", "init")
 
     def tearDown(self):
         self.conn.close()
         os.unlink(self.db_path)
         os.environ.pop("MYOS_DB_PATH", None)
+        os.environ.pop("MYOS_AGENT_EXEC_ZERO_STREAM", None)
+        self.tmpdir.cleanup()
 
-    def test_factory_start_persists_zero_executor_metadata(self):
+    def _git(self, *args):
+        subprocess.run(["git", "-C", str(self.repo), *args], capture_output=True, check=True)
+
+    def _install_fake_zero(self, *, changed_file: str = "zeroed.txt", text: str = "hello from zero\n") -> None:
+        script = self.tmp / "fake_zero.py"
+        script.write_text(
+            "import json, os, pathlib\n"
+            f"changed_file = {changed_file!r}\n"
+            f"text = {text!r}\n"
+            "if changed_file:\n"
+            "    pathlib.Path(changed_file).parent.mkdir(parents=True, exist_ok=True)\n"
+            "    pathlib.Path(changed_file).write_text(text)\n"
+            "events = [\n"
+            "    {'schemaVersion': 2, 'type': 'run_start', 'runId': 'run_fake', 'sessionId': 'session_fake', 'cwd': os.getcwd(), 'provider': 'fake', 'model': 'fake'},\n"
+            "    {'schemaVersion': 2, 'type': 'tool_result', 'runId': 'run_fake', 'id': 'tool_1', 'name': 'write_file', 'status': 'ok', 'changedFiles': [changed_file] if changed_file else []},\n"
+            "    {'schemaVersion': 2, 'type': 'usage', 'runId': 'run_fake', 'totalTokens': 3},\n"
+            "    {'schemaVersion': 2, 'type': 'final', 'runId': 'run_fake', 'text': 'fake zero finished'},\n"
+            "    {'schemaVersion': 2, 'type': 'run_end', 'runId': 'run_fake', 'status': 'success', 'exitCode': 0},\n"
+            "]\n"
+            "for event in events:\n"
+            "    print(json.dumps(event), flush=True)\n"
+        )
+        os.environ["MYOS_AGENT_EXEC_ZERO_STREAM"] = f"{sys.executable} {script}"
+
+    def test_factory_zero_proof_loop_reaches_receipt_and_learning(self):
+        from personal_assistant import factory, intents, plans
+        from personal_assistant.execution import approve_and_execute
+
+        self._install_fake_zero()
+        intent_id = intents.create_intent(
+            self.conn,
+            objective="Use Zero to add a proof file",
+            success_criteria="Patch is reviewable before approval",
+        )
+        factory.set_policy(self.conn, allowed_mode="semi_autonomous", scope_type="intent", scope_id=str(intent_id))
+
+        result = factory.start_review_first_run(
+            self.conn,
+            intent_id=intent_id,
+            mode="semi_autonomous",
+            workflow_pack="software_delivery",
+            executor_backend="zero",
+            executor_context={"repo": str(self.repo), "timeout": 30, "max_turns": 1},
+        )
+        self.conn.commit()
+
+        self.assertEqual(result["status"], "execution_ready")
+        self.assertEqual(result["executor_backend"], "zero")
+        self.assertEqual(len(result["proposed_action_ids"]), 1)
+        action_id = result["proposed_action_ids"][0]
+        self.assertFalse(Path(self.repo, "zeroed.txt").exists())
+
+        row = self.conn.execute("SELECT executor_backend, executor_context_json FROM factory_runs WHERE id = ?", (result["id"],)).fetchone()
+        self.assertEqual(row["executor_backend"], "zero")
+        self.assertIn(str(self.repo), row["executor_context_json"])
+
+        action = self.conn.execute(
+            "SELECT action_type, requires_approval, status, payload_json FROM agent_actions WHERE id = ?",
+            (action_id,),
+        ).fetchone()
+        self.assertEqual(action["action_type"], "apply_patch")
+        self.assertEqual(action["requires_approval"], 1)
+        self.assertEqual(action["status"], "proposed")
+        self.assertIn("zeroed.txt", action["payload_json"])
+
+        packet = plans.get_review_packet(self.conn, result["review_packet_id"])
+        artifacts = packet["packet"]["executor_artifacts"]
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(artifacts[0]["type"], "zero_executor")
+        self.assertEqual(artifacts[0]["agent_action_id"], action_id)
+        self.assertEqual(artifacts[0]["changed_files"], ["zeroed.txt"])
+        self.assertEqual(artifacts[0]["approval_command"], f"myos approve --action {action_id} --execute")
+
+        approved = approve_and_execute(self.conn, action_id, do_approve=True, execute=True)
+        self.assertEqual(approved["status"], "executed")
+        self.assertEqual(Path(self.repo, "zeroed.txt").read_text(), "hello from zero\n")
+
+        receipt_count = self.conn.execute("SELECT COUNT(*) AS c FROM action_execution_receipts").fetchone()["c"]
+        self.assertEqual(receipt_count, 1)
+        learning_id = factory.learn(self.conn, factory_run_id=result["id"], outcome="success", notes="Fake Zero patch applied.")
+        retro = factory.latest_retrospective(self.conn, result["id"])
+        self.assertGreaterEqual(learning_id, 1)
+        self.assertEqual(retro["outcome"], "success")
+        self.assertEqual(retro["retrospective"]["recent_receipts"][0]["final_status"], "executed")
+
+    def test_factory_review_first_zero_prepares_action_before_approval(self):
         from personal_assistant import factory, intents
 
-        intent_id = intents.create_intent(self.conn, objective="Fix repo tests")
+        self._install_fake_zero(changed_file="review-first.txt", text="review first\n")
+        intent_id = intents.create_intent(self.conn, objective="Use Zero in review-first mode")
         result = factory.start_review_first_run(
             self.conn,
             intent_id=intent_id,
             workflow_pack="software_delivery",
             executor_backend="zero",
-            executor_context={"repo": "/tmp/repo", "timeout": 123},
+            executor_context={"repo": str(self.repo), "timeout": 30},
         )
         self.conn.commit()
 
-        self.assertEqual(result["executor_backend"], "zero")
-        row = self.conn.execute("SELECT executor_backend, executor_context_json FROM factory_runs WHERE id = ?", (result["id"],)).fetchone()
-        self.assertEqual(row["executor_backend"], "zero")
-        self.assertIn("/tmp/repo", row["executor_context_json"])
+        self.assertEqual(result["status"], "awaiting_approval")
+        self.assertEqual(len(result["proposed_action_ids"]), 1)
+        self.assertFalse(Path(self.repo, "review-first.txt").exists())
+        stages = {
+            row["stage_name"]: json.loads(row["output_json"] or "{}")
+            for row in self.conn.execute(
+                "SELECT stage_name, output_json FROM factory_stages WHERE factory_run_id = ?",
+                (result["id"],),
+            )
+        }
+        self.assertEqual(stages["execution"]["prepared_action_ids"], result["proposed_action_ids"])
+
+    def test_factory_zero_empty_diff_becomes_review_action(self):
+        from personal_assistant import factory, intents
+
+        self._install_fake_zero(changed_file="", text="")
+        intent_id = intents.create_intent(self.conn, objective="Ask Zero for advice only")
+        result = factory.start_review_first_run(
+            self.conn,
+            intent_id=intent_id,
+            workflow_pack="software_delivery",
+            executor_backend="zero",
+            executor_context={"repo": str(self.repo), "timeout": 30},
+        )
+        self.conn.commit()
+
+        action_id = result["proposed_action_ids"][0]
+        row = self.conn.execute("SELECT action_type, payload_json FROM agent_actions WHERE id = ?", (action_id,)).fetchone()
+        self.assertEqual(row["action_type"], "draft_external_update")
+        self.assertIn("fake zero finished", row["payload_json"])
+
+    def test_factory_zero_failed_run_creates_follow_up_work(self):
+        from personal_assistant import factory, intents, plans
+
+        os.environ["MYOS_AGENT_EXEC_ZERO_STREAM"] = str(self.tmp / "missing-zero")
+        intent_id = intents.create_intent(self.conn, objective="Use Zero when the executable is missing")
+        result = factory.start_review_first_run(
+            self.conn,
+            intent_id=intent_id,
+            workflow_pack="software_delivery",
+            executor_backend="zero",
+            executor_context={"repo": str(self.repo), "timeout": 30},
+        )
+        self.conn.commit()
+
+        action_id = result["proposed_action_ids"][0]
+        action = self.conn.execute("SELECT action_type, payload_json FROM agent_actions WHERE id = ?", (action_id,)).fetchone()
+        self.assertEqual(action["action_type"], "draft_external_update")
+        self.assertIn('"status": "missing"', action["payload_json"])
+
+        inbox = self.conn.execute(
+            "SELECT id, text, source FROM inbox_items WHERE source = 'zero_executor' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        self.assertIsNotNone(inbox)
+        self.assertIn("Zero executor missing", inbox["text"])
+
+        artifact_row = self.conn.execute(
+            "SELECT artifact_type, artifact_id, label FROM factory_artifacts WHERE factory_run_id = ? AND artifact_type = 'inbox_item'",
+            (result["id"],),
+        ).fetchone()
+        self.assertEqual(artifact_row["artifact_id"], inbox["id"])
+        self.assertEqual(artifact_row["label"], "zero follow-up")
+
+        packet = plans.get_review_packet(self.conn, result["review_packet_id"])
+        zero_artifact = packet["packet"]["executor_artifacts"][0]
+        self.assertEqual(zero_artifact["status"], "missing")
+        self.assertEqual(zero_artifact["follow_up_inbox_id"], inbox["id"])
+
+    def test_zero_apply_patch_guard_blocks_protected_paths(self):
+        from personal_assistant import agentcore
+        from personal_assistant.execution import approve_and_execute
+
+        task_id = agentcore.ensure_turn_task(self.conn, "unsafe zero patch")
+        diff = (
+            "diff --git a/.claude/settings.json b/.claude/settings.json\n"
+            "new file mode 100644\n"
+            "index 0000000..e69de29\n"
+            "--- /dev/null\n"
+            "+++ b/.claude/settings.json\n"
+            "@@ -0,0 +1 @@\n"
+            "+{}\n"
+        )
+        action_id = agentcore.enqueue_proposal(
+            self.conn,
+            task_id=task_id,
+            action_type="apply_patch",
+            title="Apply unsafe Zero patch",
+            payload={"agent": "zero", "repo_root": str(self.repo), "diff": diff},
+        )
+        self.conn.commit()
+
+        result = approve_and_execute(self.conn, action_id, do_approve=True, execute=True)
+        self.assertEqual(result["status"], "blocked")
+        self.assertIn("protected", result["result"])
+        receipt = self.conn.execute(
+            "SELECT final_status, follow_up_required FROM action_execution_receipts WHERE agent_action_id = ?",
+            (action_id,),
+        ).fetchone()
+        self.assertEqual(receipt["final_status"], "blocked")
+        self.assertEqual(receipt["follow_up_required"], 1)
 
 
 if __name__ == "__main__":
