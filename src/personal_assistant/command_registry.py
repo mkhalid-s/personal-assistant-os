@@ -185,6 +185,58 @@ def filter_commands(*, tier: str = "", safety: str = "", intent: str = "") -> li
     return list(specs)
 
 
+def command_contract_report(parser_commands: list[str] | set[str] | tuple[str, ...] | None = None) -> dict[str, Any]:
+    specs = all_commands()
+    spec_names = [spec.command for spec in specs]
+    spec_name_set = set(spec_names)
+    parser_name_set = set(parser_commands or [])
+    duplicates = sorted({name for name in spec_names if spec_names.count(name) > 1})
+    invalid_tiers = sorted(spec.command for spec in specs if spec.tier not in TIERS)
+    invalid_safety = sorted(spec.command for spec in specs if spec.safety not in SAFETY_LEVELS)
+    invalid_side_effects = sorted(
+        spec.command
+        for spec in specs
+        if any(side_effect not in SIDE_EFFECT_TYPES for side_effect in spec.side_effects)
+    )
+    missing_summary = sorted(spec.command for spec in specs if not spec.summary.strip())
+    missing_examples = sorted(spec.command for spec in specs if not spec.examples)
+    malformed_examples = sorted(
+        spec.command
+        for spec in specs
+        if any(not str(example).strip().startswith("myos ") for example in spec.examples)
+    )
+    risky_without_confirmation = sorted(
+        spec.command
+        for spec in specs
+        if (
+            spec.safety in {"approval_gated", "external_write"}
+            or "database_restore" in spec.side_effects
+        )
+        and not spec.requires_confirmation
+    )
+    issues: dict[str, list[str]] = {
+        "duplicate_registry_commands": duplicates,
+        "invalid_tiers": invalid_tiers,
+        "invalid_safety": invalid_safety,
+        "invalid_side_effects": invalid_side_effects,
+        "missing_summary": missing_summary,
+        "missing_examples": missing_examples,
+        "malformed_examples": malformed_examples,
+        "risky_without_confirmation": risky_without_confirmation,
+    }
+    if parser_commands is not None:
+        issues["missing_registry_metadata"] = sorted(parser_name_set - spec_name_set)
+        issues["extra_registry_metadata"] = sorted(spec_name_set - parser_name_set)
+    open_issues = {name: values for name, values in issues.items() if values}
+    return {
+        "schema": "myos.command_contract.v1",
+        "ok": not open_issues,
+        "command_count": len(spec_name_set),
+        "parser_command_count": len(parser_name_set) if parser_commands is not None else None,
+        "issues": issues,
+    }
+
+
 def _model_safe_item(spec: CommandSpec) -> dict[str, Any]:
     return {
         "command": spec.command,

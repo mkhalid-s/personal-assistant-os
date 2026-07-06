@@ -779,6 +779,25 @@ def _factory_release_smoke(conn: sqlite3.Connection) -> tuple[bool, str]:
         smoke_conn.close()
 
 
+def _top_level_parser_commands() -> list[str]:
+    parser = build_parser()
+    subparser_action = next(action for action in parser._actions if getattr(action, "dest", "") == "command")
+    return sorted(str(command) for command in subparser_action.choices)
+
+
+def _command_contract_check() -> tuple[bool, str]:
+    report = command_registry.command_contract_report(_top_level_parser_commands())
+    issues = {
+        name: values
+        for name, values in report["issues"].items()
+        if values
+    }
+    if issues:
+        first_name, first_values = next(iter(issues.items()))
+        return False, f"{first_name}={','.join(first_values[:5])}"
+    return True, f"{report['command_count']} commands covered"
+
+
 def cmd_release_check(args: argparse.Namespace) -> None:
     root = Path(__file__).resolve().parents[2]
     conn = get_connection()
@@ -786,6 +805,7 @@ def cmd_release_check(args: argparse.Namespace) -> None:
     hygiene = _release_hygiene_findings(root)
     artifacts = _tracked_local_artifacts(root)
     packaging_ok, packaging_detail = _packaging_entrypoint_check(root)
+    command_contract_ok, command_contract_detail = _command_contract_check()
     factory_smoke_ok, factory_smoke_detail = _factory_release_smoke(conn)
     required_files = [
         root / "LICENSE",
@@ -802,6 +822,7 @@ def cmd_release_check(args: argparse.Namespace) -> None:
         ("dependency_license", dependency_ok, "Apache-2.0 metadata"),
         ("required_files", all(path.exists() for path in required_files), "docs, changelog, license, workflows"),
         ("package_entrypoint", packaging_ok, packaging_detail),
+        ("command_contract", command_contract_ok, command_contract_detail),
         ("public_hygiene", not hygiene, f"{len(hygiene)} finding(s)"),
         ("local_artifacts", not artifacts, f"{len(artifacts)} tracked local artifact(s)"),
         ("factory_smoke", factory_smoke_ok, factory_smoke_detail),
