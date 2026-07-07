@@ -126,9 +126,18 @@ def cmd_context(args: argparse.Namespace) -> None:
 def cmd_retrieval_run(args: argparse.Namespace) -> None:
     with connection() as conn:
         action = getattr(args, "retrieval_run_action", "list") or "list"
+        json_mode = bool(getattr(args, "json", False))
         if action == "show":
             if args.id is None:
-                print("Usage: myos retrieval-run show --id N")
+                if json_mode:
+                    print(
+                        json.dumps(
+                            {"schema": "myos.retrieval_run.show.v1", "error": "id_required"},
+                            ensure_ascii=True,
+                        )
+                    )
+                else:
+                    print("Usage: myos retrieval-run show --id N")
                 raise SystemExit(1)
             run = conn.execute(
                 """
@@ -139,15 +148,16 @@ def cmd_retrieval_run(args: argparse.Namespace) -> None:
                 (args.id,),
             ).fetchone()
             if not run:
-                print("Retrieval run not found.")
+                if json_mode:
+                    print(
+                        json.dumps(
+                            {"schema": "myos.retrieval_run.show.v1", "error": "not_found", "id": int(args.id)},
+                            ensure_ascii=True,
+                        )
+                    )
+                else:
+                    print("Retrieval run not found.")
                 return
-            print(f"Retrieval run #{run['id']} [{run['mode']}]")
-            print(f"query: {run['query']}")
-            print(
-                f"requested: limit={run['limit_requested']} graph_hops={run['graph_hops']} "
-                f"candidates={run['candidate_limit']} selected={run['selected_count']}"
-            )
-            print(f"created: {run['created_at']}")
             sources = conn.execute(
                 """
                 SELECT rank, citation, score, reason, graph_path_json, content_preview
@@ -157,6 +167,40 @@ def cmd_retrieval_run(args: argparse.Namespace) -> None:
                 """,
                 (run["id"],),
             ).fetchall()
+            if json_mode:
+                payload = {
+                    "schema": "myos.retrieval_run.show.v1",
+                    "run": {
+                        "id": int(run["id"]),
+                        "query": str(run["query"] or ""),
+                        "mode": str(run["mode"] or ""),
+                        "limit_requested": int(run["limit_requested"]) if run["limit_requested"] is not None else None,
+                        "graph_hops": int(run["graph_hops"]) if run["graph_hops"] is not None else None,
+                        "candidate_limit": int(run["candidate_limit"]) if run["candidate_limit"] is not None else None,
+                        "selected_count": int(run["selected_count"]) if run["selected_count"] is not None else None,
+                        "created_at": str(run["created_at"] or ""),
+                    },
+                    "sources": [
+                        {
+                            "rank": int(source["rank"]),
+                            "citation": str(source["citation"] or ""),
+                            "score": float(source["score"]) if source["score"] is not None else None,
+                            "reason": str(source["reason"] or ""),
+                            "graph_path": json.loads(source["graph_path_json"] or "[]"),
+                            "content_preview": str(source["content_preview"] or ""),
+                        }
+                        for source in sources
+                    ],
+                }
+                print(json.dumps(payload, ensure_ascii=True))
+                return
+            print(f"Retrieval run #{run['id']} [{run['mode']}]")
+            print(f"query: {run['query']}")
+            print(
+                f"requested: limit={run['limit_requested']} graph_hops={run['graph_hops']} "
+                f"candidates={run['candidate_limit']} selected={run['selected_count']}"
+            )
+            print(f"created: {run['created_at']}")
             if not sources:
                 print("sources: none")
                 return
@@ -179,6 +223,24 @@ def cmd_retrieval_run(args: argparse.Namespace) -> None:
             """,
             (args.limit,),
         ).fetchall()
+        if json_mode:
+            payload = {
+                "schema": "myos.retrieval_run.list.v1",
+                "count": len(rows),
+                "limit": int(args.limit),
+                "runs": [
+                    {
+                        "id": int(row["id"]),
+                        "query": str(row["query"] or ""),
+                        "mode": str(row["mode"] or ""),
+                        "selected_count": int(row["selected_count"]) if row["selected_count"] is not None else None,
+                        "created_at": str(row["created_at"] or ""),
+                    }
+                    for row in rows
+                ],
+            }
+            print(json.dumps(payload, ensure_ascii=True))
+            return
         if not rows:
             print("No retrieval runs recorded.")
             return

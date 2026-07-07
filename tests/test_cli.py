@@ -3875,5 +3875,125 @@ class DbConnectionHelperTest(unittest.TestCase):
             self.assertNotIn("unclosed database", result.stderr)
 
 
+class JsonEnvelopeSurfaceTest(unittest.TestCase):
+    """Lock in every ``--json`` envelope schema shipped in the P0.6 rollout.
+
+    Supervisors and automation consumers rely on these schemas remaining
+    stable across releases. Adding a field is safe; renaming or removing one
+    is a breaking change and must fail this test. Each assertion pins the
+    schema string plus a small tripwire field so consumers cannot silently
+    conflate envelopes.
+    """
+
+    def _prepared_env(self, tmp: str) -> dict[str, str]:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(Path.cwd() / "src")
+        env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
+        return env
+
+    def _run(self, env: dict[str, str], *args: str, expect_exit: int = 0) -> str:
+        proc = subprocess.run(
+            [sys.executable, "-m", "personal_assistant.cli", *args],
+            cwd=Path.cwd(),
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            proc.returncode,
+            expect_exit,
+            msg=f"unexpected exit {proc.returncode} for {args}: {proc.stdout}\n{proc.stderr}",
+        )
+        return proc.stdout
+
+    def test_read_side_json_envelopes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._prepared_env(tmp)
+
+            today = json.loads(self._run(env, "today", "--json"))
+            self.assertEqual(today["schema"], "myos.today.v1")
+            self.assertIn("mode", today)
+            self.assertIn("top_outcomes", today)
+            self.assertIn("risk_watch", today)
+
+            weekly = json.loads(self._run(env, "weekly-review", "--json"))
+            self.assertEqual(weekly["schema"], "myos.weekly_review.v1")
+            self.assertIn("counts", weekly)
+            self.assertIn("commitments", weekly)
+            self.assertIn("alerts", weekly)
+
+            next_action = json.loads(self._run(env, "next-action", "--json"))
+            self.assertEqual(next_action["schema"], "myos.next_action.v1")
+            self.assertIn("mode", next_action)
+            self.assertIn("winner", next_action)
+            self.assertIn("baseline", next_action)
+            self.assertIn("candidates", next_action)
+
+            digest = json.loads(self._run(env, "digest", "--json"))
+            self.assertEqual(digest["schema"], "myos.digest.v1")
+            self.assertEqual(digest.get("error"), "not_found")
+
+            plan_list = json.loads(self._run(env, "plan", "list", "--json"))
+            self.assertEqual(plan_list["schema"], "myos.plan.list.v1")
+            self.assertEqual(plan_list["count"], 0)
+            self.assertEqual(plan_list["plans"], [])
+
+            factory_list = json.loads(self._run(env, "factory", "list", "--json"))
+            self.assertEqual(factory_list["schema"], "myos.factory.list.v1")
+            self.assertEqual(factory_list["count"], 0)
+            self.assertEqual(factory_list["runs"], [])
+
+            agent_status = json.loads(self._run(env, "agent-status", "--json"))
+            self.assertEqual(agent_status["schema"], "myos.agent_status.list.v1")
+            self.assertEqual(agent_status["count"], 0)
+            self.assertEqual(agent_status["tasks"], [])
+
+            retrieval_list = json.loads(self._run(env, "retrieval-run", "list", "--json"))
+            self.assertEqual(retrieval_list["schema"], "myos.retrieval_run.list.v1")
+            self.assertEqual(retrieval_list["count"], 0)
+            self.assertEqual(retrieval_list["runs"], [])
+
+    def test_write_side_json_envelopes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._prepared_env(tmp)
+            self._run(env, "intent", "create", "Try the JSON envelope surface", "--success", "Locked in")
+
+            intent_show = json.loads(self._run(env, "intent", "show", "--id", "1", "--json"))
+            self.assertEqual(intent_show["schema"], "myos.intent.show.v1")
+            self.assertEqual(intent_show["intent"]["id"], 1)
+            self.assertEqual(intent_show["intent"]["objective"], "Try the JSON envelope surface")
+            self.assertEqual(intent_show["evidence"], [])
+            self.assertEqual(intent_show["decisions"], [])
+            self.assertEqual(intent_show["risks"], [])
+
+            agent_run = json.loads(self._run(env, "agent-run", "--intent", "1", "--role", "planner", "--json"))
+            self.assertEqual(agent_run["schema"], "myos.agent_run.v1")
+            self.assertEqual(agent_run["role"], "planner")
+            self.assertEqual(agent_run["intent_id"], 1)
+            self.assertEqual(agent_run["approval_gate"], False)
+            self.assertIn("run_id", agent_run)
+            self.assertIn("task_id", agent_run)
+
+            # Error envelopes must be schema-stable too so callers can classify.
+            review_error = json.loads(self._run(env, "review-packet", "--plan", "1", "--json", expect_exit=1))
+            self.assertEqual(review_error["schema"], "myos.review_packet.v1")
+            self.assertEqual(review_error["error"], "invalid_request")
+            self.assertEqual(review_error["plan_id"], 1)
+
+            evidence_error = json.loads(
+                self._run(env, "evidence", "attach", "--intent", "1", "--retrieval-run", "99", "--json", expect_exit=1)
+            )
+            self.assertEqual(evidence_error["schema"], "myos.evidence.attach.v1")
+            self.assertEqual(evidence_error["error"], "invalid_request")
+            self.assertEqual(evidence_error["intent_id"], 1)
+            self.assertEqual(evidence_error["retrieval_run_id"], 99)
+
+            factory_error = json.loads(self._run(env, "factory", "review", "--id", "42", "--json", expect_exit=1))
+            self.assertEqual(factory_error["schema"], "myos.factory.review.v1")
+            self.assertEqual(factory_error["error"], "not_found")
+            self.assertEqual(factory_error["id"], 42)
+
+
 if __name__ == "__main__":
     unittest.main()

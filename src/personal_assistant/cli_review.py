@@ -561,6 +561,7 @@ def cmd_resolve_commitment(args: argparse.Namespace) -> None:
 
 
 def cmd_weekly_review(args: argparse.Namespace) -> None:
+    json_mode = bool(getattr(args, "json", False))
     with connection() as conn:
         open_count = conn.execute("SELECT COUNT(*) AS c FROM work_items WHERE status='open'").fetchone()["c"]
         done_count = conn.execute("SELECT COUNT(*) AS c FROM work_items WHERE status='done'").fetchone()["c"]
@@ -591,6 +592,34 @@ def cmd_weekly_review(args: argparse.Namespace) -> None:
             FROM commitment_log
             """
         ).fetchone()
+    alerts: list[str] = []
+    if risk_count > args.risk_alert:
+        alerts.append("high_risk_load")
+    if (commitment["missed"] or 0) > 0:
+        alerts.append("missed_commitments")
+    if json_mode:
+        payload = {
+            "schema": "myos.weekly_review.v1",
+            "window_days": int(args.days),
+            "risk_threshold": int(args.risk_threshold),
+            "counts": {
+                "open": int(open_count or 0),
+                "done": int(done_count or 0),
+                "at_risk": int(risk_count or 0),
+                "open_intents": int(intent_count or 0),
+                "evidence_gaps": int(evidence_gap_count or 0),
+                "review_evidence": int(evidence_count or 0),
+            },
+            "commitments": {
+                "on_time": int(commitment["on_time"] or 0),
+                "late": int(commitment["late"] or 0),
+                "missed": int(commitment["missed"] or 0),
+                "open": int(commitment["open_c"] or 0),
+            },
+            "alerts": alerts,
+        }
+        print(json.dumps(payload, ensure_ascii=True))
+        return
     print(f"Weekly review ({args.days}d window):")
     print(f"- open={open_count} done={done_count} at_risk={risk_count}")
     print(f"- open_intents={intent_count} evidence_gaps={evidence_gap_count}")
@@ -599,9 +628,9 @@ def cmd_weekly_review(args: argparse.Namespace) -> None:
         f"late={commitment['late'] or 0} missed={commitment['missed'] or 0} open={commitment['open_c'] or 0}"
     )
     print(f"- review evidence captured={evidence_count}")
-    if risk_count > args.risk_alert:
+    if "high_risk_load" in alerts:
         print("- Alert: risk load is high, run `myos stop-doing` and rebalance commitments.")
-    if (commitment["missed"] or 0) > 0:
+    if "missed_commitments" in alerts:
         print("- Alert: missed commitments detected; renegotiate deadlines and update owners.")
 
 
@@ -682,13 +711,24 @@ def _daily_candidate(
     }
 
 
-def _print_best_daily_candidate(candidates: list[dict[str, object]]) -> None:
+def _select_best_daily_candidate(
+    candidates: list[dict[str, object]],
+) -> tuple[dict[str, object] | None, dict[str, object] | None]:
+    """Return (winner, baseline) — baseline is the top-ranked by base_rank,
+    winner is the top-ranked after feedback adjustment. Both may be None when
+    the candidate list is empty."""
     if not candidates:
-        print("- No open items. Capture and triage first.")
-        return
+        return None, None
     baseline = sorted(candidates, key=lambda item: -int(item["base_rank"]))[0]
     candidates.sort(key=lambda item: (-int(item["score"]), -int(item["base_rank"])))
-    winner = candidates[0]
+    return candidates[0], baseline
+
+
+def _print_best_daily_candidate(candidates: list[dict[str, object]]) -> None:
+    winner, baseline = _select_best_daily_candidate(candidates)
+    if winner is None or baseline is None:
+        print("- No open items. Capture and triage first.")
+        return
     print(str(winner["line"]))
     if str(winner["label"]) != str(baseline["label"]):
         selected_feedback_score = int(winner["feedback_score"])
@@ -700,7 +740,33 @@ def _print_best_daily_candidate(candidates: list[dict[str, object]]) -> None:
         )
 
 
+def _daily_candidate_json(item: dict[str, object]) -> dict[str, object]:
+    return {
+        "label": str(item.get("label") or ""),
+        "base_rank": int(item.get("base_rank") or 0),
+        "feedback_score": int(item.get("feedback_score") or 0),
+        "score": int(item.get("score") or 0),
+        "line": str(item.get("line") or ""),
+    }
+
+
+def _emit_next_action_json(mode: str, candidates: list[dict[str, object]]) -> None:
+    winner, baseline = _select_best_daily_candidate(candidates)
+    payload = {
+        "schema": "myos.next_action.v1",
+        "mode": str(mode),
+        "winner": _daily_candidate_json(winner) if winner else None,
+        "baseline": _daily_candidate_json(baseline) if baseline else None,
+        "feedback_adjusted": bool(
+            winner is not None and baseline is not None and str(winner.get("label")) != str(baseline.get("label"))
+        ),
+        "candidates": [_daily_candidate_json(item) for item in candidates],
+    }
+    print(json.dumps(payload, ensure_ascii=True))
+
+
 def cmd_next_action(args: argparse.Namespace) -> None:
+    json_mode = bool(getattr(args, "json", False))
     with connection() as conn:
         mode = detect_mode(args.meeting_hours)
         risk = conn.execute(
@@ -732,7 +798,6 @@ def cmd_next_action(args: argparse.Namespace) -> None:
             """
         ).fetchone()
 
-        print(f"Next action recommendation (mode={mode}):")
         candidates: list[dict[str, object]] = []
         if mode == "meeting-heavy":
             if waiting:
@@ -771,6 +836,10 @@ def cmd_next_action(args: argparse.Namespace) -> None:
                         line=f"- Keep one tiny win only: #{deep['id']} {deep['title']}",
                     )
                 )
+            if json_mode:
+                _emit_next_action_json(mode, candidates)
+                return
+            print(f"Next action recommendation (mode={mode}):")
             _print_best_daily_candidate(candidates)
             return
 
@@ -797,4 +866,8 @@ def cmd_next_action(args: argparse.Namespace) -> None:
                     line=f"- Focus block target: #{deep['id']} {deep['title']} (kind={deep['kind']})",
                 )
             )
+        if json_mode:
+            _emit_next_action_json(mode, candidates)
+            return
+        print(f"Next action recommendation (mode={mode}):")
         _print_best_daily_candidate(candidates)

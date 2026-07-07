@@ -76,6 +76,41 @@ def create_plan(
     return plan_id
 
 
+def list_plans(
+    conn: sqlite3.Connection,
+    *,
+    intent_id: int | None = None,
+    status: str = "",
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Return the most recent plans with optional intent/status filters.
+
+    Kept as a narrow projection (id, intent_id, title, summary, status,
+    timestamps) so callers reason about the plan queue without loading the
+    per-plan steps/risks/validations — those live on ``get_plan``."""
+    clauses = []
+    params: list[Any] = []
+    if intent_id is not None:
+        clauses.append("intent_id = ?")
+        params.append(int(intent_id))
+    if status:
+        clauses.append("status = ?")
+        params.append(str(status))
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(int(limit))
+    rows = conn.execute(
+        f"""
+        SELECT id, intent_id, title, summary, status, created_at, updated_at
+        FROM plans
+        {where}
+        ORDER BY updated_at DESC, id DESC
+        LIMIT ?
+        """,
+        tuple(params),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def get_plan(conn: sqlite3.Connection, plan_id: int) -> dict[str, Any] | None:
     row = conn.execute("SELECT * FROM plans WHERE id = ?", (int(plan_id),)).fetchone()
     if not row:
