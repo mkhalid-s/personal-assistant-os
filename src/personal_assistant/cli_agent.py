@@ -337,24 +337,25 @@ def cmd_coach(args: argparse.Namespace) -> None:
 
 
 def cmd_agent_status(args: argparse.Namespace) -> None:
+    json_mode = bool(getattr(args, "json", False))
     with connection() as conn:
         if args.task:
             task = conn.execute("SELECT * FROM agent_tasks WHERE id = ?", (args.task,)).fetchone()
             if not task:
-                print("Agent task not found.")
+                if json_mode:
+                    print(
+                        json.dumps(
+                            {"schema": "myos.agent_status.v1", "error": "not_found", "task_id": int(args.task)},
+                            ensure_ascii=True,
+                        )
+                    )
+                else:
+                    print("Agent task not found.")
                 return
-            print(f"Agent task #{task['id']}: {task['objective']}")
-            print(f"- status={task['status']} priority={task['priority']} updated={task['updated_at']}")
-            if task["context"]:
-                print(f"- context={task['context']}")
             actions = conn.execute(
                 "SELECT id, action_type, title, status, result FROM agent_actions WHERE agent_task_id=? ORDER BY id ASC",
                 (args.task,),
             ).fetchall()
-            print("Actions:")
-            for row in actions:
-                suffix = f" result={row['result']}" if row["result"] else ""
-                print(f"- #{row['id']} [{row['action_type']}] {row['title']} status={row['status']}{suffix}")
             observations = conn.execute(
                 """
                 SELECT observation_type, content, confidence
@@ -365,6 +366,46 @@ def cmd_agent_status(args: argparse.Namespace) -> None:
                 """,
                 (args.task, args.limit),
             ).fetchall()
+            if json_mode:
+                payload = {
+                    "schema": "myos.agent_status.v1",
+                    "task": {
+                        "id": int(task["id"]),
+                        "objective": str(task["objective"] or ""),
+                        "status": str(task["status"] or ""),
+                        "priority": int(task["priority"]) if task["priority"] is not None else None,
+                        "context": str(task["context"] or ""),
+                        "updated_at": str(task["updated_at"] or ""),
+                    },
+                    "actions": [
+                        {
+                            "id": int(row["id"]),
+                            "action_type": str(row["action_type"] or ""),
+                            "title": str(row["title"] or ""),
+                            "status": str(row["status"] or ""),
+                            "result": str(row["result"] or ""),
+                        }
+                        for row in actions
+                    ],
+                    "observations": [
+                        {
+                            "observation_type": str(row["observation_type"] or ""),
+                            "content": str(row["content"] or ""),
+                            "confidence": float(row["confidence"]) if row["confidence"] is not None else None,
+                        }
+                        for row in observations
+                    ],
+                }
+                print(json.dumps(payload, ensure_ascii=True))
+                return
+            print(f"Agent task #{task['id']}: {task['objective']}")
+            print(f"- status={task['status']} priority={task['priority']} updated={task['updated_at']}")
+            if task["context"]:
+                print(f"- context={task['context']}")
+            print("Actions:")
+            for row in actions:
+                suffix = f" result={row['result']}" if row["result"] else ""
+                print(f"- #{row['id']} [{row['action_type']}] {row['title']} status={row['status']}{suffix}")
             print("Observations:")
             for row in observations:
                 print(f"- [{row['observation_type']}] confidence={row['confidence']:.2f} {row['content']}")
@@ -379,6 +420,24 @@ def cmd_agent_status(args: argparse.Namespace) -> None:
             """,
             (args.limit,),
         ).fetchall()
+    if json_mode:
+        payload = {
+            "schema": "myos.agent_status.list.v1",
+            "count": len(rows),
+            "limit": int(args.limit),
+            "tasks": [
+                {
+                    "id": int(row["id"]),
+                    "objective": str(row["objective"] or ""),
+                    "status": str(row["status"] or ""),
+                    "priority": int(row["priority"]) if row["priority"] is not None else None,
+                    "updated_at": str(row["updated_at"] or ""),
+                }
+                for row in rows
+            ],
+        }
+        print(json.dumps(payload, ensure_ascii=True))
+        return
     if not rows:
         print("No agent tasks found.")
         return
@@ -780,14 +839,39 @@ def cmd_execution_receipt(args: argparse.Namespace) -> None:
 
 
 def cmd_agent_run(args: argparse.Namespace) -> None:
+    json_mode = bool(getattr(args, "json", False))
     with connection() as conn:
         intent = intents.get_intent(conn, args.intent)
         if intent is None:
-            print(f"Intent #{args.intent} not found.")
+            if json_mode:
+                print(
+                    json.dumps(
+                        {
+                            "schema": "myos.agent_run.v1",
+                            "error": "intent_not_found",
+                            "intent_id": int(args.intent),
+                        },
+                        ensure_ascii=True,
+                    )
+                )
+            else:
+                print(f"Intent #{args.intent} not found.")
             raise SystemExit(1)
         plan = plans.get_plan(conn, args.plan) if args.plan else None
         if args.plan and plan is None:
-            print(f"Plan #{args.plan} not found.")
+            if json_mode:
+                print(
+                    json.dumps(
+                        {
+                            "schema": "myos.agent_run.v1",
+                            "error": "plan_not_found",
+                            "plan_id": int(args.plan),
+                        },
+                        ensure_ascii=True,
+                    )
+                )
+            else:
+                print(f"Plan #{args.plan} not found.")
             raise SystemExit(1)
         role = args.role
         objective = f"{role}: {intent['objective']}"
@@ -841,10 +925,24 @@ def cmd_agent_run(args: argparse.Namespace) -> None:
             json.dumps({"intent_id": int(args.intent), "role": role, "plan_id": args.plan}, ensure_ascii=True),
         )
         conn.commit()
-        print(f"Agent run #{run_id} [{role}] for intent #{args.intent}")
-        print(f"task: #{task_id}")
-        print(f"summary: {summary}")
-        print(f"approval_gate: {role_packet['approval_gate']}")
+    if json_mode:
+        payload = {
+            "schema": "myos.agent_run.v1",
+            "run_id": int(run_id),
+            "task_id": int(task_id),
+            "role": str(role),
+            "intent_id": int(args.intent),
+            "plan_id": int(args.plan) if args.plan else None,
+            "retrieval_run_id": int(args.retrieval_run) if args.retrieval_run else None,
+            "summary": str(summary),
+            "approval_gate": bool(role_packet["approval_gate"]),
+        }
+        print(json.dumps(payload, ensure_ascii=True))
+        return
+    print(f"Agent run #{run_id} [{role}] for intent #{args.intent}")
+    print(f"task: #{task_id}")
+    print(f"summary: {summary}")
+    print(f"approval_gate: {role_packet['approval_gate']}")
 
 
 def cmd_action_provider(args: argparse.Namespace) -> None:

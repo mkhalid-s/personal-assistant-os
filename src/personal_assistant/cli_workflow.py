@@ -109,6 +109,7 @@ def cmd_triage(_: argparse.Namespace) -> None:
 def cmd_today(args: argparse.Namespace) -> None:
     meeting_hours = args.meeting_hours
     mode = detect_mode(meeting_hours)
+    json_mode = bool(getattr(args, "json", False))
 
     with connection() as conn:
         top_items = conn.execute(
@@ -128,6 +129,35 @@ def cmd_today(args: argparse.Namespace) -> None:
             LIMIT 3
             """
         ).fetchall()
+
+    if json_mode:
+        payload = {
+            "schema": "myos.today.v1",
+            "mode": str(mode),
+            "meeting_hours": int(meeting_hours) if meeting_hours is not None else None,
+            "top_outcomes": [
+                {
+                    "id": int(item["id"]),
+                    "title": str(item["title"] or ""),
+                    "kind": str(item["kind"] or ""),
+                    "priority": int(item["priority"]) if item["priority"] is not None else None,
+                    "risk_score": int(item["risk_score"]) if item["risk_score"] is not None else 0,
+                    "due_date": str(item["due_date"] or ""),
+                }
+                for item in top_items[:3]
+            ],
+            "risk_watch": [
+                {
+                    "id": int(item["id"]),
+                    "title": str(item["title"] or ""),
+                    "risk_score": int(item["risk_score"]) if item["risk_score"] is not None else 0,
+                    "due_date": str(item["due_date"] or ""),
+                }
+                for item in risky
+            ],
+        }
+        print(json.dumps(payload, ensure_ascii=True))
+        return
 
     print(f"Mode: {mode} (meeting hours: {meeting_hours})")
     print("\nTop outcomes today:")

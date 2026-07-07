@@ -21,6 +21,64 @@ def _intent_list_json_entry(row: dict) -> dict:
     }
 
 
+def _intent_show_json_payload(intent: dict) -> dict:
+    """Full projection of an intent for `intent show --json`. This is a superset
+    of `intent list --json` — the list schema is deliberately narrow for routing
+    decisions; this show schema carries the evidence, decisions, and risks that
+    a supervisor needs to reason about the intent's full state."""
+    return {
+        "schema": "myos.intent.show.v1",
+        "intent": {
+            "id": int(intent["id"]),
+            "status": str(intent.get("status") or ""),
+            "priority": int(intent["priority"]) if intent.get("priority") is not None else None,
+            "objective": str(intent.get("objective") or ""),
+            "context": str(intent.get("context") or ""),
+            "success_criteria": str(intent.get("success_criteria") or ""),
+            "constraints": [str(c) for c in (intent.get("constraints") or [])],
+        },
+        "evidence": [
+            {
+                "id": int(evidence["id"]),
+                "source_type": str(evidence.get("source_type") or ""),
+                "source_id": (str(evidence["source_id"]) if evidence.get("source_id") is not None else None),
+                "summary": str(evidence.get("summary") or ""),
+                "content": str(evidence.get("content") or ""),
+                "confidence": float(evidence["confidence"]) if evidence.get("confidence") is not None else None,
+                "created_at": str(evidence.get("created_at") or ""),
+            }
+            for evidence in (intent.get("evidence") or [])
+        ],
+        "decisions": [
+            {
+                "id": int(decision["id"]),
+                "decision": str(decision.get("decision") or ""),
+                "rationale": str(decision.get("rationale") or ""),
+                "status": str(decision.get("status") or ""),
+                "superseded_by": (
+                    int(decision["superseded_by"]) if decision.get("superseded_by") is not None else None
+                ),
+                "created_at": str(decision.get("created_at") or ""),
+            }
+            for decision in (intent.get("decisions") or [])
+        ],
+        "risks": [
+            {
+                "id": int(risk["id"]),
+                "risk": str(risk.get("risk") or ""),
+                "impact": str(risk.get("impact") or ""),
+                "likelihood": str(risk.get("likelihood") or ""),
+                "mitigation": str(risk.get("mitigation") or ""),
+                "owner": str(risk.get("owner") or ""),
+                "due_date": str(risk.get("due_date") or ""),
+                "status": str(risk.get("status") or ""),
+                "created_at": str(risk.get("created_at") or ""),
+            }
+            for risk in (intent.get("risks") or [])
+        ],
+    }
+
+
 def cmd_intent(args: argparse.Namespace) -> None:
     conn = get_connection()
     try:
@@ -68,8 +126,19 @@ def cmd_intent(args: argparse.Namespace) -> None:
         if action == "show":
             intent = intents.get_intent(conn, args.id)
             if intent is None:
-                print(f"Intent #{args.id} not found.")
+                if json_mode:
+                    print(
+                        json.dumps(
+                            {"schema": "myos.intent.show.v1", "error": "not_found", "id": int(args.id)},
+                            ensure_ascii=True,
+                        )
+                    )
+                else:
+                    print(f"Intent #{args.id} not found.")
                 raise SystemExit(1)
+            if json_mode:
+                print(json.dumps(_intent_show_json_payload(intent), ensure_ascii=True))
+                return
             print(f"Intent #{intent['id']}")
             print(f"Status: {intent['status']}")
             print(f"Priority: {intent['priority']}")
@@ -180,6 +249,48 @@ def cmd_plan(args: argparse.Namespace) -> None:
             print(f"Created plan #{plan_id} for intent #{args.intent}: {plan['title'] if plan else args.title}")
             return
 
+        if action == "list":
+            rows = plans.list_plans(
+                conn,
+                intent_id=getattr(args, "intent", None),
+                status=getattr(args, "status", "") or "",
+                limit=int(getattr(args, "limit", 20) or 20),
+            )
+            if json_mode:
+                payload = {
+                    "schema": "myos.plan.list.v1",
+                    "count": len(rows),
+                    "limit": int(getattr(args, "limit", 20) or 20),
+                    "intent_filter": (int(args.intent) if getattr(args, "intent", None) is not None else None),
+                    "status_filter": str(getattr(args, "status", "") or ""),
+                    "plans": [
+                        {
+                            "id": int(row["id"]),
+                            "intent_id": (int(row["intent_id"]) if row.get("intent_id") is not None else None),
+                            "title": str(row.get("title") or ""),
+                            "summary": str(row.get("summary") or ""),
+                            "status": str(row.get("status") or ""),
+                            "created_at": str(row.get("created_at") or ""),
+                            "updated_at": str(row.get("updated_at") or ""),
+                        }
+                        for row in rows
+                    ],
+                }
+                print(json.dumps(payload, ensure_ascii=True))
+                return
+            if not rows:
+                print("No plans found.")
+                return
+            print("Plans:")
+            for row in rows:
+                intent_ref = f"intent=#{row['intent_id']}" if row.get("intent_id") is not None else "intent=-"
+                summary = f" summary={row['summary']}" if row.get("summary") else ""
+                print(
+                    f"- #{row['id']} {intent_ref} status={row['status']} "
+                    f"updated={row['updated_at']} title={row['title'] or ''}{summary}"
+                )
+            return
+
         if action == "show":
             plan = plans.get_plan(conn, args.id)
             if plan is None:
@@ -226,6 +337,7 @@ def cmd_plan(args: argparse.Namespace) -> None:
 def cmd_evidence(args: argparse.Namespace) -> None:
     conn = get_connection()
     action = getattr(args, "evidence_action", "")
+    json_mode = bool(getattr(args, "json", False))
     if action == "attach":
         try:
             evidence_id = plans.attach_retrieval_run_evidence(
@@ -234,9 +346,36 @@ def cmd_evidence(args: argparse.Namespace) -> None:
                 retrieval_run_id=args.retrieval_run,
             )
         except ValueError as exc:
-            print(str(exc))
+            if json_mode:
+                print(
+                    json.dumps(
+                        {
+                            "schema": "myos.evidence.attach.v1",
+                            "error": "invalid_request",
+                            "message": str(exc),
+                            "intent_id": int(args.intent),
+                            "retrieval_run_id": int(args.retrieval_run),
+                        },
+                        ensure_ascii=True,
+                    )
+                )
+            else:
+                print(str(exc))
             raise SystemExit(1) from exc
         conn.commit()
+        if json_mode:
+            print(
+                json.dumps(
+                    {
+                        "schema": "myos.evidence.attach.v1",
+                        "evidence_id": int(evidence_id),
+                        "intent_id": int(args.intent),
+                        "retrieval_run_id": int(args.retrieval_run),
+                    },
+                    ensure_ascii=True,
+                )
+            )
+            return
         print(f"Attached retrieval run #{args.retrieval_run} as evidence #{evidence_id} to intent #{args.intent}.")
         return
     if action == "sync-external":
@@ -310,8 +449,31 @@ def cmd_evidence(args: argparse.Namespace) -> None:
     raise SystemExit("Unknown evidence command.")
 
 
+def _review_packet_json_payload(packet_id: int, plan_id: int, packet: dict | None) -> dict:
+    """Full projection of a review packet for `review-packet --json`. Supervisors
+    consume this instead of regex-parsing the human view so they can gate on the
+    exact evidence, risks, and rollback commitments the packet enshrines."""
+    if not packet:
+        return {
+            "schema": "myos.review_packet.v1",
+            "packet_id": int(packet_id),
+            "plan_id": int(plan_id),
+            "summary": "",
+            "packet": {},
+        }
+    body = packet.get("packet") or {}
+    return {
+        "schema": "myos.review_packet.v1",
+        "packet_id": int(packet_id),
+        "plan_id": int(plan_id),
+        "summary": str(packet.get("summary") or ""),
+        "packet": body,
+    }
+
+
 def cmd_review_packet(args: argparse.Namespace) -> None:
     conn = get_connection()
+    json_mode = bool(getattr(args, "json", False))
     try:
         packet_id = plans.create_review_packet(
             conn,
@@ -319,10 +481,26 @@ def cmd_review_packet(args: argparse.Namespace) -> None:
             retrieval_run_id=args.retrieval_run,
         )
     except ValueError as exc:
-        print(str(exc))
+        if json_mode:
+            print(
+                json.dumps(
+                    {
+                        "schema": "myos.review_packet.v1",
+                        "error": "invalid_request",
+                        "message": str(exc),
+                        "plan_id": int(args.plan),
+                    },
+                    ensure_ascii=True,
+                )
+            )
+        else:
+            print(str(exc))
         raise SystemExit(1) from exc
     conn.commit()
     packet = plans.get_review_packet(conn, packet_id)
+    if json_mode:
+        print(json.dumps(_review_packet_json_payload(packet_id, args.plan, packet), ensure_ascii=True))
+        return
     print(f"Review packet #{packet_id} for plan #{args.plan}")
     if packet:
         body = packet["packet"]

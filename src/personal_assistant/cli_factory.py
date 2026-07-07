@@ -279,8 +279,17 @@ def cmd_factory(args: argparse.Namespace) -> None:
 
     if action == "review":
         run = factory.get_factory_run(conn, args.id)
+        json_mode = bool(getattr(args, "json", False))
         if run is None:
-            print(f"Factory run #{args.id} not found.")
+            if json_mode:
+                print(
+                    json.dumps(
+                        {"schema": "myos.factory.review.v1", "error": "not_found", "id": int(args.id)},
+                        ensure_ascii=True,
+                    )
+                )
+            else:
+                print(f"Factory run #{args.id} not found.")
             raise SystemExit(1)
         post_review = {"execution", "learning"}
         gaps = [
@@ -289,7 +298,22 @@ def cmd_factory(args: argparse.Namespace) -> None:
             if s["status"] in {"pending", "blocked"} and s["stage_name"] not in post_review
         ]
         packet = next((a for a in run["artifacts"] if a["artifact_type"] == "review_packet"), None)
-        print(f"Factory review #{args.id}: {'ready_for_approval' if not gaps and packet else 'needs_attention'}")
+        readiness = "ready_for_approval" if not gaps and packet else "needs_attention"
+        if json_mode:
+            payload = {
+                "schema": "myos.factory.review.v1",
+                "id": int(args.id),
+                "readiness": readiness,
+                "review_packet_id": int(packet["artifact_id"]) if packet else None,
+                "gaps": gaps,
+                "workflow_pack": str(run.get("workflow_pack") or ""),
+                "review_context": list(format_factory_review_context(str(run.get("workflow_pack") or ""))),
+                "executor_artifacts": _executor_artifacts(conn, run),
+                "execution_gate": "approval_required",
+            }
+            print(json.dumps(payload, ensure_ascii=True))
+            return
+        print(f"Factory review #{args.id}: {readiness}")
         print(f"review_packet=#{packet['artifact_id'] if packet else 'missing'}")
         if gaps:
             print("Open gaps: " + ", ".join(gaps))
@@ -297,6 +321,73 @@ def cmd_factory(args: argparse.Namespace) -> None:
             print(line)
         _print_executor_artifacts(conn, run)
         print("Execution remains approval-gated.")
+        return
+
+    if action == "list":
+        json_mode = bool(getattr(args, "json", False))
+        status_filter = getattr(args, "status", "") or ""
+        limit = int(getattr(args, "limit", 20) or 20)
+        if status_filter and status_filter != "all":
+            rows = conn.execute(
+                """
+                SELECT id, intent_id, plan_id, mode, workflow_pack, executor_backend, status,
+                       summary, outcome, started_at, finished_at
+                FROM factory_runs
+                WHERE status = ?
+                ORDER BY started_at DESC, id DESC
+                LIMIT ?
+                """,
+                (status_filter, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT id, intent_id, plan_id, mode, workflow_pack, executor_backend, status,
+                       summary, outcome, started_at, finished_at
+                FROM factory_runs
+                ORDER BY started_at DESC, id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        if json_mode:
+            payload = {
+                "schema": "myos.factory.list.v1",
+                "count": len(rows),
+                "limit": limit,
+                "status_filter": str(status_filter) if status_filter else "all",
+                "runs": [
+                    {
+                        "id": int(row["id"]),
+                        "intent_id": int(row["intent_id"]) if row["intent_id"] is not None else None,
+                        "plan_id": int(row["plan_id"]) if row["plan_id"] is not None else None,
+                        "mode": str(row["mode"] or ""),
+                        "workflow_pack": str(row["workflow_pack"] or ""),
+                        "executor_backend": str(row["executor_backend"] or "local"),
+                        "status": str(row["status"] or ""),
+                        "summary": str(row["summary"] or ""),
+                        "outcome": str(row["outcome"] or ""),
+                        "started_at": str(row["started_at"] or ""),
+                        "finished_at": str(row["finished_at"] or ""),
+                    }
+                    for row in rows
+                ],
+            }
+            print(json.dumps(payload, ensure_ascii=True))
+            return
+        if not rows:
+            print("No factory runs recorded.")
+            return
+        print("Factory runs:")
+        for row in rows:
+            executor = row["executor_backend"] or "local"
+            executor_part = f" executor={executor}" if executor != "local" else ""
+            outcome = f" outcome={row['outcome']}" if row["outcome"] else ""
+            print(
+                f"- run #{row['id']} intent=#{row['intent_id']} plan=#{row['plan_id']} "
+                f"mode={row['mode']} pack={row['workflow_pack']}{executor_part} "
+                f"status={row['status']} started={row['started_at']}{outcome}"
+            )
         return
 
     if action == "approve":

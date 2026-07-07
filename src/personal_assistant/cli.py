@@ -1079,6 +1079,7 @@ def cmd_autopilot_status(args: argparse.Namespace) -> None:
 
 
 def cmd_digest(args: argparse.Namespace) -> None:
+    json_mode = bool(getattr(args, "json", False))
     with connection() as conn:
         row = None
         if args.id:
@@ -1096,7 +1097,20 @@ def cmd_digest(args: argparse.Namespace) -> None:
                 """
             ).fetchone()
     if not row:
-        print("No assistant digest found. Run `myos autopilot --once` first.")
+        if json_mode:
+            print(json.dumps({"schema": "myos.digest.v1", "error": "not_found"}, ensure_ascii=True))
+        else:
+            print("No assistant digest found. Run `myos autopilot --once` first.")
+        return
+    if json_mode:
+        payload = {
+            "schema": "myos.digest.v1",
+            "id": int(row["id"]),
+            "title": str(row["title"] or ""),
+            "created_at": str(row["created_at"] or ""),
+            "body": str(row["body"] or "").rstrip(),
+        }
+        print(json.dumps(payload, ensure_ascii=True))
         return
     if args.title_only:
         print(f"Digest #{row['id']}: {row['title']} ({row['created_at']})")
@@ -1727,6 +1741,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     today = sub.add_parser("today", help="Generate today's focus list.")
     today.add_argument("--meeting-hours", type=float, default=0.0)
+    today.add_argument("--json", action="store_true", help="Emit a single JSON object instead of formatted text.")
     today.set_defaults(func=cmd_today)
 
     risk = sub.add_parser("risk-radar", help="Show current risk-ranked items.")
@@ -1770,6 +1785,9 @@ def build_parser() -> argparse.ArgumentParser:
     retrieval_run.add_argument("retrieval_run_action", nargs="?", choices=["list", "show"], default="list")
     retrieval_run.add_argument("--id", type=int)
     retrieval_run.add_argument("--limit", type=int, default=10)
+    retrieval_run.add_argument(
+        "--json", action="store_true", help="Emit a single JSON object instead of formatted text."
+    )
     retrieval_run.set_defaults(func=cmd_retrieval_run)
 
     recall = sub.add_parser("recall", help="Scored recall over conversation memory (relevance+recency+importance).")
@@ -1964,6 +1982,7 @@ def build_parser() -> argparse.ArgumentParser:
     weekly.add_argument("--days", type=int, default=7)
     weekly.add_argument("--risk-threshold", type=int, default=60)
     weekly.add_argument("--risk-alert", type=int, default=5)
+    weekly.add_argument("--json", action="store_true", help="Emit a single JSON object instead of formatted text.")
     weekly.set_defaults(func=cmd_weekly_review)
 
     launchd_install = sub.add_parser("launchd-install", help="Install launchd agents for sync/pulse.")
@@ -2034,6 +2053,7 @@ def build_parser() -> argparse.ArgumentParser:
     next_action = sub.add_parser("next-action", help="Recommend one highest-value next action.")
     next_action.add_argument("--meeting-hours", type=float, default=0.0)
     next_action.add_argument("--risk-threshold", type=int, default=60)
+    next_action.add_argument("--json", action="store_true", help="Emit a single JSON object instead of formatted text.")
     next_action.set_defaults(func=cmd_next_action)
 
     snapshot = sub.add_parser("snapshot", help="Export machine-readable state snapshot as JSON.")
@@ -2144,6 +2164,7 @@ def build_parser() -> argparse.ArgumentParser:
     intent_list.set_defaults(func=cmd_intent)
     intent_show = intent_sub.add_parser("show", help="Show one intent with evidence.")
     intent_show.add_argument("--id", type=int, required=True)
+    intent_show.add_argument("--json", action="store_true", help="Emit a single JSON object instead of formatted text.")
     intent_show.set_defaults(func=cmd_intent)
     intent_evidence = intent_sub.add_parser("evidence", help="Manage intent evidence.")
     evidence_sub = intent_evidence.add_subparsers(dest="evidence_action", required=True)
@@ -2167,12 +2188,21 @@ def build_parser() -> argparse.ArgumentParser:
     plan_show.add_argument("--id", type=int, required=True)
     plan_show.add_argument("--json", action="store_true", help="Emit a single JSON object instead of formatted text.")
     plan_show.set_defaults(func=cmd_plan)
+    plan_list = plan_sub.add_parser("list", help="List draft plans.")
+    plan_list.add_argument("--intent", type=int, help="Optional intent id filter.")
+    plan_list.add_argument("--status", default="", help="Optional status filter.")
+    plan_list.add_argument("--limit", type=int, default=20)
+    plan_list.add_argument("--json", action="store_true", help="Emit a single JSON object instead of formatted text.")
+    plan_list.set_defaults(func=cmd_plan)
 
     evidence = sub.add_parser("evidence", help="Attach evidence artifacts to intents.")
     evidence_sub = evidence.add_subparsers(dest="evidence_action", required=True)
     evidence_attach = evidence_sub.add_parser("attach", help="Attach a retrieval run to an intent.")
     evidence_attach.add_argument("--intent", type=int, required=True)
     evidence_attach.add_argument("--retrieval-run", type=int, required=True)
+    evidence_attach.add_argument(
+        "--json", action="store_true", help="Emit a single JSON object instead of formatted text."
+    )
     evidence_attach.set_defaults(func=cmd_evidence)
     evidence_sync = evidence_sub.add_parser("sync-external", help="Map synced external items into intent evidence.")
     evidence_sync.add_argument("--intent", type=int, required=True)
@@ -2183,6 +2213,9 @@ def build_parser() -> argparse.ArgumentParser:
     review_packet = sub.add_parser("review-packet", help="Build a review packet for a plan.")
     review_packet.add_argument("--plan", type=int, required=True)
     review_packet.add_argument("--retrieval-run", type=int)
+    review_packet.add_argument(
+        "--json", action="store_true", help="Emit a single JSON object instead of formatted text."
+    )
     review_packet.set_defaults(func=cmd_review_packet)
 
     factory_parser = sub.add_parser("factory", help="Run review-first AI factory workflows.")
@@ -2223,7 +2256,17 @@ def build_parser() -> argparse.ArgumentParser:
     factory_continue.set_defaults(func=cmd_factory)
     factory_review = factory_sub.add_parser("review", help="Review factory readiness before approval.")
     factory_review.add_argument("--id", type=int, required=True)
+    factory_review.add_argument(
+        "--json", action="store_true", help="Emit a single JSON object instead of formatted text."
+    )
     factory_review.set_defaults(func=cmd_factory)
+    factory_list = factory_sub.add_parser("list", help="List recent factory runs.")
+    factory_list.add_argument("--status", default="", help="Optional status filter (e.g., proposed, approved).")
+    factory_list.add_argument("--limit", type=int, default=20)
+    factory_list.add_argument(
+        "--json", action="store_true", help="Emit a single JSON object instead of formatted text."
+    )
+    factory_list.set_defaults(func=cmd_factory)
     factory_approve = factory_sub.add_parser(
         "approve", help="Approve a factory run, optionally handing off to execution gates."
     )
@@ -2306,11 +2349,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     agent_run.add_argument("--plan", type=int)
     agent_run.add_argument("--retrieval-run", type=int)
+    agent_run.add_argument("--json", action="store_true", help="Emit a single JSON object instead of formatted text.")
     agent_run.set_defaults(func=cmd_agent_run)
 
     agent_status = sub.add_parser("agent-status", help="Show assistant tasks, actions, and observations.")
     agent_status.add_argument("--task", type=int)
     agent_status.add_argument("--limit", type=int, default=20)
+    agent_status.add_argument(
+        "--json", action="store_true", help="Emit a single JSON object instead of formatted text."
+    )
     agent_status.set_defaults(func=cmd_agent_status)
 
     autopilot = sub.add_parser("autopilot", help="Run the always-on intelligent assistant loop.")
@@ -2390,6 +2437,7 @@ def build_parser() -> argparse.ArgumentParser:
     digest = sub.add_parser("digest", help="Show latest assistant digest.")
     digest.add_argument("--id", type=int, default=0)
     digest.add_argument("--title-only", action="store_true")
+    digest.add_argument("--json", action="store_true", help="Emit a single JSON object instead of formatted text.")
     digest.set_defaults(func=cmd_digest)
 
     goal = sub.add_parser("goal", help="Manage standing goals that autopilot evaluates automatically.")
