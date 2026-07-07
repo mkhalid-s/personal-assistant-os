@@ -4,6 +4,7 @@ import json
 import os
 import shlex
 import shutil
+import sqlite3
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -170,10 +171,14 @@ def parse_zero_stream(stdout: str, *, exit_code: int = 0, stderr: str = "") -> Z
             result.final_text = str(event.get("text") or "")
         elif event_type == "run_end":
             result.status = str(event.get("status") or "") or status_from_exit(exit_code)
-            if event.get("exitCode") is not None:
-                try:
-                    result.exit_code = int(event.get("exitCode"))
-                except (TypeError, ValueError):
+            raw_exit = event.get("exitCode")
+            if raw_exit is not None:
+                if isinstance(raw_exit, (int, str, float)):
+                    try:
+                        result.exit_code = int(raw_exit)
+                    except (TypeError, ValueError):
+                        result.protocol_errors.append(f"line {line_no}: invalid exitCode")
+                else:
                     result.protocol_errors.append(f"line {line_no}: invalid exitCode")
     if not result.status:
         result.status = status_from_exit(result.exit_code)
@@ -235,7 +240,7 @@ def result_payload(result: ZeroRunResult) -> dict[str, Any]:
 
 
 def record_zero_agent_run(
-    conn,
+    conn: sqlite3.Connection,
     *,
     task_id: int,
     result: ZeroRunResult,
