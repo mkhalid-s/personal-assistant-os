@@ -32,6 +32,7 @@ Implemented scope:
 - Feed the registry into `myos help`, router command visibility, and the router model prompt.
 - Keep the registry static and cheap to load. Do not introspect argparse on every request.
 - Verify release readiness with a command contract audit that detects parser/registry drift, malformed examples, missing summaries, invalid safety metadata, and risky commands without confirmation.
+- Guarantee database connection hygiene: long-lived CLI handlers (starting with the workflow worker) close their SQLite connection on every exit path, and CI runs the unittest suite under `-W error::ResourceWarning` so any future unclosed connection, file, or subprocess is a build failure rather than silent noise.
 
 Useful command:
 

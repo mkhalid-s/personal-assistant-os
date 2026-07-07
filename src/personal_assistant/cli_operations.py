@@ -442,69 +442,72 @@ def cmd_queue_add(args: argparse.Namespace) -> None:
 
 def cmd_worker(args: argparse.Namespace, deps: OperationsDependencies) -> None:
     conn = get_connection()
-    candidates = conn.execute(
-        """
-        SELECT id, workflow_name, payload_json
-        FROM workflow_queue
-        WHERE status='queued'
-        ORDER BY created_at ASC
-        LIMIT ?
-        """,
-        (args.limit,),
-    ).fetchall()
-    if not candidates:
-        print("Worker: no queued jobs.")
-        return
-    processed = 0
-    for row in candidates:
-        job_id = int(row["id"])
-        workflow = row["workflow_name"]
-        # Atomic compare-and-claim: only the worker whose UPDATE flips queued->running
-        # processes this job. Two concurrent workers can no longer double-run it.
-        claim = conn.execute(
-            "UPDATE workflow_queue SET status='running', started_at=CURRENT_TIMESTAMP WHERE id = ? AND status='queued'",
-            (job_id,),
-        )
-        conn.commit()
-        if claim.rowcount != 1:
-            continue  # already claimed by another worker
-        processed += 1
-        try:
-            payload = json.loads(row["payload_json"] or "{}")
-            orchestrate = deps.orchestrate_command or (lambda orch_args: cmd_orchestrate(orch_args, deps))
-            orchestrate(
-                argparse.Namespace(
-                    workflow=workflow,
-                    env_file=str(payload.get("env_file", "")),
-                    connector=str(payload.get("connector", "all")),
-                    meeting_hours=float(payload.get("meeting_hours", 0.0)),
-                    external_limit=int(payload.get("external_limit", 100)),
-                    media_limit=int(payload.get("media_limit", 30)),
-                    min_confidence=float(payload.get("min_confidence", 0.65)),
-                    risk_threshold=int(payload.get("risk_threshold", 60)),
-                    capacity=int(payload.get("capacity", 8)),
-                    deep_budget=int(payload.get("deep_budget", 3)),
-                    keep_risk=int(payload.get("keep_risk", 60)),
-                    stop_limit=int(payload.get("stop_limit", 10)),
-                    output_dir=str(payload.get("output_dir", "")),
-                )
-            )
-            conn.execute(
-                "UPDATE workflow_queue SET status='completed', finished_at=CURRENT_TIMESTAMP, last_error='' WHERE id = ?",
+    try:
+        candidates = conn.execute(
+            """
+            SELECT id, workflow_name, payload_json
+            FROM workflow_queue
+            WHERE status='queued'
+            ORDER BY created_at ASC
+            LIMIT ?
+            """,
+            (args.limit,),
+        ).fetchall()
+        if not candidates:
+            print("Worker: no queued jobs.")
+            return
+        processed = 0
+        for row in candidates:
+            job_id = int(row["id"])
+            workflow = row["workflow_name"]
+            # Atomic compare-and-claim: only the worker whose UPDATE flips queued->running
+            # processes this job. Two concurrent workers can no longer double-run it.
+            claim = conn.execute(
+                "UPDATE workflow_queue SET status='running', started_at=CURRENT_TIMESTAMP WHERE id = ? AND status='queued'",
                 (job_id,),
             )
             conn.commit()
-            print(f"Worker completed job #{job_id} ({workflow})")
-        except Exception as exc:
-            conn.execute(
-                """
-                UPDATE workflow_queue
-                SET status='failed', finished_at=CURRENT_TIMESTAMP, last_error=?
-                WHERE id = ?
-                """,
-                (str(exc), job_id),
-            )
-            conn.commit()
-            print(f"Worker failed job #{job_id} ({workflow}): {exc}")
-    if processed == 0:
-        print("Worker: all queued jobs were already claimed by another worker.")
+            if claim.rowcount != 1:
+                continue  # already claimed by another worker
+            processed += 1
+            try:
+                payload = json.loads(row["payload_json"] or "{}")
+                orchestrate = deps.orchestrate_command or (lambda orch_args: cmd_orchestrate(orch_args, deps))
+                orchestrate(
+                    argparse.Namespace(
+                        workflow=workflow,
+                        env_file=str(payload.get("env_file", "")),
+                        connector=str(payload.get("connector", "all")),
+                        meeting_hours=float(payload.get("meeting_hours", 0.0)),
+                        external_limit=int(payload.get("external_limit", 100)),
+                        media_limit=int(payload.get("media_limit", 30)),
+                        min_confidence=float(payload.get("min_confidence", 0.65)),
+                        risk_threshold=int(payload.get("risk_threshold", 60)),
+                        capacity=int(payload.get("capacity", 8)),
+                        deep_budget=int(payload.get("deep_budget", 3)),
+                        keep_risk=int(payload.get("keep_risk", 60)),
+                        stop_limit=int(payload.get("stop_limit", 10)),
+                        output_dir=str(payload.get("output_dir", "")),
+                    )
+                )
+                conn.execute(
+                    "UPDATE workflow_queue SET status='completed', finished_at=CURRENT_TIMESTAMP, last_error='' WHERE id = ?",
+                    (job_id,),
+                )
+                conn.commit()
+                print(f"Worker completed job #{job_id} ({workflow})")
+            except Exception as exc:
+                conn.execute(
+                    """
+                    UPDATE workflow_queue
+                    SET status='failed', finished_at=CURRENT_TIMESTAMP, last_error=?
+                    WHERE id = ?
+                    """,
+                    (str(exc), job_id),
+                )
+                conn.commit()
+                print(f"Worker failed job #{job_id} ({workflow}): {exc}")
+        if processed == 0:
+            print("Worker: all queued jobs were already claimed by another worker.")
+    finally:
+        conn.close()

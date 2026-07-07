@@ -56,6 +56,9 @@ All notable changes to this project will be documented in this file.
 - Local model command mapper now includes dry-run, side-effect, restore, OS-service, and long-running metadata for runtime and recovery commands.
 - Runtime recommendations now use command side-effect metadata to prefer diagnostics, dry-runs, backups, and approval review before risky setup or service changes.
 - Release readiness now includes a command contract audit so registered CLI commands keep parser coverage, examples, summaries, safety metadata, and confirmation boundaries in sync.
+- Worker command now always closes its SQLite connection on every path (early return, per-job failure, normal completion) so repeated invocations no longer leak connections in tests or automation runs.
+- Provider backend tests now register connection cleanup so in-memory SQLite databases are torn down deterministically.
+- CI unittest step now runs under `-W error::ResourceWarning` so any future unclosed database, file, or subprocess resource fails the build instead of leaking silently.
 - Approval, action, execution receipt, and factory review outputs now surface side-effect classes, dry-run status, and safer next commands.
 - Execution receipts now persist compact approval context for retrospective learning without adding schema or storing new raw command arguments.
 - Approval recommendations now use persisted side-effect learning as an advisory ranking signal while static policy still controls approval gates.

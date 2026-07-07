@@ -20,6 +20,7 @@ class ProviderBackendTest(unittest.TestCase):
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
         initialize_schema(conn)
+        self.addCleanup(conn.close)
         return conn
 
     def test_cursor_backend_is_first_class_and_uses_prompt_argument(self) -> None:
