@@ -2481,12 +2481,14 @@ def build_parser() -> argparse.ArgumentParser:
     approve.add_argument("--action", type=int)
     approve.add_argument("--execute", action="store_true")
     approve.add_argument("--limit", type=int, default=20)
+    approve.add_argument("--json", action="store_true", help="With --list, emit a single JSON object instead of formatted text.")
     approve.set_defaults(func=cmd_approve)
 
     receipt = sub.add_parser("execution-receipt", help="Inspect action execution receipts.")
     receipt.add_argument("receipt_action", nargs="?", choices=["list", "show"], default="list")
     receipt.add_argument("--id", type=int)
     receipt.add_argument("--limit", type=int, default=20)
+    receipt.add_argument("--json", action="store_true", help="Emit a single JSON object instead of formatted text.")
     receipt.set_defaults(func=cmd_execution_receipt)
 
     autopilot_status = sub.add_parser("autopilot-status", help="Show autopilot runs and pending approvals.")

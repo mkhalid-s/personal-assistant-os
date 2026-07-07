@@ -391,19 +391,61 @@ def cmd_agent_status(args: argparse.Namespace) -> None:
         print(f"- task #{row['id']} status={row['status']} priority={row['priority']} updated={row['updated_at']} objective={title}")
 
 
+def _approval_queue_rows(conn, limit: int) -> list:
+    return conn.execute(
+        """
+        SELECT id, agent_task_id, action_type, title, status, payload_json,
+               requires_approval, created_at
+        FROM agent_actions
+        WHERE requires_approval=1 AND status IN ('proposed', 'approved')
+        ORDER BY created_at ASC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+
+
+def _approval_queue_json_entry(row) -> dict:
+    """Machine-readable snapshot of one queued approval. Preview is bounded to
+    a short redaction-safe snippet so downstream consumers never receive
+    unbounded payload bodies."""
+    payload = json.loads(row["payload_json"] or "{}")
+    preview = payload.get("draft") or payload.get("text") or ""
+    if not isinstance(preview, str):
+        preview = str(preview)
+    snippet = preview if len(preview) <= 220 else preview[:217] + "..."
+    rollback = payload.get("rollback_note") or payload.get("rollback") or ""
+    review_context = list(
+        format_action_review_context(str(row["action_type"]), payload, requires_approval=True)
+    )
+    return {
+        "id": int(row["id"]),
+        "agent_task_id": int(row["agent_task_id"]) if row["agent_task_id"] is not None else None,
+        "action_type": str(row["action_type"]),
+        "title": str(row["title"] or ""),
+        "status": str(row["status"] or ""),
+        "created_at": str(row["created_at"] or ""),
+        "target": _provider_target_summary(payload),
+        "rollback": str(rollback) if rollback else "",
+        "preview": snippet,
+        "review_context": review_context,
+    }
+
+
 def cmd_approve(args: argparse.Namespace) -> None:
     conn = get_connection()
+    json_mode = bool(getattr(args, "json", False))
     if args.list:
-        rows = conn.execute(
-            """
-            SELECT id, agent_task_id, action_type, title, status, payload_json
-            FROM agent_actions
-            WHERE requires_approval=1 AND status IN ('proposed', 'approved')
-            ORDER BY created_at ASC
-            LIMIT ?
-            """,
-            (args.limit,),
-        ).fetchall()
+        rows = _approval_queue_rows(conn, int(args.limit))
+        if json_mode:
+            payload = {
+                "schema": "myos.approve.list.v1",
+                "count": len(rows),
+                "limit": int(args.limit),
+                "actions": [_approval_queue_json_entry(row) for row in rows],
+            }
+            print(json.dumps(payload, ensure_ascii=True))
+            return
         if not rows:
             print("No approval-needed actions.")
             return
@@ -424,30 +466,120 @@ def cmd_approve(args: argparse.Namespace) -> None:
                 print(f"  preview: {snippet}")
         return
     if args.action is None:
-        print("Provide --action ID or use --list.")
+        if json_mode:
+            print(json.dumps({"schema": "myos.approve.list.v1", "error": "provide --action or --list"}, ensure_ascii=True))
+        else:
+            print("Provide --action ID or use --list.")
         raise SystemExit(1)
     cmd_act(argparse.Namespace(task=None, action=args.action, list=False, approve=True, execute=args.execute, limit=args.limit))
 
 
+def _receipt_show_row(conn, receipt_id: int):
+    return conn.execute(
+        """
+        SELECT r.*, a.title
+        FROM action_execution_receipts r
+        JOIN agent_actions a ON a.id = r.agent_action_id
+        WHERE r.id = ?
+        """,
+        (int(receipt_id),),
+    ).fetchone()
+
+
+def _receipt_list_rows(conn, limit: int) -> list:
+    return conn.execute(
+        """
+        SELECT id, agent_action_id, action_type, final_status, approved,
+               follow_up_required, follow_up_inbox_id, request_json, created_at
+        FROM action_execution_receipts
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?
+        """,
+        (int(limit),),
+    ).fetchall()
+
+
+_OUTBOX_SENTINEL: object = object()
+
+
+def _receipt_json_entry(row, *, outbox: object = _OUTBOX_SENTINEL) -> dict:
+    """Machine-readable snapshot of one execution receipt. Includes the
+    approval integrity envelope and verification receipt for automated
+    audit consumers; excludes raw payload bodies so nothing user-derived
+    leaks through the JSON channel. When `outbox` is passed explicitly
+    (including `None`), it is always included so the show payload keeps a
+    stable schema regardless of whether an outbox row exists."""
+    try:
+        request = json.loads(row["request_json"] or "{}")
+    except (TypeError, ValueError):
+        request = {}
+    integrity = request.get("approval_integrity") if isinstance(request, dict) else None
+    verification = request.get("verification") if isinstance(request, dict) else None
+    approval_context = request.get("approval_context") if isinstance(request, dict) else None
+    entry: dict = {
+        "id": int(row["id"]),
+        "agent_action_id": int(row["agent_action_id"]) if row["agent_action_id"] is not None else None,
+        "action_type": str(row["action_type"] or ""),
+        "final_status": str(row["final_status"] or ""),
+        "approved": bool(row["approved"]),
+        "follow_up_required": bool(row["follow_up_required"]),
+        "follow_up_inbox_id": int(row["follow_up_inbox_id"]) if row["follow_up_inbox_id"] else None,
+        "created_at": str(row["created_at"] or ""),
+        "approval_integrity": integrity if isinstance(integrity, dict) else None,
+        "verification": verification if isinstance(verification, dict) else None,
+        "approval_context": approval_context if isinstance(approval_context, dict) else None,
+    }
+    if outbox is not _OUTBOX_SENTINEL:
+        entry["outbox"] = outbox
+    return entry
+
+
 def cmd_execution_receipt(args: argparse.Namespace) -> None:
     conn = get_connection()
+    json_mode = bool(getattr(args, "json", False))
     action = getattr(args, "receipt_action", "list") or "list"
     if action == "show":
         if not args.id:
-            print("--id is required for receipt show.")
+            if json_mode:
+                print(json.dumps({"schema": "myos.execution_receipt.show.v1", "error": "--id is required"}, ensure_ascii=True))
+            else:
+                print("--id is required for receipt show.")
             raise SystemExit(1)
-        row = conn.execute(
-            """
-            SELECT r.*, a.title
-            FROM action_execution_receipts r
-            JOIN agent_actions a ON a.id = r.agent_action_id
-            WHERE r.id = ?
-            """,
-            (int(args.id),),
-        ).fetchone()
+        row = _receipt_show_row(conn, int(args.id))
         if not row:
-            print(f"Execution receipt #{args.id} not found.")
+            if json_mode:
+                print(json.dumps({"schema": "myos.execution_receipt.show.v1", "error": "not_found", "id": int(args.id)}, ensure_ascii=True))
+            else:
+                print(f"Execution receipt #{args.id} not found.")
             raise SystemExit(1)
+        outbox = conn.execute(
+            """
+            SELECT id, provider, target_type, target_ref, status
+            FROM action_outbox
+            WHERE agent_action_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (int(row["agent_action_id"]),),
+        ).fetchone()
+        outbox_dict = (
+            {
+                "id": int(outbox["id"]),
+                "provider": str(outbox["provider"] or ""),
+                "target_type": str(outbox["target_type"] or ""),
+                "target_ref": str(outbox["target_ref"] or ""),
+                "status": str(outbox["status"] or ""),
+            }
+            if outbox
+            else None
+        )
+        if json_mode:
+            entry = _receipt_json_entry(row, outbox=outbox_dict)
+            entry["title"] = str(row["title"] or "")
+            entry["result"] = str(row["result"] or "")
+            entry["rollback_note"] = str(row["rollback_note"] or "")
+            print(json.dumps({"schema": "myos.execution_receipt.show.v1", "receipt": entry}, ensure_ascii=True))
+            return
         print(f"Execution receipt #{row['id']} action=#{row['agent_action_id']} status={row['final_status']}")
         print(f"Type: {row['action_type']}")
         print(f"Title: {row['title']}")
@@ -486,34 +618,25 @@ def cmd_execution_receipt(args: argparse.Namespace) -> None:
                 print(f"{label.replace('_', ' ').title()}: {detail}")
             else:
                 print(line)
-        outbox = conn.execute(
-            """
-            SELECT id, provider, target_type, target_ref, status
-            FROM action_outbox
-            WHERE agent_action_id = ?
-            ORDER BY id DESC
-            LIMIT 1
-            """,
-            (int(row["agent_action_id"]),),
-        ).fetchone()
-        if outbox:
+        if outbox_dict:
             print(
-                f"Outbox: #{outbox['id']} provider={outbox['provider']} "
-                f"target={outbox['target_type']}:{outbox['target_ref']} status={outbox['status']}"
+                f"Outbox: #{outbox_dict['id']} provider={outbox_dict['provider']} "
+                f"target={outbox_dict['target_type']}:{outbox_dict['target_ref']} status={outbox_dict['status']}"
             )
         print(f"Result: {row['result']}")
         print(f"Rollback: {row['rollback_note']}")
         return
 
-    rows = conn.execute(
-        """
-        SELECT id, agent_action_id, action_type, final_status, approved, follow_up_required, follow_up_inbox_id, request_json, created_at
-        FROM action_execution_receipts
-        ORDER BY created_at DESC, id DESC
-        LIMIT ?
-        """,
-        (int(args.limit),),
-    ).fetchall()
+    rows = _receipt_list_rows(conn, int(args.limit))
+    if json_mode:
+        payload = {
+            "schema": "myos.execution_receipt.list.v1",
+            "count": len(rows),
+            "limit": int(args.limit),
+            "receipts": [_receipt_json_entry(row) for row in rows],
+        }
+        print(json.dumps(payload, ensure_ascii=True))
+        return
     if not rows:
         print("No execution receipts found.")
         return
