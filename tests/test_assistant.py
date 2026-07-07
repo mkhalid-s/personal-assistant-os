@@ -23,7 +23,7 @@ if SRC not in sys.path:
 
 
 def _fresh_db_conn():
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)  # noqa: SIM115
     tmp.close()
     os.environ["MYOS_DB_PATH"] = tmp.name
     from personal_assistant.db import get_connection
@@ -111,7 +111,7 @@ class ProposeAndApproveTest(unittest.TestCase):
 
     def test_approval_integrity_binds_hash_and_timestamp(self):
         from personal_assistant import agentcore
-        from personal_assistant.execution import approve_and_execute, _compute_payload_hash
+        from personal_assistant.execution import _compute_payload_hash, approve_and_execute
 
         task_id = agentcore.ensure_turn_task(self.conn, "integrity")
         aid = agentcore.enqueue_proposal(
@@ -345,6 +345,7 @@ class ProposeAndApproveTest(unittest.TestCase):
         import argparse
         import contextlib
         import io
+
         from personal_assistant import intents, plans
         from personal_assistant.cli_planning import cmd_intent, cmd_plan
 
@@ -402,9 +403,8 @@ class ProposeAndApproveTest(unittest.TestCase):
         # plan show --json (not found -> error envelope, exit 1)
         buf = io.StringIO()
         args = argparse.Namespace(plan_action="show", id=999999, json=True)
-        with contextlib.redirect_stdout(buf):
-            with self.assertRaises(SystemExit) as cm:
-                cmd_plan(args)
+        with contextlib.redirect_stdout(buf), self.assertRaises(SystemExit) as cm:
+            cmd_plan(args)
         self.assertEqual(cm.exception.code, 1)
         err_payload = json.loads(buf.getvalue())
         self.assertEqual(err_payload["schema"], "myos.plan.show.v1")
@@ -416,14 +416,15 @@ class ProposeAndApproveTest(unittest.TestCase):
         tampered, invalid} and exclude fresh and not-yet-approved rows.
         Set up three rows in different states and assert the filter."""
         import argparse
-        import io
         import contextlib
+        import io
+
         from personal_assistant import agentcore
         from personal_assistant.cli_agent import cmd_approve
         from personal_assistant.execution import approve_and_execute
 
         task_id = agentcore.ensure_turn_task(self.conn, "stale-filter")
-        proposed_id = agentcore.enqueue_proposal(
+        agentcore.enqueue_proposal(
             self.conn,
             task_id=task_id,
             action_type="create_inbox_item",

@@ -4,8 +4,8 @@ import json
 import sqlite3
 from typing import Any
 
-from .db import append_event
 from . import intents
+from .db import append_event
 from .privacy import apply_privacy_filters
 
 

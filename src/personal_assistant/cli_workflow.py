@@ -9,11 +9,11 @@ from .db import append_event, get_connection
 from .extraction import extract_suggestions
 from .inbox import (
     ensure_work_item_node,
+    index_chunk,
+    infer_from_external,
     infer_kind,
     infer_priority,
     infer_risk,
-    infer_from_external,
-    index_chunk,
     insert_inbox_item_dedup,
 )
 from .privacy import apply_privacy_filters

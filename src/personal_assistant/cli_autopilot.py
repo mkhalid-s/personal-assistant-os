@@ -7,7 +7,8 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from . import autonomy_loop, context as ctx, factory, router
+from . import autonomy_loop, factory, router
+from . import context as ctx
 from .autopilot import (
     _build_autopilot_digest,
     _detect_autopilot_signals,

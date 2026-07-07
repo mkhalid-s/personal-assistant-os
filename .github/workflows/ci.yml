@@ -90,17 +90,18 @@ jobs:
             src/personal_assistant/zero_executor.py \
             src/personal_assistant/execution.py
 
-      # Advisory: the rest of the tree will be brought up to the fatal bar in
-      # follow-up slices. Kept green so contributors see the noise without
-      # blocking the build.
-      - name: Ruff check (whole tree, advisory)
-        continue-on-error: true
+      # Fatal: whole-tree lint and format. The safety-critical narrow scope
+      # above is redundant now but kept as an explicit belt-and-suspenders
+      # so a green run here can never mask a fault in those modules.
+      - name: Ruff check (whole tree)
         run: ruff check src/personal_assistant tests
 
-      - name: Ruff format --check (whole tree, advisory)
-        continue-on-error: true
+      - name: Ruff format --check (whole tree)
         run: ruff format --check src/personal_assistant tests
 
+      # Advisory: dependency vulnerability scan. Kept non-fatal so upstream
+      # advisories can't break unrelated PRs; contributors still see the
+      # signal in the CI summary.
       - name: pip-audit (advisory)
         continue-on-error: true
         run: pip-audit --strict --progress-spinner off

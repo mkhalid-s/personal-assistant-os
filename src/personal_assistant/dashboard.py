@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime
 from html import escape
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-import sqlite3
 
 
 def _query_rows(conn: sqlite3.Connection, query: str, params: tuple = ()):
@@ -71,10 +71,7 @@ def render_dashboard_html(conn: sqlite3.Connection, report_dir: str = "") -> str
     ).fetchone()
 
     report_links = []
-    if report_dir:
-        rdir = Path(report_dir)
-    else:
-        rdir = Path(__file__).resolve().parents[2] / "data" / "reports"
+    rdir = Path(report_dir) if report_dir else Path(__file__).resolve().parents[2] / "data" / "reports"
     if rdir.exists():
         report_links = sorted(rdir.glob("daily-brief-*.md"), reverse=True)[:10]
 

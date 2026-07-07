@@ -26,7 +26,7 @@ import re
 
 from . import agentcore, em, graph
 from .db import append_event
-from .privacy import apply_privacy_filters, get_policy_map, _policy_bool
+from .privacy import _policy_bool, apply_privacy_filters, get_policy_map
 from .retrieval import hybrid_score
 
 # How important an observation of each kind is by default. Preferences and risks are the
@@ -216,9 +216,12 @@ def extract_observations(conn, turn_id: int | None, user_text: str, assistant_te
             count += 1
 
     # Durable preferences about how MYOS should behave — stated by the user (high importance).
-    if user and any(cue in user.lower() for cue in _PREFERENCE_CUES):
-        if _insert_observation(conn, turn_id, "preference", None, em._first_sentence(user)):
-            count += 1
+    if (
+        user
+        and any(cue in user.lower() for cue in _PREFERENCE_CUES)
+        and _insert_observation(conn, turn_id, "preference", None, em._first_sentence(user))
+    ):
+        count += 1
 
     # Risk / concern signal anywhere in the turn.
     low = combined.lower()

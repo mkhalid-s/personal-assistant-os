@@ -4,6 +4,7 @@ import os
 import urllib.parse
 
 from personal_assistant.models import ExternalItem
+
 from .base import BaseConnector
 
 
@@ -19,7 +20,7 @@ class ConfluenceConnector(BaseConnector):
         token = os.environ["CONFLUENCE_API_TOKEN"]
         import base64
 
-        auth = (f"{email}:{token}").encode("utf-8")
+        auth = (f"{email}:{token}").encode()
         cql = urllib.parse.quote("type=page order by lastmodified desc")
         url = f"{base}/wiki/rest/api/search?cql={cql}&limit=20"
         headers = {

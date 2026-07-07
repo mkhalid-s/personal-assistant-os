@@ -5,8 +5,8 @@ import os
 import sqlite3
 import time
 import urllib.request
-from datetime import datetime, timezone
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from personal_assistant.models import ExternalItem

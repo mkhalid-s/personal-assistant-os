@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
 import sqlite3
+from dataclasses import dataclass
 from urllib.parse import urlsplit, urlunsplit
 
 from .privacy import apply_privacy_filters

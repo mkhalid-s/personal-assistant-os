@@ -4,6 +4,7 @@ import os
 import urllib.parse
 
 from personal_assistant.models import ExternalItem
+
 from .base import BaseConnector
 
 
@@ -19,7 +20,7 @@ class JiraConnector(BaseConnector):
         token = os.environ["JIRA_API_TOKEN"]
         jql = urllib.parse.quote("assignee = currentUser() ORDER BY updated DESC")
         url = f"{base}/rest/api/3/search?jql={jql}&maxResults=30"
-        auth = (f"{email}:{token}").encode("utf-8")
+        auth = (f"{email}:{token}").encode()
         import base64
 
         headers = {

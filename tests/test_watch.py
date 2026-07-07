@@ -14,7 +14,7 @@ if SRC not in sys.path:
 
 
 def _fresh_db_conn():
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)  # noqa: SIM115
     tmp.close()
     os.environ["MYOS_DB_PATH"] = tmp.name
     from personal_assistant.db import get_connection
@@ -71,9 +71,9 @@ class RiskScanTest(unittest.TestCase):
         findings = watch.scan_project_risks(self.conn)
         ids = watch.draft_nudges(self.conn, findings)
         self.assertEqual(len(ids), len(findings))
+        placeholders = ",".join("?" * len(ids))
         rows = self.conn.execute(
-            "SELECT action_type, requires_approval, status FROM agent_actions WHERE id IN (%s)"
-            % ",".join("?" * len(ids)),
+            f"SELECT action_type, requires_approval, status FROM agent_actions WHERE id IN ({placeholders})",
             ids,
         ).fetchall()
         for r in rows:

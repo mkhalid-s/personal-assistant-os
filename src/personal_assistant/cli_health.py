@@ -14,7 +14,6 @@ from pathlib import Path
 
 from . import autonomy, command_registry, factory, intents, model_setup, providers
 from .db import get_connection, initialize_schema, resolve_db_path, verify_schema
-from .privacy import get_policy_map
 
 
 def _sqlite_fts5_available(conn: sqlite3.Connection) -> tuple[bool, str]:
