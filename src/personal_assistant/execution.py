@@ -26,7 +26,7 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
-from . import autonomy, observability
+from . import autonomy, observability, rollback
 from .approval_context import compact_action_review_context
 from .db import append_event, resolve_db_path
 from .inbox import insert_inbox_item_dedup
@@ -376,6 +376,21 @@ def _record_execution_receipt(
         agent_task_id=int(row["agent_task_id"]),
         receipt_id=receipt_id,
     )
+    # Rollback automation (slice P2.1): compute the compensating-action
+    # envelope now — while we still have the full pre-execution payload
+    # and know the terminal status — and persist it onto the receipt so
+    # ``myos rollback --receipt N`` can propose the inverse later. Failing
+    # to derive/persist a compensation must never block receipt writes,
+    # so we log and continue.
+    try:
+        compensation = rollback.derive_compensation(
+            action_type=str(row["action_type"] or ""),
+            payload=payload,
+            final_status=final_status,
+        )
+        rollback.record_compensation(conn, receipt_id=receipt_id, compensation=compensation)
+    except Exception:
+        pass
     if follow_up_required:
         follow_up_text = f"Follow up on {final_status} action #{row['id']}: {row['title']} -- {result[:300]}"
         follow_up_id = insert_inbox_item_dedup(

@@ -1246,5 +1246,231 @@ class FactoryZeroExecutorTest(unittest.TestCase):
         self.assertEqual(receipt["follow_up_required"], 1)
 
 
+class RollbackAutomationTest(unittest.TestCase):
+    """Cover the ``myos.action.compensation.v1`` recording + ``myos rollback``
+    approval-gated proposal path (slice P2.1)."""
+
+    def setUp(self):
+        self.conn, self.db_path = _fresh_db_conn()
+
+    def tearDown(self):
+        self.conn.close()
+        os.unlink(self.db_path)
+        os.environ.pop("MYOS_DB_PATH", None)
+
+    def test_derive_compensation_connector_comment_is_delete_on_create(self):
+        from personal_assistant import rollback
+
+        envelope = rollback.derive_compensation(
+            action_type="draft_external_update",
+            payload={
+                "target": "jira",
+                "operation": "comment",
+                "target_ref": "ABC-1",
+                "body": "Original comment body.",
+            },
+            final_status="executed",
+        )
+        self.assertEqual(envelope["schema"], "myos.action.compensation.v1")
+        self.assertEqual(envelope["strategy"], "delete_on_create")
+        self.assertEqual(envelope["action_type"], "draft_external_update")
+        self.assertEqual(envelope["target"]["provider"], "jira")
+        self.assertEqual(envelope["target"]["target_ref"], "ABC-1")
+        self.assertIn("Compensating comment retracts", envelope["payload"]["rollback_note"])
+        self.assertTrue(envelope["dry_run_supported"])
+
+    def test_derive_compensation_local_note_is_no_op_with_note(self):
+        from personal_assistant import rollback
+
+        envelope = rollback.derive_compensation(
+            action_type="local_note",
+            payload={"text": "captured"},
+            final_status="executed",
+        )
+        self.assertEqual(envelope["strategy"], "no_op")
+        self.assertIn("Local capture actions have no external side effect", envelope["rollback_note"])
+
+    def test_derive_compensation_non_executed_status_is_no_op(self):
+        from personal_assistant import rollback
+
+        envelope = rollback.derive_compensation(
+            action_type="draft_external_update",
+            payload={"target": "jira", "operation": "comment", "target_ref": "ABC-1", "body": "hi"},
+            final_status="failed",
+        )
+        self.assertEqual(envelope["strategy"], "no_op")
+        self.assertIn("Nothing to roll back", envelope["rollback_note"])
+
+    def test_execution_receipt_records_compensation_envelope(self):
+        """The executed connector receipt must carry a persisted
+        ``compensating_action_json`` column so ``myos rollback --receipt N``
+        can propose the inverse without recomputing."""
+        from personal_assistant import agentcore
+        from personal_assistant.execution import approve_and_execute
+
+        task_id = agentcore.ensure_turn_task(self.conn, "connector rollback flow")
+        aid = agentcore.enqueue_proposal(
+            self.conn,
+            task_id=task_id,
+            action_type="draft_external_update",
+            title="Draft jira comment",
+            payload={
+                "target": "jira",
+                "operation": "comment",
+                "target_ref": "ABC-1",
+                "body": "Deployment is at risk.",
+                "dry_run": True,
+            },
+            requires_approval=1,
+        )
+        self.conn.commit()
+        result = approve_and_execute(self.conn, aid, do_approve=True, execute=True)
+        # Connector actions in dry-run mode succeed as "queued for approval"
+        # or "executed" depending on env; either way, a receipt is written.
+        self.assertIn(result["code"], {"executed", "approved_only", "blocked", "failed"})
+        receipt = self.conn.execute(
+            "SELECT id, final_status, compensating_action_json FROM action_execution_receipts WHERE agent_action_id = ?",
+            (aid,),
+        ).fetchone()
+        self.assertIsNotNone(receipt)
+        # Compensation must be recorded regardless of final_status — non-
+        # executed statuses get a schema-valid no_op envelope.
+        self.assertIsNotNone(receipt["compensating_action_json"])
+        envelope = json.loads(receipt["compensating_action_json"])
+        self.assertEqual(envelope["schema"], "myos.action.compensation.v1")
+        self.assertIn("strategy", envelope)
+
+    def test_rollback_dry_run_previews_and_does_not_enqueue(self):
+        from personal_assistant import rollback
+
+        receipt_id = self._seed_receipt_with_compensation()
+        before = self.conn.execute("SELECT COUNT(*) AS c FROM agent_actions").fetchone()["c"]
+        preview = rollback.propose_rollback(self.conn, receipt_id=receipt_id, dry_run=True)
+        self.assertEqual(preview["schema"], "myos.rollback.preview.v1")
+        self.assertEqual(preview["status"], "preview")
+        self.assertIsNone(preview["proposed_action_id"])
+        self.assertEqual(preview["strategy"], "delete_on_create")
+        # Dry-run must not insert a new agent_actions row; the queue count
+        # stays at exactly the pre-existing seed row.
+        after = self.conn.execute("SELECT COUNT(*) AS c FROM agent_actions").fetchone()["c"]
+        self.assertEqual(after, before)
+
+    def test_rollback_enqueues_compensating_action_through_approval_queue(self):
+        from personal_assistant import rollback
+
+        receipt_id = self._seed_receipt_with_compensation()
+        preview = rollback.propose_rollback(self.conn, receipt_id=receipt_id, dry_run=False)
+        self.conn.commit()
+        self.assertEqual(preview["status"], "proposed")
+        action_id = preview["proposed_action_id"]
+        self.assertIsInstance(action_id, int)
+        row = self.conn.execute(
+            "SELECT action_type, status, requires_approval, payload_json FROM agent_actions WHERE id = ?",
+            (action_id,),
+        ).fetchone()
+        self.assertEqual(row["action_type"], "draft_external_update")
+        self.assertEqual(row["status"], "proposed")
+        # Rollback never bypasses approval — the compensating action must be
+        # approval-gated exactly like the original mutation was.
+        self.assertEqual(row["requires_approval"], 1)
+        payload = json.loads(row["payload_json"])
+        self.assertIn("rollback_context", payload)
+        self.assertEqual(payload["rollback_context"]["receipt_id"], receipt_id)
+        # Receipt should now back-link to the proposed rollback action id.
+        receipt = self.conn.execute(
+            "SELECT rollback_action_id FROM action_execution_receipts WHERE id = ?",
+            (receipt_id,),
+        ).fetchone()
+        self.assertEqual(int(receipt["rollback_action_id"]), int(action_id))
+
+    def test_rollback_refuses_no_op_envelope(self):
+        from personal_assistant import rollback
+
+        receipt_id = self._seed_receipt_with_no_op_compensation()
+        with self.assertRaises(rollback.RollbackError) as raised:
+            rollback.propose_rollback(self.conn, receipt_id=receipt_id, dry_run=False)
+        self.assertEqual(raised.exception.code, "no_op")
+
+    def test_rollback_refuses_unknown_receipt(self):
+        from personal_assistant import rollback
+
+        with self.assertRaises(rollback.RollbackError) as raised:
+            rollback.propose_rollback(self.conn, receipt_id=999999, dry_run=True)
+        self.assertEqual(raised.exception.code, "not_found")
+
+    # -- helpers -------------------------------------------------------------
+
+    def _seed_receipt_with_compensation(self) -> int:
+        """Seed one agent_task + agent_action + executed receipt with a valid
+        connector-comment compensation envelope. Returns the receipt id."""
+        from personal_assistant import agentcore, rollback
+
+        task_id = agentcore.ensure_turn_task(self.conn, "rollback fixture")
+        action_id = agentcore.enqueue_proposal(
+            self.conn,
+            task_id=task_id,
+            action_type="draft_external_update",
+            title="Original comment",
+            payload={"target": "jira", "operation": "comment", "target_ref": "ABC-9", "body": "original"},
+            requires_approval=1,
+        )
+        cur = self.conn.execute(
+            """
+            INSERT INTO action_execution_receipts (
+                agent_action_id, agent_task_id, action_type, final_status, result,
+                approved, rollback_note, follow_up_required, request_json
+            )
+            VALUES (?, ?, ?, 'executed', 'ok', 1, '', 0, '{}')
+            """,
+            (action_id, task_id, "draft_external_update"),
+        )
+        receipt_id = int(cur.lastrowid)
+        envelope = rollback.derive_compensation(
+            action_type="draft_external_update",
+            payload={
+                "target": "jira",
+                "operation": "comment",
+                "target_ref": "ABC-9",
+                "body": "original",
+            },
+            final_status="executed",
+        )
+        rollback.record_compensation(self.conn, receipt_id=receipt_id, compensation=envelope)
+        self.conn.commit()
+        return receipt_id
+
+    def _seed_receipt_with_no_op_compensation(self) -> int:
+        from personal_assistant import agentcore, rollback
+
+        task_id = agentcore.ensure_turn_task(self.conn, "rollback no-op fixture")
+        action_id = agentcore.enqueue_proposal(
+            self.conn,
+            task_id=task_id,
+            action_type="local_note",
+            title="Local note",
+            payload={"text": "note"},
+            requires_approval=1,
+        )
+        cur = self.conn.execute(
+            """
+            INSERT INTO action_execution_receipts (
+                agent_action_id, agent_task_id, action_type, final_status, result,
+                approved, rollback_note, follow_up_required, request_json
+            )
+            VALUES (?, ?, ?, 'executed', 'ok', 1, '', 0, '{}')
+            """,
+            (action_id, task_id, "local_note"),
+        )
+        receipt_id = int(cur.lastrowid)
+        envelope = rollback.derive_compensation(
+            action_type="local_note",
+            payload={"text": "note"},
+            final_status="executed",
+        )
+        rollback.record_compensation(self.conn, receipt_id=receipt_id, compensation=envelope)
+        self.conn.commit()
+        return receipt_id
+
+
 if __name__ == "__main__":
     unittest.main()

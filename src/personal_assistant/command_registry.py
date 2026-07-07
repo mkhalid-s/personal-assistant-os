@@ -323,6 +323,18 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "rollback",
+        "expert",
+        "approval_gated",
+        "approval_review",
+        "Propose a compensating action for a completed execution receipt.",
+        examples=(
+            "myos rollback --receipt 1 --dry-run --json",
+            "myos rollback --receipt 1",
+        ),
+        requires_confirmation=True,
+    ),
+    CommandSpec(
         "action-provider",
         "expert",
         "approval_gated",

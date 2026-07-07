@@ -6,7 +6,7 @@ import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 
-EXPECTED_SCHEMA_VERSION = 37
+EXPECTED_SCHEMA_VERSION = 38
 
 
 def resolve_db_path() -> Path:
@@ -1599,6 +1599,27 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
             (37, "add_approval_integrity_binding"),
+        )
+
+    if current < 38:
+        # Rollback automation (slice P2.1): every terminal execution receipt
+        # gets an optional `compensating_action_json` — the inverse operation
+        # the adapter would need to undo this mutation, serialized as a
+        # ``myos.action.compensation.v1`` envelope. Nullable so pre-existing
+        # receipts remain valid; `myos rollback --receipt N` reads this column
+        # and proposes a new agent_actions row through the standard approval
+        # queue (never bypasses approval).
+        columns = conn.execute("PRAGMA table_info(action_execution_receipts)").fetchall()
+        names = {row["name"] for row in columns}
+        if "compensating_action_json" not in names:
+            conn.execute("ALTER TABLE action_execution_receipts ADD COLUMN compensating_action_json TEXT")
+        if "rollback_action_id" not in names:
+            # Optional back-link to the proposed compensating agent_actions
+            # row so `execution-receipt show` can surface the pending rollback.
+            conn.execute("ALTER TABLE action_execution_receipts ADD COLUMN rollback_action_id INTEGER")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (38, "add_receipt_compensating_action"),
         )
 
     _ensure_fts5(conn)  # self-heal: build the FTS index if a no-FTS5 run stranded migration 17

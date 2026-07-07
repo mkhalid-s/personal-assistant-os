@@ -31,6 +31,7 @@ All notable changes to this project will be documented in this file.
 - Autopilot goal wrapper with one-shot `myos autopilot --once --loop-goal` execution and ledger reporting.
 - Daily operating loops for morning briefs, close-day summaries, weekly review signals, and connector evidence mapping.
 - Release hardening docs, recovery notes, CI release-readiness gate, and tag/manual release workflow validation.
+- Rollback automation (slice P2.1): every mutating action executor now derives an inverse compensating action (`delete_on_create`, `close_on_open`, `revert_on_update`, `no_op`) and persists it as `myos.action.compensation.v1` on the execution receipt via a new `compensating_action_json` column (schema migration 38). New `myos rollback --receipt N` command materializes the recorded compensation back into the standard approval queue — never bypassing approval — with `--dry-run` (preview only) and `--json` (`myos.rollback.v1`) support from day one. Rollback proposals are annotated with a compact rollback context (source receipt id + strategy) and record the resulting `agent_actions.id` back on the source receipt as `rollback_action_id` for auditability. When the compensating action itself fails on execution, a follow-up inbox item is created in the same shape as failed-execution receipts, so failed rollbacks are surfaced through the existing supervisor workflow. Closes the last "safety-model" gap in the README pitch: every mutation MYOS ever performs becomes reversible via the same approval flow that authorized it.
 
 ### Changed
 
