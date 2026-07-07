@@ -12,8 +12,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from . import autonomy, model_setup, providers
-from .db import get_connection, resolve_db_path, verify_schema
+from . import autonomy, command_registry, factory, intents, model_setup, providers
+from .db import get_connection, initialize_schema, resolve_db_path, verify_schema
 from .privacy import get_policy_map
 
 
@@ -593,3 +593,309 @@ def cmd_snapshot(args: argparse.Namespace) -> None:
         print(f"Snapshot written: {out_path}")
         return
     print(body)
+
+
+# --------------------------------------------------------------------------
+# Release-check gate (extracted from cli.py, refactor slice #16).
+# The `myos release-check` command aggregates 8 gates (schema, license,
+# required-files, package-entrypoint, command-contract, public-hygiene,
+# local-artifacts, factory-smoke) that must all pass before shipping. It is
+# the single highest-value CI gate and belongs alongside `doctor` in the
+# health module rather than the god-file `cli.py`.
+# --------------------------------------------------------------------------
+
+
+def _release_scan_files(root: Path) -> list[Path]:
+    scan_roots = [
+        "README.md",
+        "ARCHITECTURE.md",
+        "ROADMAP.md",
+        "pyproject.toml",
+        "src",
+        "tests",
+        "docs",
+        "deploy",
+        "examples",
+        ".github",
+    ]
+    files: list[Path] = []
+    for rel in scan_roots:
+        path = root / rel
+        if path.is_file():
+            files.append(path)
+        elif path.exists():
+            files.extend(
+                p for p in path.rglob("*")
+                if p.is_file()
+                and "__pycache__" not in p.parts
+                and not any(part.endswith(".egg-info") for part in p.parts)
+            )
+    return files
+
+
+def _release_hygiene_findings(root: Path) -> list[str]:
+    patterns = [
+        "Guide" + "wire",
+        "GW Bed" + "rock",
+        "Co-authored-" + "by",
+        "Cur" + "sor",
+        "/Users/" + "mshaikh",
+        "Documents/" + "GW",
+        "personal-assistant-os-" + "public",
+    ]
+    findings: list[str] = []
+    cursor_backend_refs = {
+        Path("README.md"),
+        Path("src/personal_assistant/providers/__init__.py"),
+        Path("src/personal_assistant/providers/agent_cli.py"),
+        Path("src/personal_assistant/providers/cursor.py"),
+    }
+    for path in _release_scan_files(root):
+        try:
+            text = path.read_text(errors="ignore")
+        except OSError:
+            continue
+        rel_path = path.relative_to(root)
+        for line_no, line in enumerate(text.splitlines(), start=1):
+            for pattern in patterns:
+                if pattern in line:
+                    if pattern == ("Cur" + "sor") and rel_path in cursor_backend_refs:
+                        continue
+                    findings.append(f"{rel_path}:{line_no}: {pattern}")
+    return findings
+
+
+def _tracked_local_artifacts(root: Path) -> list[str]:
+    try:
+        proc = subprocess.run(
+            ["git", "ls-files"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return []
+    if proc.returncode != 0:
+        return []
+    blocked: list[str] = []
+    for raw in proc.stdout.splitlines():
+        path = raw.strip()
+        name = Path(path).name
+        if (
+            name in {".env", ".DS_Store"}
+            or path.startswith((".cursor/", ".claude/"))
+            or Path(path).suffix in {".db", ".sqlite", ".sqlite3", ".log"}
+        ):
+            blocked.append(path)
+    return blocked
+
+
+def _packaging_entrypoint_check(root: Path) -> tuple[bool, str]:
+    pyproject = root / "pyproject.toml"
+    if not pyproject.exists():
+        return False, "missing pyproject.toml"
+    text = pyproject.read_text(errors="ignore")
+    expected = 'myos = "personal_assistant.cli:main"'
+    if "[project.scripts]" not in text or expected not in text:
+        return False, "missing myos console script"
+    if importlib.util.find_spec("personal_assistant.cli") is None:
+        return False, "personal_assistant.cli not importable"
+    # Lazy import to avoid a circular import (`cli.py` imports `cli_health`).
+    from . import cli as _cli
+    if not callable(getattr(_cli, "main", None)):
+        return False, "personal_assistant.cli:main not callable"
+    return True, "myos -> personal_assistant.cli:main"
+
+
+def _factory_release_smoke(conn: sqlite3.Connection) -> tuple[bool, str]:
+    smoke_conn = sqlite3.connect(":memory:")
+    smoke_conn.row_factory = sqlite3.Row
+    initialize_schema(smoke_conn)
+    try:
+        intent_id = intents.create_intent(
+            smoke_conn,
+            objective="Release smoke: verify review-first factory trace",
+            context="Local release-check smoke test.",
+            success_criteria="Factory run creates plan, retrieval, review packet, and role artifacts.",
+        )
+        result = factory.start_review_first_run(smoke_conn, intent_id=intent_id, mode="review_first")
+        artifacts = smoke_conn.execute(
+            """
+            SELECT artifact_type, COUNT(*) AS c
+            FROM factory_artifacts
+            WHERE factory_run_id = ?
+            GROUP BY artifact_type
+            """,
+            (int(result["id"]),),
+        ).fetchall()
+        counts = {row["artifact_type"]: int(row["c"]) for row in artifacts}
+        required = {
+            "plan": 1,
+            "retrieval_run": 1,
+            "review_packet": 1,
+            "agent_run": 5,
+        }
+        missing = [name for name, min_count in required.items() if counts.get(name, 0) < min_count]
+        semi_intent_id = intents.create_intent(
+            smoke_conn,
+            objective="Release smoke: verify semi-autonomous local receipt",
+            context="Local release-check smoke test.",
+            success_criteria="Safe local action executes with receipt.",
+        )
+        factory.set_policy(smoke_conn, allowed_mode="semi_autonomous", scope_type="intent", scope_id=str(semi_intent_id))
+        semi = factory.start_review_first_run(smoke_conn, intent_id=semi_intent_id, mode="semi_autonomous")
+        receipt_count = smoke_conn.execute(
+            """
+            SELECT COUNT(*) AS c
+            FROM factory_artifacts
+            WHERE factory_run_id = ? AND artifact_type = 'execution_receipt'
+            """,
+            (int(semi["id"]),),
+        ).fetchone()["c"]
+        connector_intent_id = intents.create_intent(
+            smoke_conn,
+            objective="Release smoke: verify connector dry-run receipt",
+            context="Local release-check connector smoke test.",
+            success_criteria="Connector dry-run creates outbox and receipt.",
+        )
+        smoke_conn.execute(
+            """
+            INSERT INTO external_items (connector, external_id, item_type, title, body, url)
+            VALUES ('confluence', 'PAGE-SMOKE', 'page', 'Connector smoke page', 'Needs dry-run update.', 'https://example.test/wiki/PAGE-SMOKE')
+            """
+        )
+        intents.add_evidence(
+            smoke_conn,
+            intent_id=connector_intent_id,
+            content="confluence:PAGE-SMOKE page Connector smoke page",
+            source_type="external_item",
+            source_id="1",
+            summary="confluence page: Connector smoke page",
+            confidence=0.8,
+        )
+        factory.set_policy(smoke_conn, allowed_mode="full_autonomous", scope_type="intent", scope_id=str(connector_intent_id))
+        factory.set_policy(
+            smoke_conn,
+            allowed_mode="full_autonomous",
+            connector="confluence",
+            action_type="draft_external_update",
+        )
+        connector = factory.start_review_first_run(
+            smoke_conn,
+            intent_id=connector_intent_id,
+            mode="full_autonomous",
+            workflow_pack="connector_ops",
+        )
+        connector_outbox = smoke_conn.execute(
+            "SELECT COUNT(*) AS c FROM action_outbox WHERE target_type='confluence' AND target_ref='PAGE-SMOKE'"
+        ).fetchone()["c"]
+        ok = (
+            not missing
+            and result["status"] == "awaiting_approval"
+            and semi["status"] == "execution_completed"
+            and int(receipt_count) >= 1
+            and connector["status"] == "execution_completed"
+            and int(connector_outbox) >= 1
+        )
+        detail = (
+            "review-first trace, semi-autonomous receipt, and connector dry-run ok"
+            if ok
+            else (
+                f"missing={','.join(missing)} status={result['status']} semi={semi['status']} "
+                f"receipts={receipt_count} connector={connector['status']} outbox={connector_outbox}"
+            )
+        )
+        return ok, detail
+    except Exception as exc:
+        return False, str(exc)
+    finally:
+        smoke_conn.close()
+
+
+def _top_level_parser_commands() -> list[str]:
+    # Lazy import to avoid a circular import (`cli.py` imports `cli_health`).
+    from .cli import build_parser
+    parser = build_parser()
+    subparser_action = next(action for action in parser._actions if getattr(action, "dest", "") == "command")
+    return sorted(str(command) for command in subparser_action.choices)
+
+
+def _command_contract_check() -> tuple[bool, str]:
+    report = command_registry.command_contract_report(_top_level_parser_commands())
+    issues = {
+        name: values
+        for name, values in report["issues"].items()
+        if values
+    }
+    if issues:
+        first_name, first_values = next(iter(issues.items()))
+        return False, f"{first_name}={','.join(first_values[:5])}"
+    return True, f"{report['command_count']} commands covered"
+
+
+def cmd_release_check(args: argparse.Namespace) -> None:
+    root = Path(__file__).resolve().parents[2]
+    conn = get_connection()
+    try:
+        schema = verify_schema(conn)
+        hygiene = _release_hygiene_findings(root)
+        artifacts = _tracked_local_artifacts(root)
+        packaging_ok, packaging_detail = _packaging_entrypoint_check(root)
+        command_contract_ok, command_contract_detail = _command_contract_check()
+        factory_smoke_ok, factory_smoke_detail = _factory_release_smoke(conn)
+        required_files = [
+            root / "LICENSE",
+            root / "README.md",
+            root / "CHANGELOG.md",
+            root / "CONTRIBUTING.md",
+            root / "DEVELOPING.md",
+            root / "docs" / "MIGRATIONS.md",
+            root / "docs" / "RECOVERY.md",
+            root / ".github" / "workflows" / "ci.yml",
+            root / ".github" / "workflows" / "release.yml",
+        ]
+        dependency_ok = "Apache-2.0" in (root / "pyproject.toml").read_text(errors="ignore")
+        checks = [
+            ("schema", bool(schema["ok"]), f"current={schema['current_version']} expected={schema['expected_version']}"),
+            ("dependency_license", dependency_ok, "Apache-2.0 metadata"),
+            ("required_files", all(path.exists() for path in required_files), "docs, changelog, license, workflows"),
+            ("package_entrypoint", packaging_ok, packaging_detail),
+            ("command_contract", command_contract_ok, command_contract_detail),
+            ("public_hygiene", not hygiene, f"{len(hygiene)} finding(s)"),
+            ("local_artifacts", not artifacts, f"{len(artifacts)} tracked local artifact(s)"),
+            ("factory_smoke", factory_smoke_ok, factory_smoke_detail),
+        ]
+        ok = all(passed for _, passed, _ in checks)
+        if getattr(args, "json", False):
+            payload: dict = {
+                "schema": "myos.release_check.v1",
+                "ok": ok,
+                "strict": bool(args.strict),
+                "checks": [
+                    {"name": name, "ok": bool(passed), "detail": detail}
+                    for name, passed, detail in checks
+                ],
+            }
+            if args.verbose:
+                payload["hygiene_findings"] = list(hygiene[:20])
+                payload["local_artifacts"] = list(artifacts[:20])
+            print(json.dumps(payload, ensure_ascii=True))
+            if args.strict and not ok:
+                raise SystemExit(1)
+            return
+        print("Release readiness check:")
+        for name, passed, detail in checks:
+            print(f"- {'PASS' if passed else 'FAIL'} {name}: {detail}")
+        if hygiene and args.verbose:
+            print("Hygiene findings:")
+            for finding in hygiene[:20]:
+                print(f"- {finding}")
+        if artifacts and args.verbose:
+            print("Tracked local artifacts:")
+            for artifact in artifacts[:20]:
+                print(f"- {artifact}")
+        if args.strict and not ok:
+            raise SystemExit(1)
+    finally:
+        conn.close()
