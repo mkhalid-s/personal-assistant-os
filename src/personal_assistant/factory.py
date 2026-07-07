@@ -676,11 +676,14 @@ def _zero_action_metadata(
     *,
     changed_files: list[str],
 ) -> dict[str, Any]:
+    stderr_text = result.stderr or ""
+    stderr_bytes = len(stderr_text.encode("utf-8"))
     return {
         "schema": "myos.zero_executor.action_metadata.v1",
         "stream_schema_version": zero_executor.SCHEMA_VERSION,
         "status": result.status,
         "exit_code": result.exit_code,
+        "timed_out": bool(result.timed_out),
         "run_id": result.run_id,
         "session_id": result.session_id,
         "provider": result.provider,
@@ -694,7 +697,9 @@ def _zero_action_metadata(
         "usage": result.usage,
         "protocol_errors": [_zero_signal_text(conn, error) for error in result.protocol_errors[:5]],
         "final_text": _zero_signal_text(conn, result.final_text or "", limit=1000),
-        "stderr_preview": _zero_signal_text(conn, result.stderr or "", limit=1000),
+        "stderr_preview": _zero_signal_text(conn, stderr_text, limit=1000),
+        "stderr_bytes": stderr_bytes,
+        "stderr_truncated": stderr_bytes > 1000,
     }
 
 
@@ -710,7 +715,17 @@ def _prepare_zero_software_action(
     root = _git_root(repo)
     if not root:
         raise ValueError(f"zero executor requires a git repo: {repo}")
-    timeout = int(context.get("timeout") or zero_executor.DEFAULT_TIMEOUT)
+    # Precedence: explicit factory context > MYOS_ZERO_TIMEOUT_SECONDS env override
+    # > module default. The env var lets operators cap all Zero runs globally
+    # without editing call sites, matching the approval-TTL env pattern.
+    timeout_env = os.getenv("MYOS_ZERO_TIMEOUT_SECONDS", "").strip()
+    env_timeout: int | None = None
+    if timeout_env:
+        try:
+            env_timeout = max(1, int(timeout_env))
+        except ValueError:
+            env_timeout = None
+    timeout = int(context.get("timeout") or env_timeout or zero_executor.DEFAULT_TIMEOUT)
     max_turns = int(context.get("max_turns") or 0) or None
     verification_commands = [
         str(command).strip()
@@ -899,6 +914,8 @@ def _prepare_zero_software_action(
                     "action_type": action_type,
                     "status": result.status,
                     "exit_code": result.exit_code,
+                    "timed_out": bool(result.timed_out),
+                    "timeout_seconds": int(timeout),
                     "changed_files": changed_files,
                     "diff_stats": diff_stats,
                     "diff_too_large": diff_too_large,
@@ -914,6 +931,8 @@ def _prepare_zero_software_action(
                     "protocol_errors": [_zero_signal_text(conn, error) for error in result.protocol_errors[:5]],
                     "verification_commands": verification_commands,
                     "summary": _zero_signal_text(conn, result.final_text or "", limit=1000),
+                    "stderr_bytes": len((result.stderr or "").encode("utf-8")),
+                    "stderr_truncated": len((result.stderr or "").encode("utf-8")) > 1000,
                     "approval_command": f"myos approve --action {action_id} --execute",
                     "retry_command": retry_command,
                     "follow_up_inbox_id": int(follow_up_id) if follow_up_id is not None else None,

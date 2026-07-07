@@ -606,6 +606,19 @@ class FactoryZeroExecutorTest(unittest.TestCase):
         )
         os.environ["MYOS_AGENT_EXEC_ZERO_STREAM"] = f"{sys.executable} {script}"
 
+    def _install_hanging_zero(self) -> None:
+        """A fake Zero that never returns — used to prove the wall-clock
+        timeout guard trips, marks `timed_out=True` in the artifact, and
+        still cleans up the worktree."""
+        script = self.tmp / "hanging_zero.py"
+        script.write_text(
+            "import sys, time\n"
+            "sys.stderr.write('starting long run\\n')\n"
+            "sys.stderr.flush()\n"
+            "time.sleep(30)\n"
+        )
+        os.environ["MYOS_AGENT_EXEC_ZERO_STREAM"] = f"{sys.executable} {script}"
+
     def test_factory_zero_proof_loop_reaches_receipt_and_learning(self):
         from personal_assistant import factory, intents, plans
         from personal_assistant.execution import approve_and_execute
@@ -844,6 +857,73 @@ class FactoryZeroExecutorTest(unittest.TestCase):
         self.assertEqual(zero_artifact["status"], "missing")
         self.assertEqual(zero_artifact["errors"][0]["code"], "missing_zero")
         self.assertEqual(zero_artifact["follow_up_inbox_id"], inbox["id"])
+
+    def test_factory_zero_timeout_surfaces_timed_out_and_cleans_worktree(self):
+        from personal_assistant import factory, intents, plans
+
+        self._install_hanging_zero()
+        intent_id = intents.create_intent(self.conn, objective="Trigger a Zero wall-clock timeout")
+        result = factory.start_review_first_run(
+            self.conn,
+            intent_id=intent_id,
+            workflow_pack="software_delivery",
+            executor_backend="zero",
+            executor_context={"repo": str(self.repo), "timeout": 1},
+        )
+        self.conn.commit()
+
+        action_id = result["proposed_action_ids"][0]
+        action = self.conn.execute(
+            "SELECT action_type, payload_json FROM agent_actions WHERE id = ?",
+            (action_id,),
+        ).fetchone()
+        payload = json.loads(action["payload_json"])
+        self.assertEqual(action["action_type"], "draft_external_update")
+        self.assertTrue(payload["zero"]["timed_out"])
+        self.assertEqual(payload["zero"]["status"], "timed_out")
+
+        packet = plans.get_review_packet(self.conn, result["review_packet_id"])
+        artifact = packet["packet"]["executor_artifacts"][0]
+        self.assertTrue(artifact["timed_out"])
+        self.assertEqual(artifact["timeout_seconds"], 1)
+        self.assertEqual(artifact["status"], "timed_out")
+        self.assertFalse(artifact["executor_worktree_retained"])
+
+        # Every temp worktree under our tmp dir was cleaned up on the finally
+        # path, regardless of the timeout.
+        stray = [
+            path.name
+            for path in self.tmp.iterdir()
+            if path.is_dir() and path.name.startswith("myos-zero-wt-")
+        ]
+        self.assertEqual(stray, [])
+
+    def test_factory_zero_timeout_honors_env_override(self):
+        from personal_assistant import factory, intents
+
+        self._install_hanging_zero()
+        intent_id = intents.create_intent(self.conn, objective="Global timeout via env")
+        os.environ["MYOS_ZERO_TIMEOUT_SECONDS"] = "1"
+        try:
+            result = factory.start_review_first_run(
+                self.conn,
+                intent_id=intent_id,
+                workflow_pack="software_delivery",
+                executor_backend="zero",
+                # No explicit `timeout` in the context — the env override wins.
+                executor_context={"repo": str(self.repo)},
+            )
+        finally:
+            os.environ.pop("MYOS_ZERO_TIMEOUT_SECONDS", None)
+        self.conn.commit()
+
+        action_id = result["proposed_action_ids"][0]
+        payload = json.loads(
+            self.conn.execute(
+                "SELECT payload_json FROM agent_actions WHERE id = ?", (action_id,)
+            ).fetchone()["payload_json"]
+        )
+        self.assertTrue(payload["zero"]["timed_out"])
 
     def test_zero_apply_patch_guard_blocks_protected_paths(self):
         from personal_assistant import agentcore
