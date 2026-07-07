@@ -1278,29 +1278,55 @@ def cmd_approve(args: argparse.Namespace) -> None:
 
 def cmd_autopilot_status(args: argparse.Namespace) -> None:
     conn = get_connection()
-    rows = conn.execute(
-        """
-        SELECT id, status, started_at, finished_at, summary
-        FROM autopilot_runs
-        ORDER BY id DESC
-        LIMIT ?
-        """,
-        (args.limit,),
-    ).fetchall()
-    if not rows:
-        print("No autopilot runs found.")
-    else:
-        print("Autopilot runs:")
-        for row in rows:
-            print(
-                f"- run #{row['id']} status={row['status']} started={row['started_at']} "
-                f"finished={row['finished_at'] or 'running'} summary={row['summary'] or ''}"
-            )
-    pending = conn.execute(
-        "SELECT COUNT(*) AS c FROM agent_actions WHERE requires_approval=1 AND status='proposed'"
-    ).fetchone()["c"]
-    open_tasks = conn.execute("SELECT COUNT(*) AS c FROM agent_tasks WHERE status='open'").fetchone()["c"]
-    print(f"Autopilot state: open_agent_tasks={open_tasks} approvals_pending={pending}")
+    try:
+        json_mode = bool(getattr(args, "json", False))
+        rows = conn.execute(
+            """
+            SELECT id, status, started_at, finished_at, summary
+            FROM autopilot_runs
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (args.limit,),
+        ).fetchall()
+        pending = conn.execute(
+            "SELECT COUNT(*) AS c FROM agent_actions WHERE requires_approval=1 AND status='proposed'"
+        ).fetchone()["c"]
+        open_tasks = conn.execute("SELECT COUNT(*) AS c FROM agent_tasks WHERE status='open'").fetchone()["c"]
+        if json_mode:
+            payload = {
+                "schema": "myos.autopilot_status.v1",
+                "count": len(rows),
+                "limit": int(args.limit),
+                "runs": [
+                    {
+                        "id": int(row["id"]),
+                        "status": str(row["status"] or ""),
+                        "started_at": str(row["started_at"] or ""),
+                        "finished_at": str(row["finished_at"] or ""),
+                        "summary": str(row["summary"] or ""),
+                    }
+                    for row in rows
+                ],
+                "state": {
+                    "open_agent_tasks": int(open_tasks),
+                    "approvals_pending": int(pending),
+                },
+            }
+            print(json.dumps(payload, ensure_ascii=True))
+            return
+        if not rows:
+            print("No autopilot runs found.")
+        else:
+            print("Autopilot runs:")
+            for row in rows:
+                print(
+                    f"- run #{row['id']} status={row['status']} started={row['started_at']} "
+                    f"finished={row['finished_at'] or 'running'} summary={row['summary'] or ''}"
+                )
+        print(f"Autopilot state: open_agent_tasks={open_tasks} approvals_pending={pending}")
+    finally:
+        conn.close()
 
 
 def cmd_digest(args: argparse.Namespace) -> None:
@@ -2356,6 +2382,7 @@ def build_parser() -> argparse.ArgumentParser:
     factory_start.set_defaults(func=cmd_factory)
     factory_status = factory_sub.add_parser("status", help="Show factory run stages and artifacts.")
     factory_status.add_argument("--id", type=int, required=True)
+    factory_status.add_argument("--json", action="store_true", help="Emit a single JSON object instead of formatted text.")
     factory_status.set_defaults(func=cmd_factory)
     factory_stage = factory_sub.add_parser("run-stage", help="Record or update one factory stage.")
     factory_stage.add_argument("--id", type=int, required=True)
@@ -2496,6 +2523,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     autopilot_status = sub.add_parser("autopilot-status", help="Show autopilot runs and pending approvals.")
     autopilot_status.add_argument("--limit", type=int, default=10)
+    autopilot_status.add_argument("--json", action="store_true", help="Emit a single JSON object instead of formatted text.")
     autopilot_status.set_defaults(func=cmd_autopilot_status)
 
     digest = sub.add_parser("digest", help="Show latest assistant digest.")
