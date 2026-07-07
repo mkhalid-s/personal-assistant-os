@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import hashlib
 import re
+import sqlite3
 from pathlib import Path
+from typing import Any
 
 
-def get_policy_map(conn) -> dict[str, str]:
+def get_policy_map(conn: sqlite3.Connection) -> dict[str, str]:
     rows = conn.execute("SELECT key, value FROM assistant_policies ORDER BY key ASC").fetchall()
     return {str(r["key"]): str(r["value"]) for r in rows}
 
@@ -93,7 +95,7 @@ def _luhn_ok(digits: str) -> bool:
     return total % 10 == 0
 
 
-def apply_privacy_filters(conn, text: str) -> str:
+def apply_privacy_filters(conn: sqlite3.Connection, text: str) -> str:
     """Redact PII/secrets from a string before it is persisted or indexed.
 
     Covers emails, phones, and (default-on) common secrets/tokens, US SSNs, and
@@ -121,7 +123,7 @@ def apply_privacy_filters(conn, text: str) -> str:
     return cleaned
 
 
-def redact_obj(conn, obj):
+def redact_obj(conn: sqlite3.Connection, obj: Any) -> Any:
     """Recursively redact string leaves of a dict/list, leaving non-strings (ints,
     bools, None) intact. Use this for payloads instead of regexing a serialized JSON
     string — the phone regex would otherwise mangle integer literals (e.g. an
@@ -143,7 +145,7 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _cleanup_policy_retention(conn) -> dict[str, int]:
+def _cleanup_policy_retention(conn: sqlite3.Connection) -> dict[str, int]:
     policy = get_policy_map(conn)
     media_days = _policy_int(policy.get("retention_media_days", "30"), 30)
     evidence_days = _policy_int(policy.get("retention_evidence_days", "365"), 365)
