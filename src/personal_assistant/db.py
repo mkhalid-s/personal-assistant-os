@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import os
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 
 EXPECTED_SCHEMA_VERSION = 37
@@ -25,6 +26,32 @@ def get_connection() -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON;")
     initialize_schema(conn)
     return conn
+
+
+@contextlib.contextmanager
+def connection() -> Iterator[sqlite3.Connection]:
+    """Yield an initialized SQLite connection that is guaranteed to close on
+    every exit path (return, exception, early ``StopIteration``).
+
+    Prefer this over calling ``get_connection()`` directly: bare
+    ``get_connection()`` calls leak the connection whenever a handler returns
+    early or raises. CI runs the test suite under ``-W error::ResourceWarning``,
+    so a leaked handle is a build failure.
+
+    Example
+    -------
+        from .db import connection
+
+        def cmd_foo(args):
+            with connection() as conn:
+                rows = conn.execute(...).fetchall()
+                ...
+    """
+    conn = get_connection()
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def initialize_schema(conn: sqlite3.Connection) -> None:
