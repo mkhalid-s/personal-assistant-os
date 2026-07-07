@@ -67,8 +67,14 @@ jobs:
 
       # Fatal: command_registry is the single source of truth for the CLI
       # command contract; it must stay strict-typed to catch registry drift.
-      - name: Mypy strict (command_registry)
-        run: mypy --strict src/personal_assistant/command_registry.py
+      # privacy.py holds all redaction / retention logic that guards what ever
+      # reaches the FTS index, digests, or notifications — a type regression
+      # here can silently expose PII, so we promote it to the fatal tier.
+      - name: Mypy strict (command_registry + privacy)
+        run: |
+          mypy --strict \
+            src/personal_assistant/command_registry.py \
+            src/personal_assistant/privacy.py
 
       # Advisory: the rest of the tree will be brought up to the fatal bar in
       # follow-up slices. Kept green so contributors see the noise without
@@ -81,11 +87,10 @@ jobs:
         continue-on-error: true
         run: ruff format --check src/personal_assistant tests
 
-      - name: Mypy strict (safety-critical modules, advisory)
+      - name: Mypy strict (remaining safety-critical modules, advisory)
         continue-on-error: true
         run: |
           mypy --strict \
-            src/personal_assistant/privacy.py \
             src/personal_assistant/execution.py \
             src/personal_assistant/db.py \
             src/personal_assistant/zero_executor.py
