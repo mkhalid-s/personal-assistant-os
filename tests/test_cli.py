@@ -1407,6 +1407,27 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("executor_worktree=isolated retained=False", status)
             self.assertIn("signals=permissions:1 warnings:1 errors:0 protocol_errors:0", status)
             self.assertIn("warning=cli verification skipped", status)
+
+            # Same-data assertion for factory status --json: the JSON envelope
+            # exposes the run metadata, stage list, artifacts, and the parsed
+            # executor artifacts a supervising process needs to reconcile a
+            # factory cycle without regex-parsing the human-readable output.
+            factory_json_out = subprocess.run(
+                [sys.executable, "-m", "personal_assistant.cli", "factory", "status", "--id", "1", "--json"],
+                cwd=Path.cwd(), env=env, check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            factory_payload = json.loads(factory_json_out)
+            self.assertEqual(factory_payload["schema"], "myos.factory.status.v1")
+            self.assertEqual(factory_payload["run"]["id"], 1)
+            self.assertEqual(factory_payload["run"]["executor_backend"], "zero")
+            stage_names = {stage["stage_name"] for stage in factory_payload["stages"]}
+            self.assertIn("execution", stage_names)
+            self.assertTrue(factory_payload["executor_artifacts"])
+            zero_artifact = next(
+                a for a in factory_payload["executor_artifacts"] if a.get("type") == "zero_executor"
+            )
+            self.assertEqual(zero_artifact.get("status"), "success")
+            self.assertEqual(zero_artifact.get("exit_code"), 0)
             self.assertIn("changed_files=cli-zero.txt", status)
             self.assertIn("diff_stats=files:1 +1 -0 binary:0", status)
             self.assertIn("verify=python -m pytest", status)
@@ -2887,6 +2908,22 @@ class CliFlowTest(unittest.TestCase):
             status = run("autopilot-status")
             self.assertIn("Autopilot runs", status)
             self.assertIn("approvals_pending", status)
+
+            # Same-data assertion for autopilot-status --json: after the
+            # autopilot --once run, the JSON envelope must expose at least
+            # one autopilot run row and the aggregate state a supervising
+            # process needs (open agent tasks, approvals pending).
+            autopilot_json_out = subprocess.run(
+                [sys.executable, "-m", "personal_assistant.cli", "autopilot-status", "--json"],
+                cwd=Path.cwd(), env=env, check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            autopilot_payload = json.loads(autopilot_json_out)
+            self.assertEqual(autopilot_payload["schema"], "myos.autopilot_status.v1")
+            self.assertGreaterEqual(autopilot_payload["count"], 1)
+            self.assertIn("state", autopilot_payload)
+            self.assertIn("open_agent_tasks", autopilot_payload["state"])
+            self.assertIn("approvals_pending", autopilot_payload["state"])
+            self.assertGreaterEqual(autopilot_payload["state"]["approvals_pending"], 1)
             digest = run("digest")
             self.assertIn("What I handled", digest)
             self.assertTrue((digest_dir / "latest.md").exists())

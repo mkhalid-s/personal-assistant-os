@@ -156,9 +156,52 @@ def cmd_factory(args: argparse.Namespace) -> None:
 
     if action == "status":
         run = factory.get_factory_run(conn, args.id)
+        json_mode = bool(getattr(args, "json", False))
         if run is None:
-            print(f"Factory run #{args.id} not found.")
+            if json_mode:
+                print(json.dumps(
+                    {"schema": "myos.factory.status.v1", "error": "not_found", "id": int(args.id)},
+                    ensure_ascii=True,
+                ))
+            else:
+                print(f"Factory run #{args.id} not found.")
             raise SystemExit(1)
+        if json_mode:
+            payload = {
+                "schema": "myos.factory.status.v1",
+                "run": {
+                    "id": int(run["id"]),
+                    "intent_id": int(run["intent_id"]) if run.get("intent_id") is not None else None,
+                    "plan_id": int(run["plan_id"]) if run.get("plan_id") is not None else None,
+                    "mode": str(run.get("mode") or ""),
+                    "workflow_pack": str(run.get("workflow_pack") or ""),
+                    "executor_backend": str(run.get("executor_backend") or "local"),
+                    "status": str(run.get("status") or ""),
+                    "summary": str(run.get("summary") or ""),
+                    "outcome": str(run.get("outcome") or ""),
+                    "outcome_notes": str(run.get("outcome_notes") or ""),
+                },
+                "stages": [
+                    {
+                        "stage_name": str(stage.get("stage_name") or ""),
+                        "status": str(stage.get("status") or ""),
+                        "role": str(stage.get("role") or ""),
+                        "agent_run_id": int(stage["agent_run_id"]) if stage.get("agent_run_id") else None,
+                    }
+                    for stage in run["stages"]
+                ],
+                "artifacts": [
+                    {
+                        "artifact_type": str(artifact.get("artifact_type") or ""),
+                        "artifact_id": int(artifact["artifact_id"]) if artifact.get("artifact_id") is not None else None,
+                        "label": str(artifact.get("label") or ""),
+                    }
+                    for artifact in run["artifacts"]
+                ],
+                "executor_artifacts": _executor_artifacts(conn, run),
+            }
+            print(json.dumps(payload, ensure_ascii=True))
+            return
         executor = run.get("executor_backend", "local")
         executor_part = f" executor={executor}" if executor != "local" else ""
         print(
