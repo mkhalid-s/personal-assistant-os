@@ -66,9 +66,7 @@ class ProviderBackendTest(unittest.TestCase):
             claude = bin_dir / "claude"
             self._write_executable(
                 claude,
-                "#!/usr/bin/env python3\n"
-                "import sys\n"
-                "print('claude-code reply: ' + sys.argv[-1])\n",
+                "#!/usr/bin/env python3\nimport sys\nprint('claude-code reply: ' + sys.argv[-1])\n",
             )
             os.environ["PATH"] = f"{bin_dir}{os.pathsep}{old_path}"
             try:
@@ -129,9 +127,7 @@ class ProviderBackendTest(unittest.TestCase):
             cursor = bin_dir / "cursor"
             self._write_executable(
                 cursor,
-                f"#!{sys.executable}\n"
-                "import sys\n"
-                "print('cursor cli reply: ' + sys.argv[-1])\n",
+                f"#!{sys.executable}\nimport sys\nprint('cursor cli reply: ' + sys.argv[-1])\n",
             )
             os.environ["PATH"] = str(bin_dir)
             os.environ.pop("MYOS_AGENT_CMD_CURSOR", None)

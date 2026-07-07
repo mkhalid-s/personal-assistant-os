@@ -64,7 +64,9 @@ def _agent_plan(objective: str, context: str, analogy_count: int) -> list[dict[s
     if any(k in text for k in ["risk", "blocked", "blocker", "dependency", "incident"]):
         steps.append({"step": "reduce_risk", "detail": "Identify owner, deadline pressure, and renegotiation path."})
     if any(k in text for k in ["meeting", "zoom", "discussion", "notes", "transcript"]):
-        steps.append({"step": "summarize_discussion", "detail": "Extract decisions, follow-ups, owners, and due dates."})
+        steps.append(
+            {"step": "summarize_discussion", "detail": "Extract decisions, follow-ups, owners, and due dates."}
+        )
     if any(k in text for k in ["jira", "github", "pr", "ticket", "aha", "confluence"]):
         steps.append({"step": "prepare_system_update", "detail": "Draft external-system update for approval."})
     if analogy_count:
@@ -191,10 +193,10 @@ def _ai_reason_artifacts(
     if not command:
         # Pluggable backend (claude/copilot/cursor) before the keyword fallback.
         backend_name = (
-            os.getenv("MYOS_AGENT_BACKEND")
-            or os.getenv("MYOS_AI_PROVIDER")
-            or policy.get("ai_provider", "")
-        ).strip().lower()
+            (os.getenv("MYOS_AGENT_BACKEND") or os.getenv("MYOS_AI_PROVIDER") or policy.get("ai_provider", ""))
+            .strip()
+            .lower()
+        )
         if backend_name in ("", "local") and os.getenv("ANTHROPIC_API_KEY", "").strip():
             backend_name = "claude"
         if backend_name in ("claude", "anthropic", "copilot", "cursor"):

@@ -58,9 +58,9 @@ def cmd_launchd_install(args: argparse.Namespace) -> None:
   <key>StartInterval</key>
   <integer>{args.interval_sec}</integer>
   <key>StandardOutPath</key>
-  <string>{xml_escape(str(project_root / 'data' / 'sync.log'))}</string>
+  <string>{xml_escape(str(project_root / "data" / "sync.log"))}</string>
   <key>StandardErrorPath</key>
-  <string>{xml_escape(str(project_root / 'data' / 'sync.err.log'))}</string>
+  <string>{xml_escape(str(project_root / "data" / "sync.err.log"))}</string>
 </dict>
 </plist>
 """
@@ -81,9 +81,9 @@ def cmd_launchd_install(args: argparse.Namespace) -> None:
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>{xml_escape(str(project_root / 'data' / 'pulse.log'))}</string>
+  <string>{xml_escape(str(project_root / "data" / "pulse.log"))}</string>
   <key>StandardErrorPath</key>
-  <string>{xml_escape(str(project_root / 'data' / 'pulse.err.log'))}</string>
+  <string>{xml_escape(str(project_root / "data" / "pulse.err.log"))}</string>
 </dict>
 </plist>
 """
@@ -104,9 +104,9 @@ def cmd_launchd_install(args: argparse.Namespace) -> None:
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>{xml_escape(str(project_root / 'data' / 'autopilot.log'))}</string>
+  <string>{xml_escape(str(project_root / "data" / "autopilot.log"))}</string>
   <key>StandardErrorPath</key>
-  <string>{xml_escape(str(project_root / 'data' / 'autopilot.err.log'))}</string>
+  <string>{xml_escape(str(project_root / "data" / "autopilot.err.log"))}</string>
 </dict>
 </plist>
 """

@@ -27,7 +27,9 @@ def _dedupe(values: list[str]) -> list[str]:
     return result
 
 
-def action_review_context(action_type: str, payload: dict[str, Any] | None, *, requires_approval: bool = True) -> dict[str, object]:
+def action_review_context(
+    action_type: str, payload: dict[str, Any] | None, *, requires_approval: bool = True
+) -> dict[str, object]:
     payload = payload if isinstance(payload, dict) else {}
     action_type = (action_type or "").strip()
     command_text = str(payload.get("command") or payload.get("myos_command") or "").strip()
@@ -43,7 +45,9 @@ def action_review_context(action_type: str, payload: dict[str, Any] | None, *, r
         if command_spec.dry_run_by_default and command_spec.examples:
             safer_commands.append(command_spec.examples[0])
 
-    connector = str(payload.get("connector") or payload.get("target") or payload.get("target_type") or "").strip().lower()
+    connector = (
+        str(payload.get("connector") or payload.get("target") or payload.get("target_type") or "").strip().lower()
+    )
     if connector in {"jira", "github", "confluence", "aha", "external_system"} or action_type in _EXTERNAL_ACTION_TYPES:
         side_effects.append("external_write")
         safer_commands.append("myos approve --list")
@@ -81,7 +85,9 @@ def action_review_context(action_type: str, payload: dict[str, Any] | None, *, r
     }
 
 
-def compact_action_review_context(action_type: str, payload: dict[str, Any] | None, *, requires_approval: bool = True) -> dict[str, object]:
+def compact_action_review_context(
+    action_type: str, payload: dict[str, Any] | None, *, requires_approval: bool = True
+) -> dict[str, object]:
     context = action_review_context(action_type, payload, requires_approval=requires_approval)
     return {
         "side_effects": list(context["side_effects"]),
@@ -102,7 +108,9 @@ def format_compact_action_review_context(context: dict[str, Any]) -> list[str]:
     return lines
 
 
-def format_action_review_context(action_type: str, payload: dict[str, Any] | None, *, requires_approval: bool = True) -> list[str]:
+def format_action_review_context(
+    action_type: str, payload: dict[str, Any] | None, *, requires_approval: bool = True
+) -> list[str]:
     context = action_review_context(action_type, payload, requires_approval=requires_approval)
     lines = ["side_effects: " + (", ".join(context["side_effects"]) or "none")]
     lines.append(f"review_gate: {context['approval_reason']}")

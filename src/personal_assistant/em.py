@@ -21,6 +21,7 @@ from .privacy import apply_privacy_filters
 
 # ---------------------------------------------------------------- people
 
+
 def resolve_person(conn, name: str, *, create: bool = True, **fields) -> int | None:
     name = (name or "").strip()
     if not name:
@@ -31,8 +32,9 @@ def resolve_person(conn, name: str, *, create: bool = True, **fields) -> int | N
         sets = {k: v for k, v in fields.items() if v}
         if sets:
             cols = ", ".join(f"{k} = ?" for k in sets)
-            conn.execute(f"UPDATE people SET {cols}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                         (*sets.values(), pid))
+            conn.execute(
+                f"UPDATE people SET {cols}, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (*sets.values(), pid)
+            )
         return pid
     if not create:
         return None
@@ -48,9 +50,10 @@ def upsert_person(conn, name: str, **fields) -> int:
 
 
 def list_team(conn) -> list[dict]:
-    return [dict(r) for r in conn.execute(
-        "SELECT id, name, role, team, relation FROM people ORDER BY relation, name"
-    ).fetchall()]
+    return [
+        dict(r)
+        for r in conn.execute("SELECT id, name, role, team, relation FROM people ORDER BY relation, name").fetchall()
+    ]
 
 
 # ---------------------------------------------------------------- evidence / 1:1 / competency
@@ -58,8 +61,9 @@ def list_team(conn) -> list[dict]:
 EVIDENCE_CATEGORIES = ("leadership", "delivery", "technical", "communication", "collaboration", "growth", "ownership")
 
 
-def record_evidence(conn, person: str, category: str, impact: str,
-                    artifact_link: str | None = None, privacy: str = "internal") -> int:
+def record_evidence(
+    conn, person: str, category: str, impact: str, artifact_link: str | None = None, privacy: str = "internal"
+) -> int:
     pid = resolve_person(conn, person)
     # Redact free-text here — em.py is the single chokepoint for EM writes, so every
     # caller (CLI `myos note/log-evidence` AND the Claude `log_evidence` tool) is covered
@@ -75,9 +79,16 @@ def record_evidence(conn, person: str, category: str, impact: str,
     return eid
 
 
-def log_one_on_one(conn, person: str, raw_text: str, *, occurred_on: str | None = None,
-                   summary: str | None = None, sentiment: str | None = None,
-                   action_items: list[str] | None = None) -> dict:
+def log_one_on_one(
+    conn,
+    person: str,
+    raw_text: str,
+    *,
+    occurred_on: str | None = None,
+    summary: str | None = None,
+    sentiment: str | None = None,
+    action_items: list[str] | None = None,
+) -> dict:
     pid = resolve_person(conn, person)
     # Redact before persisting/indexing. Note _first_sentence/_extract_action_items derive
     # from the redacted raw_text, and model-supplied summary/action_items are filtered too,
@@ -93,7 +104,7 @@ def log_one_on_one(conn, person: str, raw_text: str, *, occurred_on: str | None 
     )
     oid = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
     item_ids = []
-    for ai in (action_items or _extract_action_items(raw_text)):
+    for ai in action_items or _extract_action_items(raw_text):
         new_id, created = agentcore.capture_item(
             conn, text=f"[1:1 {person}] {ai}", kind="commitment", owner=person, source="one_on_one"
         )
@@ -116,9 +127,17 @@ def record_competency(conn, person: str, competency: str, level: str | None = No
 
 # ---------------------------------------------------------------- meetings (P3)
 
-def capture_meeting(conn, title: str, raw_text: str, *, source: str = "manual",
-                    occurred_on: str | None = None, summary: str | None = None,
-                    items: list[dict] | None = None) -> dict:
+
+def capture_meeting(
+    conn,
+    title: str,
+    raw_text: str,
+    *,
+    source: str = "manual",
+    occurred_on: str | None = None,
+    summary: str | None = None,
+    items: list[dict] | None = None,
+) -> dict:
     # Redact the transcript/notes before storing or indexing — audio transcripts are
     # exactly where spoken phone numbers/PII land (findings #2/#7). Derived items and the
     # inbox action items below come from this already-filtered text. The title can be the
@@ -150,8 +169,12 @@ def capture_meeting(conn, title: str, raw_text: str, *, source: str = "manual",
         if kind == "action":
             action_count += 1
             agentcore.capture_item(
-                conn, text=f"[mtg: {title}] {text}", kind="commitment",
-                owner=item.get("owner"), due_date=item.get("due_date"), source="meeting",
+                conn,
+                text=f"[mtg: {title}] {text}",
+                kind="commitment",
+                owner=item.get("owner"),
+                due_date=item.get("due_date"),
+                source="meeting",
             )
     append_event(conn, "meeting_captured", "meeting", mid, f"{title}:{action_count} actions")
     return {"meeting_id": mid, "item_ids": item_ids, "action_items": action_count}
@@ -159,27 +182,51 @@ def capture_meeting(conn, title: str, raw_text: str, *, source: str = "manual",
 
 # ---------------------------------------------------------------- dossier / review
 
+
 def person_dossier(conn, person: str) -> dict:
     pid = resolve_person(conn, person, create=False)
     if pid is None:
         return {"error": f"no person named '{person}'"}
     p = conn.execute("SELECT * FROM people WHERE id = ?", (pid,)).fetchone()
-    evidence = [dict(r) for r in conn.execute(
-        "SELECT category, impact, artifact_link, created_at FROM review_evidence "
-        "WHERE person_id = ? OR person = ? COLLATE NOCASE ORDER BY created_at DESC",
-        (pid, person)).fetchall()]
-    one_on_ones = [dict(r) for r in conn.execute(
-        "SELECT occurred_on, summary, sentiment, created_at FROM one_on_ones "
-        "WHERE person_id = ? ORDER BY created_at DESC", (pid,)).fetchall()]
-    competencies = [dict(r) for r in conn.execute(
-        "SELECT competency, level, notes, assessed_on FROM competency_snapshots "
-        "WHERE person_id = ? ORDER BY assessed_on DESC", (pid,)).fetchall()]
-    open_items = [dict(r) for r in conn.execute(
-        "SELECT text, kind, due_date FROM inbox_items "
-        "WHERE owner = ? COLLATE NOCASE AND status != 'archived' ORDER BY created_at DESC LIMIT 20",
-        (person,)).fetchall()]
-    return {"person": dict(p), "evidence": evidence, "one_on_ones": one_on_ones,
-            "competencies": competencies, "open_items": open_items}
+    evidence = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT category, impact, artifact_link, created_at FROM review_evidence "
+            "WHERE person_id = ? OR person = ? COLLATE NOCASE ORDER BY created_at DESC",
+            (pid, person),
+        ).fetchall()
+    ]
+    one_on_ones = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT occurred_on, summary, sentiment, created_at FROM one_on_ones "
+            "WHERE person_id = ? ORDER BY created_at DESC",
+            (pid,),
+        ).fetchall()
+    ]
+    competencies = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT competency, level, notes, assessed_on FROM competency_snapshots "
+            "WHERE person_id = ? ORDER BY assessed_on DESC",
+            (pid,),
+        ).fetchall()
+    ]
+    open_items = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT text, kind, due_date FROM inbox_items "
+            "WHERE owner = ? COLLATE NOCASE AND status != 'archived' ORDER BY created_at DESC LIMIT 20",
+            (person,),
+        ).fetchall()
+    ]
+    return {
+        "person": dict(p),
+        "evidence": evidence,
+        "one_on_ones": one_on_ones,
+        "competencies": competencies,
+        "open_items": open_items,
+    }
 
 
 def build_review_packet(conn, person: str) -> str:
@@ -203,22 +250,31 @@ def build_review_packet(conn, person: str) -> str:
         lines.append("_No evidence logged yet._")
 
     lines += ["", "## Competencies"]
-    lines += ([f"- {c['competency']}: {c['level'] or 'n/a'}" + (f" — {c['notes']}" if c.get("notes") else "")
-               for c in d["competencies"]] or ["_None assessed._"])
+    lines += [
+        f"- {c['competency']}: {c['level'] or 'n/a'}" + (f" — {c['notes']}" if c.get("notes") else "")
+        for c in d["competencies"]
+    ] or ["_None assessed._"]
 
     lines += ["", "## 1:1 themes"]
-    lines += ([f"- {o.get('occurred_on') or o['created_at'][:10]}: {o.get('summary') or ''} "
-               f"({o.get('sentiment') or 'neutral'})" for o in d["one_on_ones"]] or ["_No 1:1s logged._"])
+    lines += [
+        f"- {o.get('occurred_on') or o['created_at'][:10]}: {o.get('summary') or ''} "
+        f"({o.get('sentiment') or 'neutral'})"
+        for o in d["one_on_ones"]
+    ] or ["_No 1:1s logged._"]
 
     lines += ["", "## Open commitments"]
-    lines += ([f"- {i['text']}" + (f" (due {i['due_date']})" if i.get("due_date") else "") for i in d["open_items"]]
-              or ["_None tracked._"])
+    lines += [f"- {i['text']}" + (f" (due {i['due_date']})" if i.get("due_date") else "") for i in d["open_items"]] or [
+        "_None tracked._"
+    ]
 
     top = ", ".join(c for c, _ in sorted(by_cat.items(), key=lambda kv: -len(kv[1]))[:3]) or "no logged areas yet"
-    lines += ["", "## Suggested narrative (draft)",
-              f"{p['name']} has {len(d['evidence'])} logged evidence item(s), strongest in {top}. "
-              "Review the items above and expand into the review template; ask MYOS to draft prose "
-              "from this packet for a polished version."]
+    lines += [
+        "",
+        "## Suggested narrative (draft)",
+        f"{p['name']} has {len(d['evidence'])} logged evidence item(s), strongest in {top}. "
+        "Review the items above and expand into the review template; ask MYOS to draft prose "
+        "from this packet for a polished version.",
+    ]
     return "\n".join(lines)
 
 
@@ -240,7 +296,9 @@ _CONCERN = ("missed", "slipped", "concern", "struggled", "dropped", "late", "fru
 def classify_note(text: str) -> str:
     t = text.lower()
     # 1:1 is the most specific cue.
-    if any(k in t for k in ("1:1", "1-1", "one on one", "one-on-one", "synced with", "caught up with", "checked in with")):
+    if any(
+        k in t for k in ("1:1", "1-1", "one on one", "one-on-one", "synced with", "caught up with", "checked in with")
+    ):
         return "one_on_one"
     # Meeting BEFORE the bare decision branch (finding #6): a multi-line note that
     # records a decision and assigns actions is a meeting — otherwise it would be
@@ -250,7 +308,11 @@ def classify_note(text: str) -> str:
     # "retro"/"kickoff" on a one-liner are too weak — require multiline for those.
     strong_cue = bool(re.search(r"\b(meetings?|stand-?ups?|kick-?offs?|syncs?)\b", t)) or "review with" in t
     retro_cue = multiline and bool(re.search(r"\bretro(spective)?\b", t))
-    if strong_cue or retro_cue or (multiline and ("we decided" in t or "decided to" in t or "action item" in t or "\n-" in text)):
+    if (
+        strong_cue
+        or retro_cue
+        or (multiline and ("we decided" in t or "decided to" in t or "action item" in t or "\n-" in text))
+    ):
         return "meeting"
     if t.startswith("decision:") or "we decided" in t or "decided to" in t:
         return "decision"
@@ -305,9 +367,32 @@ def extract_person(conn, text: str) -> str | None:
 # Capitalized words that must NOT be treated as a person (so `myos note` does not
 # auto-create a "Friday"/"Monday"/"The" report — low-severity ingestion finding).
 _NON_PERSON_WORDS = {
-    "the", "decision", "we", "i", "they", "status", "fyi", "monday", "tuesday",
-    "wednesday", "thursday", "friday", "saturday", "sunday", "today", "tomorrow",
-    "next", "action", "risk", "also", "let", "team", "this", "that", "it", "update",
+    "the",
+    "decision",
+    "we",
+    "i",
+    "they",
+    "status",
+    "fyi",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+    "today",
+    "tomorrow",
+    "next",
+    "action",
+    "risk",
+    "also",
+    "let",
+    "team",
+    "this",
+    "that",
+    "it",
+    "update",
 }
 
 
@@ -335,21 +420,59 @@ def _extract_meeting_items(text: str) -> list[dict]:
         elif any(k in low for k in ("risk", "blocked", "blocker", "concern")):
             items.append({"kind": "risk", "text": s})
         elif any(k in low for k in _ACTION_CUES):
-            items.append({"kind": "action", "text": re.sub(r"^(action:?)\s*", "", s, flags=re.IGNORECASE),
-                          "owner": _lead_owner(s)})
+            items.append(
+                {
+                    "kind": "action",
+                    "text": re.sub(r"^(action:?)\s*", "", s, flags=re.IGNORECASE),
+                    "owner": _lead_owner(s),
+                }
+            )
     return items
 
 
 # Action cues. A date-anchored "by <when>" only — bare "by " mis-tags things like
 # "30% faster by load time" as actions (finding #24).
 _ACTION_CUES = (
-    "will ", "i'll", "we'll", "action:", "action item", "todo", "to do",
-    "follow up", "follow-up", "next step", "owns ", "take ",
-    "by monday", "by tuesday", "by wednesday", "by thursday", "by friday",
-    "by saturday", "by sunday", "by eod", "by tomorrow", "by next",
+    "will ",
+    "i'll",
+    "we'll",
+    "action:",
+    "action item",
+    "todo",
+    "to do",
+    "follow up",
+    "follow-up",
+    "next step",
+    "owns ",
+    "take ",
+    "by monday",
+    "by tuesday",
+    "by wednesday",
+    "by thursday",
+    "by friday",
+    "by saturday",
+    "by sunday",
+    "by eod",
+    "by tomorrow",
+    "by next",
 )
 # Leading capitalized words that are NOT owners.
-_NOT_OWNERS = {"The", "We", "I", "Let", "Also", "Next", "Action", "Risk", "Decision", "Team", "This", "That", "They", "It"}
+_NOT_OWNERS = {
+    "The",
+    "We",
+    "I",
+    "Let",
+    "Also",
+    "Next",
+    "Action",
+    "Risk",
+    "Decision",
+    "Team",
+    "This",
+    "That",
+    "They",
+    "It",
+}
 
 
 def _lead_owner(s: str) -> str | None:
@@ -375,8 +498,9 @@ def infer_note(conn, text: str) -> dict:
     if kind == "evidence":
         out.update(category=infer_category(text), impact=text, sentiment=_infer_sentiment(text))
     elif kind == "one_on_one":
-        out.update(summary=_first_sentence(text), sentiment=_infer_sentiment(text),
-                   action_items=_extract_action_items(text))
+        out.update(
+            summary=_first_sentence(text), sentiment=_infer_sentiment(text), action_items=_extract_action_items(text)
+        )
     elif kind == "meeting":
         out.update(items=_extract_meeting_items(text))
     return out
@@ -390,8 +514,14 @@ def route_note(conn, text: str) -> dict:
         eid = record_evidence(conn, info["person"], info["category"], info["impact"])
         return {"routed": "evidence", "person": info["person"], "category": info["category"], "id": eid}
     if kind == "one_on_one" and info.get("person"):
-        res = log_one_on_one(conn, info["person"], text, summary=info.get("summary"),
-                             sentiment=info.get("sentiment"), action_items=info.get("action_items"))
+        res = log_one_on_one(
+            conn,
+            info["person"],
+            text,
+            summary=info.get("summary"),
+            sentiment=info.get("sentiment"),
+            action_items=info.get("action_items"),
+        )
         return {"routed": "one_on_one", "person": info["person"], **res}
     if kind == "meeting":
         res = capture_meeting(conn, _first_sentence(text, 60), text)

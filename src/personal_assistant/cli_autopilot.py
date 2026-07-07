@@ -124,7 +124,9 @@ def run_autopilot_cycle(args: argparse.Namespace, deps: AutopilotCommandDependen
             """,
             (synced, signals_detected, tasks_created, safe_actions, approvals_pending, summary, run_id),
         )
-        append_event(conn, "autopilot_cycle", "autopilot_run", run_id, json.dumps({"summary": summary}, ensure_ascii=True))
+        append_event(
+            conn, "autopilot_cycle", "autopilot_run", run_id, json.dumps({"summary": summary}, ensure_ascii=True)
+        )
         conn.commit()
         try:
             reflection = ctx.reflect(conn)

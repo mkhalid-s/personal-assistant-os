@@ -33,7 +33,10 @@ class CursorBackend(AgentCliBackend):
         exe = argv[0] if argv else "agent"
         found = shutil.which(exe)
         if not found:
-            return False, f"Cursor Agent CLI executable not found on PATH: {exe} (install Cursor CLI or set MYOS_AGENT_CMD_CURSOR)"
+            return (
+                False,
+                f"Cursor Agent CLI executable not found on PATH: {exe} (install Cursor CLI or set MYOS_AGENT_CMD_CURSOR)",
+            )
         if Path(found).name == "agent":
             try:
                 proc = subprocess.run(

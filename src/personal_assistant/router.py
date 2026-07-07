@@ -74,7 +74,9 @@ def _heuristic_route_text(text: str, *, surface: str = "cli") -> RouteDecision:
             recommended_workflow="Ask the user what they want MYOS to do.",
             requires_confirmation=True,
         )
-    if _contains(lowered, "approve", "approval", "pending action", "receipt", "outbox", "what happened with that action"):
+    if _contains(
+        lowered, "approve", "approval", "pending action", "receipt", "outbox", "what happened with that action"
+    ):
         return RouteDecision(
             intent="approval_review",
             confidence=0.9,
@@ -89,7 +91,9 @@ def _heuristic_route_text(text: str, *, surface: str = "cli") -> RouteDecision:
             recommended_workflow="Run local schema and readiness checks.",
             command_tier="diagnostic",
         )
-    if _contains(lowered, "jira", "github", "confluence", "aha") and _contains(lowered, "draft", "update", "comment", "send", "post"):
+    if _contains(lowered, "jira", "github", "confluence", "aha") and _contains(
+        lowered, "draft", "update", "comment", "send", "post"
+    ):
         return RouteDecision(
             intent="connector_update",
             confidence=0.86,
@@ -118,7 +122,9 @@ def _heuristic_route_text(text: str, *, surface: str = "cli") -> RouteDecision:
             requires_confirmation=True,
             command_tier="workflow",
         )
-    if _contains(lowered, "today", "morning", "work on today", "plan my day", "daily brief", "next action", "prioritize"):
+    if _contains(
+        lowered, "today", "morning", "work on today", "plan my day", "daily brief", "next action", "prioritize"
+    ):
         return RouteDecision(
             intent="daily_brief",
             confidence=0.86,
@@ -340,7 +346,9 @@ def route_with_feedback(conn: sqlite3.Connection, text: str, *, surface: str = "
     ).fetchone()
     if row and row["expected_intent"] in ROUTABLE_INTENTS:
         decision = _decision_for_intent(row["expected_intent"], source_feedback_id=row["source_feedback_id"])
-        decision.fallback_reason = (decision.fallback_reason + "; " if decision.fallback_reason else "") + "exact text_hash match"
+        decision.fallback_reason = (
+            decision.fallback_reason + "; " if decision.fallback_reason else ""
+        ) + "exact text_hash match"
         return decision
     return route_text(text, surface=surface)
 
@@ -377,7 +385,9 @@ def record_route_event(conn: sqlite3.Connection, text: str, *, surface: str, dec
 def choose_autopilot_workflow(signals: list[dict[str, Any]]) -> dict[str, str]:
     joined = " ".join(f"{s.get('title', '')} {s.get('detail', '')}" for s in signals).strip()
     decision = route_text(joined or "plan my day", surface="autopilot")
-    pack = decision.workflow_pack or ("daily_ops" if decision.intent in {"daily_brief", "unknown"} else "intent_execution")
+    pack = decision.workflow_pack or (
+        "daily_ops" if decision.intent in {"daily_brief", "unknown"} else "intent_execution"
+    )
     if decision.intent == "connector_update":
         pack = "connector_ops"
     return {"intent": decision.intent, "workflow_pack": pack, "reason": decision.reason}
@@ -431,7 +441,9 @@ def autonomy_decision_for_route(conn: sqlite3.Connection, decision: RouteDecisio
     )
 
 
-def execute_route(conn: sqlite3.Connection, text: str, *, surface: str = "do", decision: RouteDecision | None = None) -> dict[str, Any]:
+def execute_route(
+    conn: sqlite3.Connection, text: str, *, surface: str = "do", decision: RouteDecision | None = None
+) -> dict[str, Any]:
     decision = decision or route_with_feedback(conn, text, surface=surface)
     result: dict[str, Any] = {"decision": decision.to_dict(), "actions": []}
     if decision.intent == "capture":
@@ -441,7 +453,9 @@ def execute_route(conn: sqlite3.Connection, text: str, *, surface: str = "do", d
         approvals = conn.execute(
             "SELECT COUNT(*) AS c FROM agent_actions WHERE requires_approval=1 AND status IN ('proposed', 'approved')"
         ).fetchone()["c"]
-        result.update({"status": "summarized", "open_items": _top_open_items(conn), "pending_approvals": int(approvals)})
+        result.update(
+            {"status": "summarized", "open_items": _top_open_items(conn), "pending_approvals": int(approvals)}
+        )
     elif decision.intent == "retrieve_context":
         hits = graphrag.retrieve(conn, text, limit=5, record_run=True, mode=f"smart_{surface}")
         result.update({"status": "retrieved", "hits": hits[:5]})
@@ -483,7 +497,9 @@ def execute_route(conn: sqlite3.Connection, text: str, *, surface: str = "do", d
             intent_id = intents.create_intent(conn, objective=text, context=f"Created by smart router from {surface}.")
         if decision.intent == "connector_update":
             connector = _connector_from_text(text)
-            factory.set_policy(conn, allowed_mode="review_first", connector=connector, action_type="draft_external_update")
+            factory.set_policy(
+                conn, allowed_mode="review_first", connector=connector, action_type="draft_external_update"
+            )
         run = factory.start_review_first_run(
             conn,
             intent_id=intent_id,
@@ -491,7 +507,14 @@ def execute_route(conn: sqlite3.Connection, text: str, *, surface: str = "do", d
             workflow_pack=decision.workflow_pack or "intent_execution",
         )
         observability.link_current_trace(conn, factory_run_id=run["id"])
-        result.update({"status": "factory_started", "intent_id": intent_id, "factory_run_id": run["id"], "factory_status": run["status"]})
+        result.update(
+            {
+                "status": "factory_started",
+                "intent_id": intent_id,
+                "factory_run_id": run["id"],
+                "factory_status": run["status"],
+            }
+        )
     else:
         result.update({"status": "needs_clarification", "message": decision.recommended_workflow})
     record_route_event(conn, text, surface=surface, decision=decision)
@@ -524,7 +547,9 @@ def summarize_result(result: dict[str, Any]) -> str:
     if result.get("pending_actions"):
         lines.append("Pending actions:")
         for action in result["pending_actions"][:3]:
-            lines.append(f"- action #{action['id']} [{action['action_type']}] {action['title']} status={action['status']}")
+            lines.append(
+                f"- action #{action['id']} [{action['action_type']}] {action['title']} status={action['status']}"
+            )
     return "\n".join(lines)
 
 

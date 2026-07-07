@@ -23,26 +23,86 @@ from .ingest.audio import transcribe_audio
 from .ingest.image import extract_image_text
 from .pulse import detect_mode, run_cycle
 from .retrieval import hybrid_score
-from . import assistant, autonomy, autonomy_loop, claims, cli_agent, cli_autonomy, cli_autopilot, cli_diagnostics, cli_factory, cli_health, cli_knowledge, cli_launchd, cli_local_data, cli_operations, cli_planning, cli_review, cli_runtime, cli_setup_live, cli_workflow, command_registry, context as ctx, em, entities, factory, graphrag, intents, model_setup, observability, plans, providers, queries, relationships, router, watch
+from . import (
+    assistant,
+    autonomy,
+    autonomy_loop,
+    claims,
+    cli_agent,
+    cli_autonomy,
+    cli_autopilot,
+    cli_diagnostics,
+    cli_factory,
+    cli_health,
+    cli_knowledge,
+    cli_launchd,
+    cli_local_data,
+    cli_operations,
+    cli_planning,
+    cli_review,
+    cli_runtime,
+    cli_setup_live,
+    cli_workflow,
+    command_registry,
+    context as ctx,
+    em,
+    entities,
+    factory,
+    graphrag,
+    intents,
+    model_setup,
+    observability,
+    plans,
+    providers,
+    queries,
+    relationships,
+    router,
+    watch,
+)
+
 # Helpers extracted out of this module (refactor #12); re-imported so existing
 # call sites (and tests importing them from cli) keep working unchanged.
 from .inbox import (
-    index_chunk, ensure_work_item_node, infer_kind, infer_priority, infer_risk,
-    infer_from_external, insert_inbox_item_dedup,
+    index_chunk,
+    ensure_work_item_node,
+    infer_kind,
+    infer_priority,
+    infer_risk,
+    infer_from_external,
+    insert_inbox_item_dedup,
 )
 from .locks import acquire_lock, release_lock
 from .privacy import (
-    get_policy_map, _policy_bool, apply_privacy_filters, redact_obj, _file_sha256, _cleanup_policy_retention,
+    get_policy_map,
+    _policy_bool,
+    apply_privacy_filters,
+    redact_obj,
+    _file_sha256,
+    _cleanup_policy_retention,
 )
 from .planner import (
-    _agent_analogies, _agent_plan, _agent_action_specs, _normalize_ai_plan,
-    _normalize_ai_actions, _ai_reason_artifacts,
+    _agent_analogies,
+    _agent_plan,
+    _agent_action_specs,
+    _normalize_ai_plan,
+    _normalize_ai_actions,
+    _ai_reason_artifacts,
 )
 from .execution import (
-    _PROTECTED_PATCH_PATTERNS, _patch_target_paths, _status_from_result,
-    _execute_agent_action, _execute_action_provider, _read_provider_stdin, _outbox_write,
-    _provider_body, _provider_target_summary, _post_jira_comment, _post_github_comment,
-    _handle_proposals, approve_and_execute, execute_connector_mutation,
+    _PROTECTED_PATCH_PATTERNS,
+    _patch_target_paths,
+    _status_from_result,
+    _execute_agent_action,
+    _execute_action_provider,
+    _read_provider_stdin,
+    _outbox_write,
+    _provider_body,
+    _provider_target_summary,
+    _post_jira_comment,
+    _post_github_comment,
+    _handle_proposals,
+    approve_and_execute,
+    execute_connector_mutation,
 )
 
 
@@ -107,7 +167,9 @@ def _trace_enabled_for(args: argparse.Namespace) -> bool:
     return str(getattr(args, "command", "") or "") not in {"restore", "setup-live"}
 
 
-def _command_autonomy_decision(conn: sqlite3.Connection, command: str, *, requested_mode: str = "") -> dict[str, object]:
+def _command_autonomy_decision(
+    conn: sqlite3.Connection, command: str, *, requested_mode: str = ""
+) -> dict[str, object]:
     return cli_autonomy.command_autonomy_decision(conn, command, requested_mode=requested_mode)
 
 
@@ -122,12 +184,9 @@ def _print_recommendations(conn: sqlite3.Connection, recommendations: list[dict[
 def cmd_capture(args: argparse.Namespace) -> None:
     cli_workflow.cmd_capture(args)
 
+
 def _is_watchable_file(path: Path) -> bool:
-    return (
-        not path.is_symlink()
-        and path.is_file()
-        and path.suffix.lower() in {".txt", ".md", ".markdown", ".log"}
-    )
+    return not path.is_symlink() and path.is_file() and path.suffix.lower() in {".txt", ".md", ".markdown", ".log"}
 
 
 def _scan_watch_dirs(conn, *, limit: int = 20, min_confidence: float = 0.65) -> tuple[int, int]:
@@ -234,11 +293,14 @@ def _scan_watch_dirs(conn, *, limit: int = 20, min_confidence: float = 0.65) -> 
 def cmd_triage(args: argparse.Namespace) -> None:
     cli_workflow.cmd_triage(args)
 
+
 def cmd_today(args: argparse.Namespace) -> None:
     cli_workflow.cmd_today(args)
 
+
 def cmd_risk_radar(args: argparse.Namespace) -> None:
     cli_workflow.cmd_risk_radar(args)
+
 
 def cmd_close_day(args: argparse.Namespace) -> None:
     cli_review.cmd_close_day(args)
@@ -322,20 +384,24 @@ def cmd_ingest_image(args: argparse.Namespace) -> None:
     conn.commit()
 
     print(f"Image text stored as media asset #{media_id}.")
-    print("Tip: run `myos context \"<topic>\"` to retrieve relevant chunks.")
+    print('Tip: run `myos context "<topic>"` to retrieve relevant chunks.')
 
 
 def cmd_link(args: argparse.Namespace) -> None:
     cli_diagnostics.cmd_link(args)
 
+
 def cmd_related(args: argparse.Namespace) -> None:
     cli_diagnostics.cmd_related(args)
+
 
 def cmd_context(args: argparse.Namespace) -> None:
     cli_diagnostics.cmd_context(args)
 
+
 def cmd_retrieval_run(args: argparse.Namespace) -> None:
     cli_diagnostics.cmd_retrieval_run(args)
+
 
 def cmd_recall(args: argparse.Namespace) -> None:
     """Scored recall over the conversation memory: relevance + recency + importance."""
@@ -364,8 +430,10 @@ def cmd_reflect(_: argparse.Namespace) -> None:
     conn = get_connection()
     r = ctx.reflect(conn)
     h = ctx.hygiene(conn)
-    print(f"Reflection: {r['insights']} insight(s) across {r['subjects']} subject(s); "
-          f"{r.get('suggestions', 0)} new suggestion(s).")
+    print(
+        f"Reflection: {r['insights']} insight(s) across {r['subjects']} subject(s); "
+        f"{r.get('suggestions', 0)} new suggestion(s)."
+    )
     print(f"Hygiene: merged {h['merged']} duplicate(s), decayed {h['decayed']} stale observation(s).")
     if r.get("suggestions"):
         print("Review them: myos suggestions list")
@@ -428,9 +496,7 @@ def cmd_memory(_: argparse.Namespace) -> None:
 
 def cmd_reindex(_: argparse.Namespace) -> None:
     conn = get_connection()
-    items = conn.execute(
-        "SELECT id, title FROM work_items ORDER BY id ASC"
-    ).fetchall()
+    items = conn.execute("SELECT id, title FROM work_items ORDER BY id ASC").fetchall()
 
     chunks_added = 0
     nodes_added = 0
@@ -455,13 +521,12 @@ def cmd_reindex(_: argparse.Namespace) -> None:
                 chunks_added += 1
 
     conn.commit()
-    print(
-        f"Reindex complete. Added {nodes_added} nodes and {chunks_added} chunks for existing work items."
-    )
+    print(f"Reindex complete. Added {nodes_added} nodes and {chunks_added} chunks for existing work items.")
 
 
 def cmd_sync(args: argparse.Namespace) -> None:
     cli_workflow.cmd_sync(args, load_env_file)
+
 
 def _sqlite_fts5_available(conn: sqlite3.Connection) -> tuple[bool, str]:
     try:
@@ -507,9 +572,7 @@ def _pyproject_dependencies(pyproject: Path) -> list[str]:
             if "[" in stripped and "]" in stripped:
                 raw = stripped.split("[", 1)[1].rsplit("]", 1)[0]
                 return [
-                    item.strip().strip("'").strip('"')
-                    for item in raw.split(",")
-                    if item.strip().strip("'").strip('"')
+                    item.strip().strip("'").strip('"') for item in raw.split(",") if item.strip().strip("'").strip('"')
                 ]
             in_deps = True
             continue
@@ -579,11 +642,14 @@ def cmd_release_check(args: argparse.Namespace) -> None:
 def cmd_ingest_external(args: argparse.Namespace) -> None:
     cli_workflow.cmd_ingest_external(args)
 
+
 def cmd_inbox_process(args: argparse.Namespace) -> None:
     cli_workflow.cmd_inbox_process(args)
 
+
 def cmd_why(args: argparse.Namespace) -> None:
     cli_diagnostics.cmd_why(args)
+
 
 def cmd_at_risk(args: argparse.Namespace) -> None:
     cli_review.cmd_at_risk(args)
@@ -770,7 +836,9 @@ def cmd_morning(args: argparse.Namespace) -> None:
 
 
 def cmd_now(args: argparse.Namespace) -> None:
-    cmd_next_action(argparse.Namespace(meeting_hours=args.meeting_hours, risk_threshold=60, feedback_command="myos now"))
+    cmd_next_action(
+        argparse.Namespace(meeting_hours=args.meeting_hours, risk_threshold=60, feedback_command="myos now")
+    )
 
 
 def cmd_end(_: argparse.Namespace) -> None:
@@ -873,6 +941,7 @@ def cmd_tune(args: argparse.Namespace) -> None:
 def cmd_delegate(args: argparse.Namespace) -> None:
     cli_agent.cmd_delegate(args)
 
+
 # Paths a harnessed-agent patch may NEVER touch — editing these would let an
 # approved diff disable the autonomy gate or hijack hooks on the next run (#4).
 def cmd_action_provider(args: argparse.Namespace) -> None:
@@ -882,17 +951,22 @@ def cmd_action_provider(args: argparse.Namespace) -> None:
 def cmd_act(args: argparse.Namespace) -> None:
     cli_agent.cmd_act(args)
 
+
 def cmd_code(args: argparse.Namespace) -> None:
     cli_agent.cmd_code(args)
+
 
 def cmd_learn(args: argparse.Namespace) -> None:
     cli_agent.cmd_learn(args)
 
+
 def cmd_coach(args: argparse.Namespace) -> None:
     cli_agent.cmd_coach(args)
 
+
 def cmd_agent_status(args: argparse.Namespace) -> None:
     cli_agent.cmd_agent_status(args)
+
 
 def cmd_do(args: argparse.Namespace) -> None:
     conn = get_connection()
@@ -906,7 +980,7 @@ def cmd_do(args: argparse.Namespace) -> None:
             command="do",
             intent=route_decision.intent,
             workflow_pack=route_decision.workflow_pack,
-        )
+        ),
     )
     if autonomy_decision["decision"] == autonomy.BLOCKED:
         raise SystemExit(1)
@@ -922,14 +996,18 @@ def cmd_do(args: argparse.Namespace) -> None:
 def _print_model_plan(plan: dict[str, object]) -> None:
     cli_diagnostics._print_model_plan(plan)
 
+
 def cmd_model(args: argparse.Namespace) -> None:
     cli_diagnostics.cmd_model(args)
+
 
 def cmd_router(args: argparse.Namespace) -> None:
     cli_diagnostics.cmd_router(args)
 
+
 def cmd_trace(args: argparse.Namespace) -> None:
     cli_diagnostics.cmd_trace(args)
+
 
 def cmd_autonomy(args: argparse.Namespace) -> None:
     cli_autonomy.cmd_autonomy(args)
@@ -943,7 +1021,7 @@ def cmd_smart_help(args: argparse.Namespace) -> None:
     else:
         tiers = [tier]
     print("MYOS smart command surface")
-    print("Primary: myos chat | myos voice | myos autopilot --factory | myos do \"...\" | myos approve --list")
+    print('Primary: myos chat | myos voice | myos autopilot --factory | myos do "..." | myos approve --list')
     for name in tiers:
         commands = inventory.get(name, [])
         print(f"\n{name.title()} commands:")
@@ -989,6 +1067,7 @@ def cmd_loop(args: argparse.Namespace) -> None:
 
 def cmd_approve(args: argparse.Namespace) -> None:
     cli_agent.cmd_approve(args)
+
 
 def cmd_autopilot_status(args: argparse.Namespace) -> None:
     conn = get_connection()
@@ -1139,7 +1218,13 @@ def cmd_self_review(_: argparse.Namespace) -> None:
     checks.append(("standing_goals", active_goals > 0, f"active_goals={active_goals}"))
     checks.append(("autopilot_recent", recent_runs > 0, f"runs_24h={recent_runs}"))
     checks.append(("approval_queue", pending < 20, f"pending_approvals={pending}"))
-    checks.append(("ai_reasoning", ai_provider or policy.get("ai_provider") == "local", f"ai_command={'yes' if ai_provider else 'no'}"))
+    checks.append(
+        (
+            "ai_reasoning",
+            ai_provider or policy.get("ai_provider") == "local",
+            f"ai_command={'yes' if ai_provider else 'no'}",
+        )
+    )
     checks.append(("action_provider", action_provider, f"action_command={'yes' if action_provider else 'no'}"))
     checks.append(("live_connectors", connectors_ready > 0, f"connectors_ok={connectors_ready}"))
 
@@ -1222,20 +1307,26 @@ def cmd_watch_scan(args: argparse.Namespace) -> None:
 def cmd_intent(args: argparse.Namespace) -> None:
     cli_planning.cmd_intent(args)
 
+
 def cmd_plan(args: argparse.Namespace) -> None:
     cli_planning.cmd_plan(args)
+
 
 def cmd_evidence(args: argparse.Namespace) -> None:
     cli_planning.cmd_evidence(args)
 
+
 def cmd_review_packet(args: argparse.Namespace) -> None:
     cli_planning.cmd_review_packet(args)
+
 
 def cmd_execution_receipt(args: argparse.Namespace) -> None:
     cli_agent.cmd_execution_receipt(args)
 
+
 def cmd_agent_run(args: argparse.Namespace) -> None:
     cli_agent.cmd_agent_run(args)
+
 
 def cmd_factory(args: argparse.Namespace) -> None:
     cli_factory.cmd_factory(args)
@@ -1244,11 +1335,14 @@ def cmd_factory(args: argparse.Namespace) -> None:
 def cmd_entity(args: argparse.Namespace) -> None:
     cli_knowledge.cmd_entity(args)
 
+
 def cmd_relationship(args: argparse.Namespace) -> None:
     cli_knowledge.cmd_relationship(args)
 
+
 def cmd_claim(args: argparse.Namespace) -> None:
     cli_knowledge.cmd_claim(args)
+
 
 def cmd_pulse(args: argparse.Namespace) -> None:
     if args.env_file:
@@ -1296,8 +1390,12 @@ def cmd_chat(args: argparse.Namespace) -> None:
         if user.lower() in ("exit", "quit", ":q"):
             break
         result = assistant.run_turn(
-            conn, user, history, backend_name=args.backend or None,
-            surface="chat", conversation_id=conversation_id,
+            conn,
+            user,
+            history,
+            backend_name=args.backend or None,
+            surface="chat",
+            conversation_id=conversation_id,
         )
         conversation_id = result.get("conversation_id", conversation_id)
         history = result.get("history", history)
@@ -1340,8 +1438,12 @@ def cmd_voice(args: argparse.Namespace) -> None:
             continue
         print(f"you> {text}")
         result = assistant.run_turn(
-            conn, text, history, backend_name=args.backend or None,
-            surface="voice", conversation_id=conversation_id,
+            conn,
+            text,
+            history,
+            backend_name=args.backend or None,
+            surface="voice",
+            conversation_id=conversation_id,
         )
         conversation_id = result.get("conversation_id", conversation_id)
         history = result.get("history", history)
@@ -1362,7 +1464,7 @@ def cmd_team(args: argparse.Namespace) -> None:
         return
     rows = em.list_team(conn)
     if not rows:
-        print("No people tracked yet. Add one: myos team add \"<name>\" --role ... --relation report")
+        print('No people tracked yet. Add one: myos team add "<name>" --role ... --relation report')
         return
     print("Team & stakeholders:")
     for r in rows:
@@ -1383,8 +1485,10 @@ def cmd_one_on_one(args: argparse.Namespace) -> None:
     conn = get_connection()
     res = em.log_one_on_one(conn, args.person, args.notes)
     conn.commit()
-    print(f"Logged 1:1 #{res['one_on_one_id']} with {args.person}; "
-          f"{len(res['action_item_ids'])} action item(s) captured to your inbox.")
+    print(
+        f"Logged 1:1 #{res['one_on_one_id']} with {args.person}; "
+        f"{len(res['action_item_ids'])} action item(s) captured to your inbox."
+    )
 
 
 def cmd_meeting(args: argparse.Namespace) -> None:
@@ -1393,6 +1497,7 @@ def cmd_meeting(args: argparse.Namespace) -> None:
     source = "manual"
     if args.audio:
         from . import voice
+
         text = voice.transcribe(args.audio) or text
         source = "audio"
         if not text:
@@ -1401,8 +1506,10 @@ def cmd_meeting(args: argparse.Namespace) -> None:
     title = args.title or em._first_sentence(text, 60) or "Meeting"
     res = em.capture_meeting(conn, title, text, source=source)
     conn.commit()
-    print(f"Captured meeting #{res['meeting_id']} '{title}': "
-          f"{res['action_items']} action item(s), {len(res['item_ids'])} item(s) total.")
+    print(
+        f"Captured meeting #{res['meeting_id']} '{title}': "
+        f"{res['action_items']} action item(s), {len(res['item_ids'])} item(s) total."
+    )
 
 
 def cmd_review_draft(args: argparse.Namespace) -> None:
@@ -1438,7 +1545,9 @@ def build_parser() -> argparse.ArgumentParser:
     do.set_defaults(func=cmd_do)
 
     smart_help = sub.add_parser("help", help="Show simplified daily/workflow/expert command tiers.")
-    smart_help.add_argument("tier", nargs="?", choices=["daily", "workflow", "workflows", "expert", "diagnostic", "all"], default="daily")
+    smart_help.add_argument(
+        "tier", nargs="?", choices=["daily", "workflow", "workflows", "expert", "diagnostic", "all"], default="daily"
+    )
     smart_help.set_defaults(func=cmd_smart_help)
 
     model = sub.add_parser("model", help="Manage optional tiny local models for MYOS routing.")
@@ -1449,7 +1558,9 @@ def build_parser() -> argparse.ArgumentParser:
     model_setup_parser = model_sub.add_parser("setup", help="Plan or apply tiny local model setup.")
     model_setup_parser.add_argument("--router", action="store_true", help="Configure the router intent model.")
     model_setup_parser.add_argument("--runtime", choices=["auto", "ollama", "llama-cpp", "command"], default="auto")
-    model_setup_parser.add_argument("--model", choices=list(model_setup.ROUTER_MODELS), default=model_setup.DEFAULT_ROUTER_MODEL)
+    model_setup_parser.add_argument(
+        "--model", choices=list(model_setup.ROUTER_MODELS), default=model_setup.DEFAULT_ROUTER_MODEL
+    )
     model_setup_parser.add_argument("--command", default="", help="Custom MYOS_ROUTER_COMMAND for runtime=command.")
     model_setup_parser.add_argument("--apply", action="store_true", help="Pull/download and write local wrapper files.")
     model_setup_parser.set_defaults(func=cmd_model)
@@ -1460,7 +1571,9 @@ def build_parser() -> argparse.ArgumentParser:
     router_sub = router_parser.add_subparsers(dest="router_action", required=True)
     router_eval = router_sub.add_parser("eval", help="Evaluate route fixtures and calibration.")
     router_eval.add_argument("--fixture", default="", help="Optional route eval fixture JSON path.")
-    router_eval.add_argument("--model-shadow", action="store_true", help="Compare local model decisions when configured.")
+    router_eval.add_argument(
+        "--model-shadow", action="store_true", help="Compare local model decisions when configured."
+    )
     router_eval.add_argument("--no-record", action="store_true", help="Do not persist eval metadata.")
     router_eval.set_defaults(func=cmd_router)
     router_feedback = router_sub.add_parser("feedback", help="Record privacy-safe route correction metadata.")
@@ -1520,15 +1633,20 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Record usefulness feedback for a recommendation printed by MYOS. "
             "For daily recommendations, copy values from output like "
-            "[label=daily_reduce_risk command=\"myos next-action\"].\n"
+            '[label=daily_reduce_risk command="myos next-action"].\n'
             "Common daily commands: myos next-action or myos now.\n"
-            "For approval handoffs, use --label review_approvals --command \"myos approve --list\".\n"
-            "For goal scheduler handoffs, use --label run_goal_cycle --command \"myos loop run-goal --goal 1\" "
-            "or --label review_goals --command \"myos goal list\"."
+            'For approval handoffs, use --label review_approvals --command "myos approve --list".\n'
+            'For goal scheduler handoffs, use --label run_goal_cycle --command "myos loop run-goal --goal 1" '
+            'or --label review_goals --command "myos goal list".'
         ),
     )
     recommendation_feedback.add_argument("--label", required=True, help="Printed label, e.g. daily_reduce_risk.")
-    recommendation_feedback.add_argument("--command", dest="recommendation_command", default="", help="Printed command text, e.g. myos next-action or myos now.")
+    recommendation_feedback.add_argument(
+        "--command",
+        dest="recommendation_command",
+        default="",
+        help="Printed command text, e.g. myos next-action or myos now.",
+    )
     recommendation_feedback.add_argument("--decision", choices=["", *list(autonomy.DECISIONS)], default="")
     recommendation_feedback.add_argument("--intent", default="")
     recommendation_feedback.add_argument("--workflow-pack", default="")
@@ -1546,7 +1664,12 @@ def build_parser() -> argparse.ArgumentParser:
             "Tiny limits still keep active daily feedback visible."
         ),
     )
-    recommendations.add_argument("--limit", type=int, default=20, help="Maximum summary rows to show; tiny limits still keep active daily feedback visible.")
+    recommendations.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Maximum summary rows to show; tiny limits still keep active daily feedback visible.",
+    )
     recommendations.set_defaults(func=cmd_autonomy)
 
     loop = sub.add_parser("loop", help="Run one bounded durable autonomy loop cycle.")
@@ -1554,7 +1677,11 @@ def build_parser() -> argparse.ArgumentParser:
     loop_start = loop_sub.add_parser("start", help="Start a durable autonomous task loop.")
     loop_start.add_argument("objective")
     loop_start.add_argument("--context", default="")
-    loop_start.add_argument("--backend", choices=["", "claude", "claude-sdk", "claude-code-sdk", "cursor", "zero", "claude-code", "copilot", "command"], default="")
+    loop_start.add_argument(
+        "--backend",
+        choices=["", "claude", "claude-sdk", "claude-code-sdk", "cursor", "zero", "claude-code", "copilot", "command"],
+        default="",
+    )
     loop_start.add_argument("--max-actions", type=int, default=autonomy_loop.DEFAULT_MAX_ACTIONS)
     loop_start.add_argument("--mode", choices=list(autonomy_loop.MODES), default="safe")
     loop_start.set_defaults(func=cmd_loop)
@@ -1592,9 +1719,21 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     loop_run_goal.add_argument("--goal", type=int, help="Run a specific assistant goal id.")
-    loop_run_goal.add_argument("--backend", choices=["", "claude", "claude-sdk", "claude-code-sdk", "cursor", "zero", "claude-code", "copilot", "command"], default="", help="Optional reasoning backend for this bounded cycle.")
-    loop_run_goal.add_argument("--max-actions", type=int, default=autonomy_loop.DEFAULT_MAX_ACTIONS, help="Maximum proposed actions for the cycle.")
-    loop_run_goal.add_argument("--limit", type=int, default=5, help="Maximum eligible goals to consider when --goal is omitted.")
+    loop_run_goal.add_argument(
+        "--backend",
+        choices=["", "claude", "claude-sdk", "claude-code-sdk", "cursor", "zero", "claude-code", "copilot", "command"],
+        default="",
+        help="Optional reasoning backend for this bounded cycle.",
+    )
+    loop_run_goal.add_argument(
+        "--max-actions",
+        type=int,
+        default=autonomy_loop.DEFAULT_MAX_ACTIONS,
+        help="Maximum proposed actions for the cycle.",
+    )
+    loop_run_goal.add_argument(
+        "--limit", type=int, default=5, help="Maximum eligible goals to consider when --goal is omitted."
+    )
     loop_run_goal.set_defaults(func=cmd_loop)
     loop_ledger = loop_sub.add_parser(
         "ledger",
@@ -1686,7 +1825,9 @@ def build_parser() -> argparse.ArgumentParser:
     reflect.set_defaults(func=cmd_reflect)
 
     suggestions = sub.add_parser("suggestions", help="List/accept/dismiss tracked improvement suggestions.")
-    suggestions.add_argument("suggestions_action", nargs="?", choices=["list", "accept", "dismiss", "apply"], default="list")
+    suggestions.add_argument(
+        "suggestions_action", nargs="?", choices=["list", "accept", "dismiss", "apply"], default="list"
+    )
     suggestions.add_argument("id", nargs="?", type=int)
     suggestions.add_argument("--status", default="proposed")
     suggestions.add_argument("--feedback", default="")
@@ -1721,7 +1862,9 @@ def build_parser() -> argparse.ArgumentParser:
     setup_live.add_argument("--autopilot-interval-sec", type=int, default=900)
     setup_live.add_argument("--router-model", action="store_true", help="Also configure the tiny local router model.")
     setup_live.add_argument("--router-runtime", choices=["auto", "ollama", "llama-cpp", "command"], default="auto")
-    setup_live.add_argument("--router-model-name", choices=list(model_setup.ROUTER_MODELS), default=model_setup.DEFAULT_ROUTER_MODEL)
+    setup_live.add_argument(
+        "--router-model-name", choices=list(model_setup.ROUTER_MODELS), default=model_setup.DEFAULT_ROUTER_MODEL
+    )
     setup_live.set_defaults(func=cmd_setup_live)
 
     onboard = sub.add_parser("onboard", help="Show connector onboarding diagnostics.")
@@ -1757,7 +1900,9 @@ def build_parser() -> argparse.ArgumentParser:
     release_check = sub.add_parser("release-check", help="Run local release readiness checks.")
     release_check.add_argument("--strict", action="store_true")
     release_check.add_argument("--verbose", action="store_true")
-    release_check.add_argument("--json", action="store_true", help="Emit a single JSON object instead of formatted text.")
+    release_check.add_argument(
+        "--json", action="store_true", help="Emit a single JSON object instead of formatted text."
+    )
     release_check.set_defaults(func=cmd_release_check)
 
     ingest_external = sub.add_parser("ingest-external", help="Ingest synced external items into inbox.")
@@ -2093,17 +2238,28 @@ def build_parser() -> argparse.ArgumentParser:
     factory_start.add_argument("--executor", choices=["local", "zero"], default="local")
     factory_start.add_argument("--repo", default=".", help="Repository path for coding executors.")
     factory_start.add_argument("--timeout", type=int, default=600, help="Executor timeout in seconds.")
-    factory_start.add_argument("--max-turns", type=int, default=0, help="Optional Zero max-turns limit; 0 uses Zero default.")
-    factory_start.add_argument("--verify-command", action="append", default=[], help="Suggested local verification command to include in the Zero review packet.")
+    factory_start.add_argument(
+        "--max-turns", type=int, default=0, help="Optional Zero max-turns limit; 0 uses Zero default."
+    )
+    factory_start.add_argument(
+        "--verify-command",
+        action="append",
+        default=[],
+        help="Suggested local verification command to include in the Zero review packet.",
+    )
     factory_start.set_defaults(func=cmd_factory)
     factory_status = factory_sub.add_parser("status", help="Show factory run stages and artifacts.")
     factory_status.add_argument("--id", type=int, required=True)
-    factory_status.add_argument("--json", action="store_true", help="Emit a single JSON object instead of formatted text.")
+    factory_status.add_argument(
+        "--json", action="store_true", help="Emit a single JSON object instead of formatted text."
+    )
     factory_status.set_defaults(func=cmd_factory)
     factory_stage = factory_sub.add_parser("run-stage", help="Record or update one factory stage.")
     factory_stage.add_argument("--id", type=int, required=True)
     factory_stage.add_argument("--stage", choices=list(factory.STAGES), required=True)
-    factory_stage.add_argument("--status", choices=["pending", "running", "completed", "waiting", "blocked", "failed"], default="completed")
+    factory_stage.add_argument(
+        "--status", choices=["pending", "running", "completed", "waiting", "blocked", "failed"], default="completed"
+    )
     factory_stage.add_argument("--note", default="")
     factory_stage.set_defaults(func=cmd_factory)
     factory_continue = factory_sub.add_parser("continue", help="Continue the next non-execution pending stage.")
@@ -2112,7 +2268,9 @@ def build_parser() -> argparse.ArgumentParser:
     factory_review = factory_sub.add_parser("review", help="Review factory readiness before approval.")
     factory_review.add_argument("--id", type=int, required=True)
     factory_review.set_defaults(func=cmd_factory)
-    factory_approve = factory_sub.add_parser("approve", help="Approve a factory run, optionally handing off to execution gates.")
+    factory_approve = factory_sub.add_parser(
+        "approve", help="Approve a factory run, optionally handing off to execution gates."
+    )
     factory_approve.add_argument("--id", type=int, required=True)
     factory_approve.add_argument("--execute", action="store_true")
     factory_approve.set_defaults(func=cmd_factory)
@@ -2150,7 +2308,11 @@ def build_parser() -> argparse.ArgumentParser:
     delegate.add_argument("--priority", type=int, default=2)
     delegate.add_argument("--max-actions", type=int, default=5)
     delegate.add_argument("--analogy-limit", type=int, default=5)
-    delegate.add_argument("--to", default="", help="Harness an external agent CLI (zero|cursor|claude-code|copilot|command) to execute this objective.")
+    delegate.add_argument(
+        "--to",
+        default="",
+        help="Harness an external agent CLI (zero|cursor|claude-code|copilot|command) to execute this objective.",
+    )
     delegate.set_defaults(func=cmd_delegate)
 
     code = sub.add_parser("code", help="Delegate a repository coding task to an external coding agent.")
@@ -2183,7 +2345,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     agent_run = sub.add_parser("agent-run", help="Run a local bounded agent role for an intent.")
     agent_run.add_argument("--intent", type=int, required=True)
-    agent_run.add_argument("--role", choices=["planner", "researcher", "executor", "reviewer", "critic", "summarizer"], required=True)
+    agent_run.add_argument(
+        "--role", choices=["planner", "researcher", "executor", "reviewer", "critic", "summarizer"], required=True
+    )
     agent_run.add_argument("--plan", type=int)
     agent_run.add_argument("--retrieval-run", type=int)
     agent_run.set_defaults(func=cmd_agent_run)
@@ -2212,13 +2376,29 @@ def build_parser() -> argparse.ArgumentParser:
     autopilot.add_argument("--digest-dir", default="")
     autopilot.add_argument("--no-sync", action="store_true")
     autopilot.add_argument("--no-process", action="store_true")
-    autopilot.add_argument("--watch-risks", action="store_true", help="Proactively detect project risks each cycle and draft nudges (approval-gated).")
-    autopilot.add_argument("--factory", action="store_true", help="Start or continue one policy-aware factory run this cycle.")
+    autopilot.add_argument(
+        "--watch-risks",
+        action="store_true",
+        help="Proactively detect project risks each cycle and draft nudges (approval-gated).",
+    )
+    autopilot.add_argument(
+        "--factory", action="store_true", help="Start or continue one policy-aware factory run this cycle."
+    )
     autopilot.add_argument("--factory-mode", choices=list(factory.MODES), default="review_first")
     autopilot.add_argument("--factory-pack", choices=["auto", *list(factory.WORKFLOW_PACKS)], default="auto")
-    autopilot.add_argument("--loop-goal", action="store_true", help="Run one goal-driven autonomy scheduler decision and stop; requires --once.")
-    autopilot.add_argument("--loop-goal-id", type=int, help="Target one active goal for --loop-goal; otherwise pick the next eligible goal.")
-    autopilot.add_argument("--loop-goal-limit", type=int, default=5, help="Number of eligible goals to inspect for --loop-goal.")
+    autopilot.add_argument(
+        "--loop-goal",
+        action="store_true",
+        help="Run one goal-driven autonomy scheduler decision and stop; requires --once.",
+    )
+    autopilot.add_argument(
+        "--loop-goal-id",
+        type=int,
+        help="Target one active goal for --loop-goal; otherwise pick the next eligible goal.",
+    )
+    autopilot.add_argument(
+        "--loop-goal-limit", type=int, default=5, help="Number of eligible goals to inspect for --loop-goal."
+    )
     autopilot.set_defaults(func=cmd_autopilot)
 
     approve = sub.add_parser("approve", help="Review, approve, and optionally execute autopilot actions.")
@@ -2226,8 +2406,15 @@ def build_parser() -> argparse.ArgumentParser:
     approve.add_argument("--action", type=int)
     approve.add_argument("--execute", action="store_true")
     approve.add_argument("--limit", type=int, default=20)
-    approve.add_argument("--json", action="store_true", help="With --list, emit a single JSON object instead of formatted text.")
-    approve.add_argument("--stale-only", action="store_true", dest="stale_only", help="With --list, show only approvals in nearing_expiry, expired, tampered, or invalid states.")
+    approve.add_argument(
+        "--json", action="store_true", help="With --list, emit a single JSON object instead of formatted text."
+    )
+    approve.add_argument(
+        "--stale-only",
+        action="store_true",
+        dest="stale_only",
+        help="With --list, show only approvals in nearing_expiry, expired, tampered, or invalid states.",
+    )
     approve.set_defaults(func=cmd_approve)
 
     receipt = sub.add_parser("execution-receipt", help="Inspect action execution receipts.")
@@ -2239,7 +2426,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     autopilot_status = sub.add_parser("autopilot-status", help="Show autopilot runs and pending approvals.")
     autopilot_status.add_argument("--limit", type=int, default=10)
-    autopilot_status.add_argument("--json", action="store_true", help="Emit a single JSON object instead of formatted text.")
+    autopilot_status.add_argument(
+        "--json", action="store_true", help="Emit a single JSON object instead of formatted text."
+    )
     autopilot_status.set_defaults(func=cmd_autopilot_status)
 
     digest = sub.add_parser("digest", help="Show latest assistant digest.")
@@ -2268,8 +2457,12 @@ def build_parser() -> argparse.ArgumentParser:
     self_review = sub.add_parser("self-review", help="Review whether the assistant is truly autonomous yet.")
     self_review.set_defaults(func=cmd_self_review)
 
-    action_provider = sub.add_parser("action-provider", help="Built-in approved-action provider for MYOS_ACTION_COMMAND.")
-    action_provider.add_argument("--execute", action="store_true", help="Execute guarded external action instead of dry-run outbox.")
+    action_provider = sub.add_parser(
+        "action-provider", help="Built-in approved-action provider for MYOS_ACTION_COMMAND."
+    )
+    action_provider.add_argument(
+        "--execute", action="store_true", help="Execute guarded external action instead of dry-run outbox."
+    )
     action_provider.set_defaults(func=cmd_action_provider)
 
     watch_dir = sub.add_parser("watch-dir", help="Manage folders Autopilot ingests automatically.")
@@ -2298,7 +2491,9 @@ def build_parser() -> argparse.ArgumentParser:
     morning.add_argument("--meeting-hours", type=float, default=0.0)
     morning.add_argument("--limit", type=int, default=5)
     morning.add_argument("--risk-threshold", type=int, default=60)
-    morning.add_argument("--run-day", action="store_true", help="Run the older full run-day workflow instead of the brief.")
+    morning.add_argument(
+        "--run-day", action="store_true", help="Run the older full run-day workflow instead of the brief."
+    )
     morning.set_defaults(func=cmd_morning)
 
     now = sub.add_parser("now", help="Get one next action now.")
@@ -2332,12 +2527,16 @@ def build_parser() -> argparse.ArgumentParser:
     pulse.set_defaults(func=cmd_pulse)
 
     chat = sub.add_parser("chat", help="Interactive always-on assistant (text). Propose-and-approve.")
-    chat.add_argument("--backend", default="", help="claude|copilot|cursor|zero|command (default: MYOS_AGENT_BACKEND or claude).")
+    chat.add_argument(
+        "--backend", default="", help="claude|copilot|cursor|zero|command (default: MYOS_AGENT_BACKEND or claude)."
+    )
     chat.add_argument("--env-file", default="")
     chat.set_defaults(func=cmd_chat)
 
     voice = sub.add_parser("voice", help="Interactive always-on assistant (push-to-talk voice).")
-    voice.add_argument("--backend", default="", help="claude|copilot|cursor|zero|command (default: MYOS_AGENT_BACKEND or claude).")
+    voice.add_argument(
+        "--backend", default="", help="claude|copilot|cursor|zero|command (default: MYOS_AGENT_BACKEND or claude)."
+    )
     voice.add_argument("--env-file", default="")
     voice.add_argument("--text-reply", action="store_true", help="Print replies without speaking them.")
     voice.set_defaults(func=cmd_voice)
@@ -2352,7 +2551,10 @@ def build_parser() -> argparse.ArgumentParser:
     team_add.set_defaults(func=cmd_team)
     team.set_defaults(func=cmd_team)
 
-    note = sub.add_parser("note", help="Capture free-form text; MYOS infers what it is (evidence/1:1/meeting/decision/risk/note) and files it.")
+    note = sub.add_parser(
+        "note",
+        help="Capture free-form text; MYOS infers what it is (evidence/1:1/meeting/decision/risk/note) and files it.",
+    )
     note.add_argument("text")
     note.set_defaults(func=cmd_note)
 
@@ -2361,7 +2563,9 @@ def build_parser() -> argparse.ArgumentParser:
     one_on_one.add_argument("notes")
     one_on_one.set_defaults(func=cmd_one_on_one)
 
-    meeting = sub.add_parser("meeting", help="Capture a meeting (notes or --audio); decisions + action items extracted.")
+    meeting = sub.add_parser(
+        "meeting", help="Capture a meeting (notes or --audio); decisions + action items extracted."
+    )
     meeting.add_argument("text", nargs="?", default="")
     meeting.add_argument("--title", default="")
     meeting.add_argument("--audio", default="", help="Audio file to transcribe (needs faster-whisper).")
@@ -2371,10 +2575,14 @@ def build_parser() -> argparse.ArgumentParser:
     review_draft.add_argument("--person", required=True)
     review_draft.set_defaults(func=cmd_review_draft)
 
-    risk_scan = sub.add_parser("risk-scan", help="Scan synced Jira/GitHub + work items for risks; optionally draft nudges.")
+    risk_scan = sub.add_parser(
+        "risk-scan", help="Scan synced Jira/GitHub + work items for risks; optionally draft nudges."
+    )
     risk_scan.add_argument("--risk-threshold", type=int, default=60)
     risk_scan.add_argument("--limit", type=int, default=25)
-    risk_scan.add_argument("--draft-nudges", action="store_true", help="Enqueue a nudge proposal per finding (approval-gated).")
+    risk_scan.add_argument(
+        "--draft-nudges", action="store_true", help="Enqueue a nudge proposal per finding (approval-gated)."
+    )
     risk_scan.add_argument("--nudge-limit", type=int, default=10)
     risk_scan.set_defaults(func=cmd_risk_scan)
 

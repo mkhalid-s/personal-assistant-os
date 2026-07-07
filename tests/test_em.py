@@ -86,8 +86,12 @@ class MeetingCaptureTest(unittest.TestCase):
         )
         res = em.capture_meeting(self.conn, "Launch sync", text)
         self.assertGreaterEqual(res["action_items"], 1)
-        kinds = {r["kind"] for r in self.conn.execute(
-            "SELECT kind FROM meeting_items WHERE meeting_id = ?", (res["meeting_id"],)).fetchall()}
+        kinds = {
+            r["kind"]
+            for r in self.conn.execute(
+                "SELECT kind FROM meeting_items WHERE meeting_id = ?", (res["meeting_id"],)
+            ).fetchall()
+        }
         self.assertIn("decision", kinds)
         self.assertIn("action", kinds)
         self.assertIn("risk", kinds)
@@ -139,7 +143,8 @@ class BrainEmToolsTest(unittest.TestCase):
 
         b = ClaudeBackend()
         out, is_error = b._dispatch(
-            self.conn, "log_evidence",
+            self.conn,
+            "log_evidence",
             {"person": "Dev", "category": "ownership", "impact": "Drove the Sev2 to resolution overnight."},
             {"task_id": None, "ids": []},
         )

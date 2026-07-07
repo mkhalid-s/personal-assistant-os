@@ -77,7 +77,7 @@ COMMAND_DECISION_FIXTURES = (
 # tier table and the real auto-exec gate cannot drift (review finding #11).
 _ACTION_TIER = {
     "create_inbox_item": AUTO,
-    "draft_external_update": CONFIRM,   # post Jira/GitHub/Slack comment, generic external draft
+    "draft_external_update": CONFIRM,  # post Jira/GitHub/Slack comment, generic external draft
     "apply_patch": CONFIRM,
     "create_issue": CONFIRM,
     "update_issue": CONFIRM,
@@ -91,9 +91,25 @@ AUTO_ACTION_TYPES = frozenset(at for at, tier in _ACTION_TIER.items() if tier ==
 
 # Substrings in an action_type / op name that are ALWAYS destructive -> blocked.
 _DESTRUCTIVE_HINTS = (
-    "delete", "destroy", "drop", "purge", "wipe", "bulk", "mass",
-    "force", "deploy", "prod", "close_all", "remove_branch", "reset_hard",
-    "revoke", "truncate", "shred", "overwrite", "rmdir", "uninstall",
+    "delete",
+    "destroy",
+    "drop",
+    "purge",
+    "wipe",
+    "bulk",
+    "mass",
+    "force",
+    "deploy",
+    "prod",
+    "close_all",
+    "remove_branch",
+    "reset_hard",
+    "revoke",
+    "truncate",
+    "shred",
+    "overwrite",
+    "rmdir",
+    "uninstall",
 )
 
 # Confirm-tier types the ``bold`` level may auto-run. Deliberately EMPTY (review
@@ -104,9 +120,21 @@ _BOLD_AUTO: frozenset = frozenset()
 
 # Read-only tool/op names (Agent SDK + MYOS) -> auto.
 _READ_TOOLS = {
-    "read", "grep", "glob", "ls", "web_search", "web_fetch", "recall",
-    "get_brief", "list_at_risk", "list_waiting_on", "query_context",
-    "get_today", "risk_radar", "why_item", "metrics",
+    "read",
+    "grep",
+    "glob",
+    "ls",
+    "web_search",
+    "web_fetch",
+    "recall",
+    "get_brief",
+    "list_at_risk",
+    "list_waiting_on",
+    "query_context",
+    "get_today",
+    "risk_radar",
+    "why_item",
+    "metrics",
 }
 _READ_HINTS = ("get", "list", "search", "read", "fetch", "view", "grep", "glob", "recall", "describe", "show")
 _READ_TOKENS = frozenset(_READ_HINTS)  # token-exact membership (see classify_tool step 4)
@@ -134,19 +162,39 @@ def _with_command_metadata(decision: dict, command: str) -> dict:
     decision.update(_command_metadata(command))
     return decision
 
+
 # Dangerous shell/VCS/infra patterns for free-form bash tool calls. Matched against
 # a normalized command (see _normalize_cmd) so $IFS / quote-splitting evasions
 # (review finding #3) don't slip through.
 _DANGEROUS_BASH = [
-    r"\brm\b", r"\bunlink\b", r"\beval\b",  # any rm/unlink (bare or flagged, flag-after-path) + eval (A4)
-    r"\bfind\b.*-delete", r"\brmdir\b", r"\bshred\b", r"\btruncate\b",
+    r"\brm\b",
+    r"\bunlink\b",
+    r"\beval\b",  # any rm/unlink (bare or flagged, flag-after-path) + eval (A4)
+    r"\bfind\b.*-delete",
+    r"\brmdir\b",
+    r"\bshred\b",
+    r"\btruncate\b",
     r"\bgit\s+push\b.*(--force|-f\b|\s\+)",  # incl. refspec '+main' force
-    r"\bgit\s+reset\s+--hard", r"\bgit\s+clean\b", r"\bgit\s+branch\s+-D\b",
-    r"\bDROP\s+(TABLE|DATABASE)\b", r"\bmkfs\b", r":\(\)\s*\{", r"\bshutdown\b",
-    r"\breboot\b", r"\bdd\s+if=", r">\s*/dev/sd", r"\bchmod\s+-?R?\s*777",
-    r"\bsudo\b", r"\bkubectl\s+delete\b", r"\bterraform\s+(destroy|apply)\b",
-    r"\bnpm\s+publish\b", r"\|\s*(sudo\s+)?(ba)?sh\b", r"base64\b.*\|\s*(ba)?sh",
-    r"rmtree", r"os\.remove", r"os\.unlink",
+    r"\bgit\s+reset\s+--hard",
+    r"\bgit\s+clean\b",
+    r"\bgit\s+branch\s+-D\b",
+    r"\bDROP\s+(TABLE|DATABASE)\b",
+    r"\bmkfs\b",
+    r":\(\)\s*\{",
+    r"\bshutdown\b",
+    r"\breboot\b",
+    r"\bdd\s+if=",
+    r">\s*/dev/sd",
+    r"\bchmod\s+-?R?\s*777",
+    r"\bsudo\b",
+    r"\bkubectl\s+delete\b",
+    r"\bterraform\s+(destroy|apply)\b",
+    r"\bnpm\s+publish\b",
+    r"\|\s*(sudo\s+)?(ba)?sh\b",
+    r"base64\b.*\|\s*(ba)?sh",
+    r"rmtree",
+    r"os\.remove",
+    r"os\.unlink",
 ]
 
 
@@ -240,71 +288,92 @@ def decide_command(
     safety = (safety or "").strip()
     requested_mode = (requested_mode or "").strip()
     if not command_name:
-        return _with_command_metadata({
-            "decision": BLOCKED,
-            "tier": BLOCKED,
-            "requires_approval": True,
-            "reason": "missing command",
-            "level": level,
-            "safety": safety or "unknown",
-        }, command_name)
+        return _with_command_metadata(
+            {
+                "decision": BLOCKED,
+                "tier": BLOCKED,
+                "requires_approval": True,
+                "reason": "missing command",
+                "level": level,
+                "safety": safety or "unknown",
+            },
+            command_name,
+        )
     if safety == "unknown" or (not safety and any(h in command_name for h in _DESTRUCTIVE_HINTS)):
-        return _with_command_metadata({
-            "decision": BLOCKED,
-            "tier": BLOCKED,
-            "requires_approval": True,
-            "reason": f"unknown or destructive-looking command '{command_name}'",
-            "level": level,
-            "safety": safety or "unknown",
-        }, command_name)
+        return _with_command_metadata(
+            {
+                "decision": BLOCKED,
+                "tier": BLOCKED,
+                "requires_approval": True,
+                "reason": f"unknown or destructive-looking command '{command_name}'",
+                "level": level,
+                "safety": safety or "unknown",
+            },
+            command_name,
+        )
     if safety in {"read_only", "diagnostic"}:
-        return _with_command_metadata({
-            "decision": "allowed",
-            "tier": AUTO,
-            "requires_approval": False,
-            "reason": f"{safety} command allowed at autonomy_level={level}",
-            "level": level,
-            "safety": safety,
-        }, command_name)
+        return _with_command_metadata(
+            {
+                "decision": "allowed",
+                "tier": AUTO,
+                "requires_approval": False,
+                "reason": f"{safety} command allowed at autonomy_level={level}",
+                "level": level,
+                "safety": safety,
+            },
+            command_name,
+        )
     if side_effects.intersection({"database_restore", "external_write"}) or (
         "os_service_write" in side_effects and not dry_run_by_default
     ):
         suffix = f"; requested_mode={requested_mode}" if requested_mode else ""
-        return _with_command_metadata({
-            "decision": "needs_approval",
-            "tier": CONFIRM,
-            "requires_approval": True,
-            "reason": f"{command_name} touches {', '.join(sorted(side_effects))}; review safer diagnostics first{suffix}",
-            "level": level,
-            "safety": safety or "unknown",
-        }, command_name)
+        return _with_command_metadata(
+            {
+                "decision": "needs_approval",
+                "tier": CONFIRM,
+                "requires_approval": True,
+                "reason": f"{command_name} touches {', '.join(sorted(side_effects))}; review safer diagnostics first{suffix}",
+                "level": level,
+                "safety": safety or "unknown",
+            },
+            command_name,
+        )
     if safety == "local_write" and not requires_confirmation:
-        return _with_command_metadata({
-            "decision": "allowed",
-            "tier": AUTO,
-            "requires_approval": False,
-            "reason": f"local write command allowed; external effects remain gated (level={level})",
-            "level": level,
-            "safety": safety,
-        }, command_name)
+        return _with_command_metadata(
+            {
+                "decision": "allowed",
+                "tier": AUTO,
+                "requires_approval": False,
+                "reason": f"local write command allowed; external effects remain gated (level={level})",
+                "level": level,
+                "safety": safety,
+            },
+            command_name,
+        )
     if safety in {"approval_gated", "external_write"} or requires_confirmation:
         suffix = f"; requested_mode={requested_mode}" if requested_mode else ""
-        return _with_command_metadata({
+        return _with_command_metadata(
+            {
+                "decision": "needs_approval",
+                "tier": CONFIRM,
+                "requires_approval": True,
+                "reason": f"{safety or 'command'} requires review/approval before risky effects{suffix}",
+                "level": level,
+                "safety": safety or "unknown",
+            },
+            command_name,
+        )
+    return _with_command_metadata(
+        {
             "decision": "needs_approval",
             "tier": CONFIRM,
             "requires_approval": True,
-            "reason": f"{safety or 'command'} requires review/approval before risky effects{suffix}",
+            "reason": f"unrecognized command safety '{safety or 'unknown'}', defaulting to approval",
             "level": level,
             "safety": safety or "unknown",
-        }, command_name)
-    return _with_command_metadata({
-        "decision": "needs_approval",
-        "tier": CONFIRM,
-        "requires_approval": True,
-        "reason": f"unrecognized command safety '{safety or 'unknown'}', defaulting to approval",
-        "level": level,
-        "safety": safety or "unknown",
-    }, command_name)
+        },
+        command_name,
+    )
 
 
 def recommend_next_steps(
@@ -365,7 +434,9 @@ def recommend_next_steps(
         return []
     if decision_name == "needs_approval":
         if command_name == "factory" or intent == "factory_run":
-            review = f"myos factory review --id {factory_run_id}" if factory_run_id else "myos factory review --id <run_id>"
+            review = (
+                f"myos factory review --id {factory_run_id}" if factory_run_id else "myos factory review --id <run_id>"
+            )
             factory_side_effects = ["local_db_write"]
             if workflow_pack in {"connector_ops", "daily_ops", "software_delivery"}:
                 factory_side_effects.append("external_write")
@@ -909,9 +980,7 @@ def _normalize_cmd(cmd: str) -> str:
 def level_from_policy(conn) -> str:
     """Read the active autonomy level from assistant_policies (direct query, no cli import)."""
     try:
-        row = conn.execute(
-            "SELECT value FROM assistant_policies WHERE key = 'autonomy_level'"
-        ).fetchone()
+        row = conn.execute("SELECT value FROM assistant_policies WHERE key = 'autonomy_level'").fetchone()
     except Exception:
         return DEFAULT_LEVEL
     return _norm_level(row["value"] if row else DEFAULT_LEVEL)

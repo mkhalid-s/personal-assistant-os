@@ -55,10 +55,7 @@ def run_turn(
     result = backend.run_turn(conn, user_text, history, on_text=on_text)
     result["route_decision"] = route_decision.to_dict()
     if not (result.get("reply") or "").strip() and route_decision.confidence >= 0.7:
-        result["reply"] = (
-            f"Smart route: {route_decision.intent}. "
-            f"{route_decision.recommended_workflow}"
-        )
+        result["reply"] = f"Smart route: {route_decision.intent}. {route_decision.recommended_workflow}"
     if retrieval_run_ids:
         result["retrieval_run_ids"] = retrieval_run_ids
     latency_ms = int((time.monotonic() - started) * 1000)
@@ -96,44 +93,60 @@ def delegate_to_agent(conn, target: str, task_text: str, cwd: str | None = None,
     name = resolve_backend_name(target)
     backend = get_backend(target)
     if not hasattr(backend, "executor_argv"):
-        return {"error": f"backend '{name}' has no executor mode; use it as the brain via `myos chat --backend {name}`."}
+        return {
+            "error": f"backend '{name}' has no executor mode; use it as the brain via `myos chat --backend {name}`."
+        }
     argv = backend.executor_argv(task_text)
     if not argv:
         return {"error": f"no executor command configured for '{name}' (set MYOS_AGENT_EXEC_{name.upper()})."}
 
     root = _git_root(cwd or os.getcwd())
     if not root:
-        return {"error": "delegating a coding task needs a git repo for safe worktree isolation. "
-                         "Run from inside a git repo (or `git init`), or use the agent as a brain via `myos chat`."}
+        return {
+            "error": "delegating a coding task needs a git repo for safe worktree isolation. "
+            "Run from inside a git repo (or `git init`), or use the agent as a brain via `myos chat`."
+        }
 
     diff, log = _run_in_worktree(root, argv, timeout=timeout)
     task_id = agentcore.ensure_turn_task(conn, f"delegate to {name}: {task_text}")
 
     if not diff.strip():
         action_id = agentcore.enqueue_proposal(
-            conn, task_id=task_id, action_type="draft_external_update",
+            conn,
+            task_id=task_id,
+            action_type="draft_external_update",
             title=f"{name} output: {task_text[:80]}",
             payload={"target": "outbox", "agent": name, "draft": (log or "(no output)")[:8000]},
         )
         conn.commit()
-        return {"proposed_action_ids": [action_id], "diff": "",
-                "summary": f"{name} produced no code changes; its output was proposed as action #{action_id}."}
+        return {
+            "proposed_action_ids": [action_id],
+            "diff": "",
+            "summary": f"{name} produced no code changes; its output was proposed as action #{action_id}.",
+        }
 
     action_id = agentcore.enqueue_proposal(
-        conn, task_id=task_id, action_type="apply_patch",
+        conn,
+        task_id=task_id,
+        action_type="apply_patch",
         title=f"Apply {name} patch: {task_text[:80]}",
         payload={"agent": name, "task": task_text, "repo_root": root, "diff": diff[:200000]},
     )
     conn.commit()
-    return {"proposed_action_ids": [action_id], "diff": diff,
-            "summary": f"{name} produced a {diff.count(chr(10))}-line diff; proposed as action #{action_id} "
-                       f"(approve to apply: `myos approve --action {action_id} --execute`)."}
+    return {
+        "proposed_action_ids": [action_id],
+        "diff": diff,
+        "summary": f"{name} produced a {diff.count(chr(10))}-line diff; proposed as action #{action_id} "
+        f"(approve to apply: `myos approve --action {action_id} --execute`).",
+    }
 
 
 def _git_root(cwd: str) -> str | None:
     proc = subprocess.run(
         ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     return proc.stdout.strip() if proc.returncode == 0 and proc.stdout.strip() else None
 
@@ -141,18 +154,19 @@ def _git_root(cwd: str) -> str | None:
 def _run_in_worktree(root: str, argv: list[str], timeout: int) -> tuple[str, str]:
     wt = tempfile.mkdtemp(prefix="myos-wt-")
     try:
-        subprocess.run(["git", "-C", root, "worktree", "add", "--detach", wt],
-                       capture_output=True, text=True, check=True)
+        subprocess.run(
+            ["git", "-C", root, "worktree", "add", "--detach", wt], capture_output=True, text=True, check=True
+        )
         try:
             proc = subprocess.run(argv, cwd=wt, capture_output=True, text=True, timeout=timeout, check=False)
             log = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
         except subprocess.TimeoutExpired:
             log = f"(agent timed out after {timeout}s)"
         subprocess.run(["git", "-C", wt, "add", "-A"], capture_output=True, text=True, check=False)
-        diff = subprocess.run(["git", "-C", wt, "diff", "--cached"],
-                              capture_output=True, text=True, check=False).stdout
+        diff = subprocess.run(["git", "-C", wt, "diff", "--cached"], capture_output=True, text=True, check=False).stdout
         return diff, log
     finally:
-        subprocess.run(["git", "-C", root, "worktree", "remove", "--force", wt],
-                       capture_output=True, text=True, check=False)
+        subprocess.run(
+            ["git", "-C", root, "worktree", "remove", "--force", wt], capture_output=True, text=True, check=False
+        )
         shutil.rmtree(wt, ignore_errors=True)

@@ -62,9 +62,7 @@ class EntityExtractionTest(unittest.TestCase):
             self.assertEqual(tickets[0]["canonical_name"], "PAOS-123")
             self.assertIn("PAOS-123", tickets[0]["aliases"])
 
-            alias = conn.execute(
-                "SELECT source_type, source_id FROM entity_aliases WHERE alias='PAOS-123'"
-            ).fetchone()
+            alias = conn.execute("SELECT source_type, source_id FROM entity_aliases WHERE alias='PAOS-123'").fetchone()
             self.assertEqual(alias["source_type"], "work_item")
             self.assertIn(alias["source_id"], {"7", "8"})
         finally:
@@ -83,8 +81,7 @@ class EntityExtractionTest(unittest.TestCase):
 
             self.assertEqual([e["canonical_name"] for e in recorded], ["Project Atlas"])
             persisted = "\n".join(
-                row["canonical_name"]
-                for row in conn.execute("SELECT canonical_name FROM entities").fetchall()
+                row["canonical_name"] for row in conn.execute("SELECT canonical_name FROM entities").fetchall()
             )
             aliases = "\n".join(row["alias"] for row in conn.execute("SELECT alias FROM entity_aliases").fetchall())
             self.assertNotIn("test@example.com", persisted + aliases)

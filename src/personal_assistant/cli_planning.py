@@ -184,10 +184,12 @@ def cmd_plan(args: argparse.Namespace) -> None:
             plan = plans.get_plan(conn, args.id)
             if plan is None:
                 if json_mode:
-                    print(json.dumps(
-                        {"schema": "myos.plan.show.v1", "error": "not_found", "id": int(args.id)},
-                        ensure_ascii=True,
-                    ))
+                    print(
+                        json.dumps(
+                            {"schema": "myos.plan.show.v1", "error": "not_found", "id": int(args.id)},
+                            ensure_ascii=True,
+                        )
+                    )
                 else:
                     print(f"Plan #{args.id} not found.")
                 raise SystemExit(1)
@@ -248,7 +250,9 @@ def cmd_evidence(args: argparse.Namespace) -> None:
             if len(term.strip(".,:;!?()[]{}")) >= 4
         }
         connector_clause = "" if args.connector == "all" else "WHERE connector = ?"
-        params: tuple[object, ...] = (int(args.limit),) if args.connector == "all" else (args.connector, int(args.limit))
+        params: tuple[object, ...] = (
+            (int(args.limit),) if args.connector == "all" else (args.connector, int(args.limit))
+        )
         rows = conn.execute(
             f"""
             SELECT id, connector, external_id, item_type, title, body, url

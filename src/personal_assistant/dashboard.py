@@ -74,24 +74,31 @@ def render_dashboard_html(conn: sqlite3.Connection, report_dir: str = "") -> str
     if report_dir:
         rdir = Path(report_dir)
     else:
-        rdir = Path(__file__).resolve().parents[2] / 'data' / 'reports'
+        rdir = Path(__file__).resolve().parents[2] / "data" / "reports"
     if rdir.exists():
-        report_links = sorted(rdir.glob('daily-brief-*.md'), reverse=True)[:10]
+        report_links = sorted(rdir.glob("daily-brief-*.md"), reverse=True)[:10]
 
-    risk_items = ''.join(
-        f"<li><strong>#{r['id']}</strong> {escape(r['title'])} (risk={r['risk_score']}, due={escape(r['due_date'] or 'none')})</li>"
-        for r in risk_rows
-    ) or '<li>No high-risk items.</li>'
+    risk_items = (
+        "".join(
+            f"<li><strong>#{r['id']}</strong> {escape(r['title'])} (risk={r['risk_score']}, due={escape(r['due_date'] or 'none')})</li>"
+            for r in risk_rows
+        )
+        or "<li>No high-risk items.</li>"
+    )
 
-    evidence_items = ''.join(
-        f"<li><strong>{escape(r['person'])}</strong> [{escape(r['category'])}] - {escape(r['impact'])}<br><small>{escape(r['created_at'])}</small></li>"
-        for r in evidence_rows
-    ) or '<li>No evidence entries yet.</li>'
+    evidence_items = (
+        "".join(
+            f"<li><strong>{escape(r['person'])}</strong> [{escape(r['category'])}] - {escape(r['impact'])}<br><small>{escape(r['created_at'])}</small></li>"
+            for r in evidence_rows
+        )
+        or "<li>No evidence entries yet.</li>"
+    )
 
-    report_items = ''.join(
-        f"<li><a href='file://{escape(str(p))}'>{escape(p.name)}</a></li>"
-        for p in report_links
-    ) or '<li>No reports found.</li>'
+    report_items = (
+        "".join(f"<li><a href='file://{escape(str(p))}'>{escape(p.name)}</a></li>" for p in report_links)
+        or "<li>No reports found.</li>"
+    )
+
     def _pct(numerator: int | None, denominator: int | None) -> str:
         num = numerator or 0
         den = denominator or 0
@@ -116,7 +123,7 @@ def render_dashboard_html(conn: sqlite3.Connection, report_dir: str = "") -> str
         ]
     )
 
-    generated = datetime.now().isoformat(timespec='minutes')
+    generated = datetime.now().isoformat(timespec="minutes")
     return f"""<!doctype html>
 <html>
 <head>
@@ -140,10 +147,10 @@ def render_dashboard_html(conn: sqlite3.Connection, report_dir: str = "") -> str
   <h1>Personal Assistant Dashboard</h1>
   <div class='muted'>Generated at {generated}</div>
   <div class='cards'>
-    <div class='card'><div>Open Items</div><h2>{counts['open_items']}</h2></div>
-    <div class='card'><div>Done Items</div><h2>{counts['done_items']}</h2></div>
-    <div class='card'><div>At Risk</div><h2>{counts['at_risk']}</h2></div>
-    <div class='card'><div>Inbox New</div><h2>{counts['inbox_new']}</h2></div>
+    <div class='card'><div>Open Items</div><h2>{counts["open_items"]}</h2></div>
+    <div class='card'><div>Done Items</div><h2>{counts["done_items"]}</h2></div>
+    <div class='card'><div>At Risk</div><h2>{counts["at_risk"]}</h2></div>
+    <div class='card'><div>Inbox New</div><h2>{counts["inbox_new"]}</h2></div>
   </div>
   <section>
     <h2>Risk Watch</h2>
@@ -172,13 +179,13 @@ def render_dashboard_html(conn: sqlite3.Connection, report_dir: str = "") -> str
 """
 
 
-def serve_dashboard(conn: sqlite3.Connection, host: str = '127.0.0.1', port: int = 8787, report_dir: str = '') -> None:
+def serve_dashboard(conn: sqlite3.Connection, host: str = "127.0.0.1", port: int = 8787, report_dir: str = "") -> None:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            body = render_dashboard_html(conn, report_dir=report_dir).encode('utf-8')
+            body = render_dashboard_html(conn, report_dir=report_dir).encode("utf-8")
             self.send_response(200)
-            self.send_header('Content-Type', 'text/html; charset=utf-8')
-            self.send_header('Content-Length', str(len(body)))
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
 

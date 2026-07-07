@@ -23,12 +23,18 @@ _HOT_PRIORITY = ("p0", "p1", "sev1", "critical", "high", "highest", "blocker")
 _BLOCKED_STATUS = ("blocked", "impeded", "on hold", "stalled")
 
 
-def _finding(kind, severity, source, ref, title, reason, owner=None, url=None,
-             connector=None, external_id=None):
+def _finding(kind, severity, source, ref, title, reason, owner=None, url=None, connector=None, external_id=None):
     return {
-        "kind": kind, "severity": severity, "source": source, "ref": ref,
-        "title": title, "reason": reason, "owner": owner, "url": url,
-        "connector": connector, "external_id": external_id,
+        "kind": kind,
+        "severity": severity,
+        "source": source,
+        "ref": ref,
+        "title": title,
+        "reason": reason,
+        "owner": owner,
+        "url": url,
+        "connector": connector,
+        "external_id": external_id,
         "suggested_nudge": _nudge(kind, title, reason, owner),
     }
 
@@ -57,8 +63,9 @@ def scan_project_risks(conn, *, risk_threshold: int = 60, limit: int = 25) -> li
         "ORDER BY due_date ASC LIMIT ?",
         (today, limit),
     ).fetchall():
-        findings.append(_finding("overdue", "high", "work_item", r["id"], r["title"],
-                                 f"due {r['due_date']}, past due", r["owner"]))
+        findings.append(
+            _finding("overdue", "high", "work_item", r["id"], r["title"], f"due {r['due_date']}, past due", r["owner"])
+        )
 
     for r in conn.execute(
         "SELECT id, title, risk_score, owner FROM work_items "
@@ -66,8 +73,9 @@ def scan_project_risks(conn, *, risk_threshold: int = 60, limit: int = 25) -> li
         (risk_threshold, limit),
     ).fetchall():
         sev = "high" if r["risk_score"] >= 80 else "medium"
-        findings.append(_finding("at_risk", sev, "work_item", r["id"], r["title"],
-                                 f"risk score {r['risk_score']}", r["owner"]))
+        findings.append(
+            _finding("at_risk", sev, "work_item", r["id"], r["title"], f"risk score {r['risk_score']}", r["owner"])
+        )
 
     for r in conn.execute(
         "SELECT id, connector, external_id, title, status, owner, url FROM external_items "
@@ -75,9 +83,20 @@ def scan_project_risks(conn, *, risk_threshold: int = 60, limit: int = 25) -> li
         "ORDER BY fetched_at DESC LIMIT ?",
         (limit,),
     ).fetchall():
-        findings.append(_finding("pr_review", "medium", "external_item", r["id"], r["title"],
-                                 f"open PR on {r['connector']} awaiting review", r["owner"], url=r["url"],
-                                 connector=r["connector"], external_id=r["external_id"]))
+        findings.append(
+            _finding(
+                "pr_review",
+                "medium",
+                "external_item",
+                r["id"],
+                r["title"],
+                f"open PR on {r['connector']} awaiting review",
+                r["owner"],
+                url=r["url"],
+                connector=r["connector"],
+                external_id=r["external_id"],
+            )
+        )
 
     for r in conn.execute(
         "SELECT id, connector, external_id, title, status, priority, owner, url FROM external_items "
@@ -87,9 +106,20 @@ def scan_project_risks(conn, *, risk_threshold: int = 60, limit: int = 25) -> li
         pr = (r["priority"] or "").lower()
         st = (r["status"] or "").lower()
         if pr in _HOT_PRIORITY or any(b in st for b in _BLOCKED_STATUS):
-            findings.append(_finding("priority_issue", "high", "external_item", r["id"], r["title"],
-                                     f"{r['priority'] or r['status']} on {r['connector']}", r["owner"], url=r["url"],
-                                     connector=r["connector"], external_id=r["external_id"]))
+            findings.append(
+                _finding(
+                    "priority_issue",
+                    "high",
+                    "external_item",
+                    r["id"],
+                    r["title"],
+                    f"{r['priority'] or r['status']} on {r['connector']}",
+                    r["owner"],
+                    url=r["url"],
+                    connector=r["connector"],
+                    external_id=r["external_id"],
+                )
+            )
 
     # Dedup by (source, ref), keeping the highest severity; then severity-sort.
     dedup: dict[tuple, dict] = {}
@@ -111,16 +141,26 @@ def draft_nudges(conn, findings: list[dict], *, limit: int = 10) -> list[int]:
         # always Jira (finding #7); local work-item nudges go to the outbox.
         target = (f.get("connector") or "outbox") if f["source"] == "external_item" else "outbox"
         payload = {
-            "target": target, "draft": f["suggested_nudge"], "summary": f["reason"],
-            "kind": f["kind"], "connector": f.get("connector"),
-            "external_id": f.get("external_id"), "work_item_id": f["ref"] if f["source"] == "work_item" else None,
+            "target": target,
+            "draft": f["suggested_nudge"],
+            "summary": f["reason"],
+            "kind": f["kind"],
+            "connector": f.get("connector"),
+            "external_id": f.get("external_id"),
+            "work_item_id": f["ref"] if f["source"] == "work_item" else None,
         }
         if f.get("url"):
             payload["url"] = f["url"]
-        ids.append(agentcore.enqueue_proposal(
-            conn, task_id=task_id, action_type="draft_external_update",
-            title=f"Nudge: {f['title'][:80]}", payload=payload, requires_approval=1,
-        ))
+        ids.append(
+            agentcore.enqueue_proposal(
+                conn,
+                task_id=task_id,
+                action_type="draft_external_update",
+                title=f"Nudge: {f['title'][:80]}",
+                payload=payload,
+                requires_approval=1,
+            )
+        )
     conn.commit()
     return ids
 
@@ -129,13 +169,15 @@ def risk_signals(conn, *, risk_threshold: int = 60, limit: int = 15) -> list[dic
     """Risk findings shaped as autopilot signals (stable keys → no per-cycle dup)."""
     out = []
     for f in scan_project_risks(conn, risk_threshold=risk_threshold, limit=limit):
-        out.append({
-            "key": f"risk:{f['source']}:{f['ref']}:{f['kind']}",
-            "type": "project_risk",
-            "source_type": f["source"],
-            "source_id": f["ref"],
-            "title": f["title"],
-            "detail": f"{f['reason']} — suggested nudge: {f['suggested_nudge']}",
-            "priority": 1 if f["severity"] == "high" else 2,
-        })
+        out.append(
+            {
+                "key": f"risk:{f['source']}:{f['ref']}:{f['kind']}",
+                "type": "project_risk",
+                "source_type": f["source"],
+                "source_id": f["ref"],
+                "title": f["title"],
+                "detail": f"{f['reason']} — suggested nudge: {f['suggested_nudge']}",
+                "priority": 1 if f["severity"] == "high" else 2,
+            }
+        )
     return out

@@ -58,7 +58,9 @@ def _constraints(
     return meta
 
 
-def _record_observation(conn: sqlite3.Connection, task_id: int, kind: str, content: str, confidence: float = 0.8) -> None:
+def _record_observation(
+    conn: sqlite3.Connection, task_id: int, kind: str, content: str, confidence: float = 0.8
+) -> None:
     conn.execute(
         """
         INSERT INTO agent_observations (agent_task_id, observation_type, content, confidence)
@@ -78,7 +80,9 @@ def _task(conn: sqlite3.Connection, task_id: int):
     return row, constraints
 
 
-def _reason(conn: sqlite3.Connection, *, objective: str, context: str, backend_name: str, purpose: str) -> tuple[list[dict], list[dict], str, str]:
+def _reason(
+    conn: sqlite3.Connection, *, objective: str, context: str, backend_name: str, purpose: str
+) -> tuple[list[dict], list[dict], str, str]:
     analogies = _agent_analogies(conn, f"{objective} {context}", limit=5)
     provider = "local_loop"
     reply = ""
@@ -231,7 +235,9 @@ def _finish_cycle(
         "autonomy_loop_cycle",
         "agent_task",
         int(task_id),
-        json.dumps({"run_id": int(run_id), "provider": provider, **counts, "executed_now": executed_now}, ensure_ascii=True),
+        json.dumps(
+            {"run_id": int(run_id), "provider": provider, **counts, "executed_now": executed_now}, ensure_ascii=True
+        ),
     )
     observability.link_current_trace(
         conn,
@@ -532,7 +538,9 @@ def resume_loop(conn: sqlite3.Connection, task_id: int, *, max_actions: int | No
         (json.dumps(meta, ensure_ascii=True), int(task_id)),
     )
     observability.link_current_trace(conn, agent_task_id=int(task_id))
-    result = _run_cycle(conn, task_id=int(row["id"]), max_actions=_safe_int(meta.get("max_actions"), DEFAULT_MAX_ACTIONS))
+    result = _run_cycle(
+        conn, task_id=int(row["id"]), max_actions=_safe_int(meta.get("max_actions"), DEFAULT_MAX_ACTIONS)
+    )
     _record_result_ledger(
         conn,
         decision_type="loop_resumed",

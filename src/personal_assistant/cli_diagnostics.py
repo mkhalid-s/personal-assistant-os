@@ -23,10 +23,7 @@ def cmd_link(args: argparse.Namespace) -> None:
         ),
     )
     conn.commit()
-    print(
-        f"Linked work item {args.from_item} -> {args.to_item} "
-        f"with relation '{args.relation}'."
-    )
+    print(f"Linked work item {args.from_item} -> {args.to_item} with relation '{args.relation}'.")
 
 
 def cmd_related(args: argparse.Namespace) -> None:
@@ -64,10 +61,7 @@ def cmd_related(args: argparse.Namespace) -> None:
 
     print(f"Related work for item {args.item}:")
     for r in rows:
-        print(
-            f"- #{r['work_item_id']} [{r['relation']}] {r['title']} "
-            f"(status={r['status']}, weight={r['weight']:.2f})"
-        )
+        print(f"- #{r['work_item_id']} [{r['relation']}] {r['title']} (status={r['status']}, weight={r['weight']:.2f})")
 
 
 def cmd_context(args: argparse.Namespace) -> None:
@@ -126,9 +120,7 @@ def cmd_context(args: argparse.Namespace) -> None:
         snippet = row["content"].strip().replace("\n", " ")
         if len(snippet) > 120:
             snippet = snippet[:117] + "..."
-        print(
-            f"- ({score:.3f}) {row['source_type']}#{row['source_id']}: {snippet}"
-        )
+        print(f"- ({score:.3f}) {row['source_type']}#{row['source_id']}: {snippet}")
 
 
 def cmd_retrieval_run(args: argparse.Namespace) -> None:
@@ -448,7 +440,8 @@ def cmd_why(args: argparse.Namespace) -> None:
         )
         conn.commit()
         evidence = [
-            hit for hit in hits
+            hit
+            for hit in hits
             if hit["graph_path"] or hit["source_type"] != "work_item" or int(hit["source_id"]) != int(row["id"])
         ]
         if not evidence:

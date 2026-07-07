@@ -34,7 +34,11 @@ def cmd_launchd_status(_: argparse.Namespace) -> None:
 def cmd_dashboard(args: argparse.Namespace) -> None:
     conn = get_connection()
     if args.once:
-        output_path = Path(args.output_html) if args.output_html else (Path(__file__).resolve().parents[2] / "data" / "dashboard.html")
+        output_path = (
+            Path(args.output_html)
+            if args.output_html
+            else (Path(__file__).resolve().parents[2] / "data" / "dashboard.html")
+        )
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(render_dashboard_html(conn, report_dir=args.report_dir))
         print(f"Dashboard snapshot written: {output_path}")
@@ -61,7 +65,7 @@ def cmd_runbook(args: argparse.Namespace) -> None:
     print("- myos stop-doing --capacity <n> --deep-budget <n>")
     print("- myos loop goals")
     print("\nEnd of day")
-    print("- myos close-day --mode <maker|hybrid|meeting-heavy|recovery> --note \"...\"")
+    print('- myos close-day --mode <maker|hybrid|meeting-heavy|recovery> --note "..."')
     print("- myos report --meeting-hours <n>")
     print("- myos trace cleanup --retention-days 30 --max-rows 5000")
     print("\nWeekly")

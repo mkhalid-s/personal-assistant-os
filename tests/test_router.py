@@ -143,7 +143,9 @@ class SmartRouterTest(unittest.TestCase):
             try:
                 bad_result = router.evaluate_routes(model_shadow=True)
                 self.assertEqual(bad_result["summary"]["model_overrides"], 0)
-                self.assertIn("router model fallback ignored", bad_result["cases"][0]["model_shadow"]["fallback_reason"])
+                self.assertIn(
+                    "router model fallback ignored", bad_result["cases"][0]["model_shadow"]["fallback_reason"]
+                )
             finally:
                 os.environ.pop("MYOS_ROUTER_COMMAND", None)
 

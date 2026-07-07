@@ -40,86 +40,241 @@ Default to a few sentences; expand only when asked. Avoid filler.
 """
 
 _READ_TOOLS = {
-    "get_brief", "list_at_risk", "list_waiting_on", "query_context",
-    "get_today", "risk_radar", "why_item", "metrics", "recall",
-    "list_team", "person_dossier", "draft_review", "scan_risks",
+    "get_brief",
+    "list_at_risk",
+    "list_waiting_on",
+    "query_context",
+    "get_today",
+    "risk_radar",
+    "why_item",
+    "metrics",
+    "recall",
+    "list_team",
+    "person_dossier",
+    "draft_review",
+    "scan_risks",
 }
 
 # Local-write tools that auto-run (safe local bookkeeping — no external mutation).
 _EM_WRITE_TOOLS = {"upsert_person", "log_evidence", "log_one_on_one", "record_competency", "capture_meeting"}
 
 TOOLS = [
-    {"name": "get_brief", "description": "Executive daily brief: inbox/open/at-risk counts and top outcomes.",
-     "input_schema": {"type": "object", "properties": {
-         "meeting_hours": {"type": "number"}, "risk_threshold": {"type": "integer"}, "top": {"type": "integer"}},
-         "required": []}},
-    {"name": "list_at_risk", "description": "Open work items at or above a risk threshold.",
-     "input_schema": {"type": "object", "properties": {
-         "threshold": {"type": "integer"}, "limit": {"type": "integer"}}, "required": []}},
-    {"name": "list_waiting_on", "description": "Open items blocked on / owned by someone else.",
-     "input_schema": {"type": "object", "properties": {"limit": {"type": "integer"}}, "required": []}},
-    {"name": "query_context", "description": "Search indexed notes/transcripts/external items for relevant context.",
-     "input_schema": {"type": "object", "properties": {
-         "query": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["query"]}},
-    {"name": "get_today", "description": "Today's focus list of open work items.",
-     "input_schema": {"type": "object", "properties": {"meeting_hours": {"type": "number"}}, "required": []}},
-    {"name": "risk_radar", "description": "Open work items ranked by risk score.",
-     "input_schema": {"type": "object", "properties": {"limit": {"type": "integer"}}, "required": []}},
-    {"name": "why_item", "description": "Explain why a work item exists (provenance/source).",
-     "input_schema": {"type": "object", "properties": {"item_id": {"type": "integer"}}, "required": ["item_id"]}},
-    {"name": "metrics", "description": "KPI snapshot over the last N days.",
-     "input_schema": {"type": "object", "properties": {"days": {"type": "integer"}}, "required": []}},
-    {"name": "capture_item", "description": "Safe local capture of a note/task/commitment to the inbox. No approval needed.",
-     "input_schema": {"type": "object", "properties": {
-         "text": {"type": "string"}, "kind": {"type": "string"},
-         "owner": {"type": "string"}, "due_date": {"type": "string"}}, "required": ["text"]}},
-    {"name": "remember", "description": "Persist a durable fact to long-term memory (people, projects, decisions, preferences) so you can recall it in future sessions. Safe, no approval needed.",
-     "input_schema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}},
-    {"name": "recall", "description": "Search long-term memory and all indexed notes/transcripts/external items for relevant facts.",
-     "input_schema": {"type": "object", "properties": {
-         "query": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["query"]}},
+    {
+        "name": "get_brief",
+        "description": "Executive daily brief: inbox/open/at-risk counts and top outcomes.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "meeting_hours": {"type": "number"},
+                "risk_threshold": {"type": "integer"},
+                "top": {"type": "integer"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "list_at_risk",
+        "description": "Open work items at or above a risk threshold.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"threshold": {"type": "integer"}, "limit": {"type": "integer"}},
+            "required": [],
+        },
+    },
+    {
+        "name": "list_waiting_on",
+        "description": "Open items blocked on / owned by someone else.",
+        "input_schema": {"type": "object", "properties": {"limit": {"type": "integer"}}, "required": []},
+    },
+    {
+        "name": "query_context",
+        "description": "Search indexed notes/transcripts/external items for relevant context.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "get_today",
+        "description": "Today's focus list of open work items.",
+        "input_schema": {"type": "object", "properties": {"meeting_hours": {"type": "number"}}, "required": []},
+    },
+    {
+        "name": "risk_radar",
+        "description": "Open work items ranked by risk score.",
+        "input_schema": {"type": "object", "properties": {"limit": {"type": "integer"}}, "required": []},
+    },
+    {
+        "name": "why_item",
+        "description": "Explain why a work item exists (provenance/source).",
+        "input_schema": {"type": "object", "properties": {"item_id": {"type": "integer"}}, "required": ["item_id"]},
+    },
+    {
+        "name": "metrics",
+        "description": "KPI snapshot over the last N days.",
+        "input_schema": {"type": "object", "properties": {"days": {"type": "integer"}}, "required": []},
+    },
+    {
+        "name": "capture_item",
+        "description": "Safe local capture of a note/task/commitment to the inbox. No approval needed.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string"},
+                "kind": {"type": "string"},
+                "owner": {"type": "string"},
+                "due_date": {"type": "string"},
+            },
+            "required": ["text"],
+        },
+    },
+    {
+        "name": "remember",
+        "description": "Persist a durable fact to long-term memory (people, projects, decisions, preferences) so you can recall it in future sessions. Safe, no approval needed.",
+        "input_schema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
+    },
+    {
+        "name": "recall",
+        "description": "Search long-term memory and all indexed notes/transcripts/external items for relevant facts.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+            "required": ["query"],
+        },
+    },
     # --- Engineering-manager tools (local, safe — auto-run) ---
-    {"name": "upsert_person", "description": "Create or update a team member / stakeholder record.",
-     "input_schema": {"type": "object", "properties": {
-         "name": {"type": "string"}, "role": {"type": "string"}, "team": {"type": "string"},
-         "relation": {"type": "string", "enum": ["report", "peer", "stakeholder", "manager"]}}, "required": ["name"]}},
-    {"name": "list_team", "description": "List known people (reports, peers, stakeholders).",
-     "input_schema": {"type": "object", "properties": {}, "required": []}},
-    {"name": "log_evidence", "description": "Record a piece of performance evidence about a person. Infer the category (leadership/delivery/technical/communication/collaboration/growth/ownership) from what happened.",
-     "input_schema": {"type": "object", "properties": {
-         "person": {"type": "string"}, "category": {"type": "string"}, "impact": {"type": "string"},
-         "artifact_link": {"type": "string"}}, "required": ["person", "category", "impact"]}},
-    {"name": "log_one_on_one", "description": "Record a 1:1 with a person. Pass the raw notes; optionally a summary, sentiment (positive/neutral/concern), and action items.",
-     "input_schema": {"type": "object", "properties": {
-         "person": {"type": "string"}, "raw_text": {"type": "string"}, "summary": {"type": "string"},
-         "sentiment": {"type": "string"}, "action_items": {"type": "array", "items": {"type": "string"}}}, "required": ["person", "raw_text"]}},
-    {"name": "record_competency", "description": "Record a competency assessment for a person (e.g. technical: meets).",
-     "input_schema": {"type": "object", "properties": {
-         "person": {"type": "string"}, "competency": {"type": "string"}, "level": {"type": "string"}, "notes": {"type": "string"}}, "required": ["person", "competency"]}},
-    {"name": "person_dossier", "description": "Get everything tracked about a person: evidence, 1:1s, competencies, open commitments.",
-     "input_schema": {"type": "object", "properties": {"person": {"type": "string"}}, "required": ["person"]}},
-    {"name": "draft_review", "description": "Assemble a performance-review packet for a person from accumulated evidence/1:1s/competencies. Use its output to write a polished narrative.",
-     "input_schema": {"type": "object", "properties": {"person": {"type": "string"}}, "required": ["person"]}},
-    {"name": "capture_meeting", "description": "Record a meeting from notes/transcript and extract decisions + action items (with owners) into tracked commitments.",
-     "input_schema": {"type": "object", "properties": {
-         "title": {"type": "string"}, "raw_text": {"type": "string"}}, "required": ["title", "raw_text"]}},
-    {"name": "scan_risks", "description": "Scan synced Jira/GitHub items and work items for things needing attention (overdue, at-risk, PRs awaiting review, high-priority/blocked). Returns findings you can turn into nudges via propose_* tools.",
-     "input_schema": {"type": "object", "properties": {
-         "risk_threshold": {"type": "integer"}, "limit": {"type": "integer"}}, "required": []}},
-    {"name": "propose_jira_comment", "description": "Draft a Jira comment for approval (does NOT post).",
-     "input_schema": {"type": "object", "properties": {
-         "issue_key": {"type": "string"}, "body": {"type": "string"}}, "required": ["issue_key", "body"]}},
-    {"name": "propose_github_comment", "description": "Draft a GitHub issue/PR comment for approval (does NOT post).",
-     "input_schema": {"type": "object", "properties": {
-         "issue_number": {"type": "integer"}, "body": {"type": "string"},
-         "owner": {"type": "string"}, "repo": {"type": "string"}}, "required": ["issue_number", "body"]}},
-    {"name": "propose_slack_message", "description": "Draft a Slack message for approval (does NOT send).",
-     "input_schema": {"type": "object", "properties": {
-         "channel": {"type": "string"}, "text": {"type": "string"}}, "required": ["channel", "text"]}},
-    {"name": "propose_external_update", "description": "Draft a generic external update/notification for approval.",
-     "input_schema": {"type": "object", "properties": {
-         "summary": {"type": "string"}, "draft": {"type": "string"}, "target": {"type": "string"}},
-         "required": ["draft"]}},
+    {
+        "name": "upsert_person",
+        "description": "Create or update a team member / stakeholder record.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "role": {"type": "string"},
+                "team": {"type": "string"},
+                "relation": {"type": "string", "enum": ["report", "peer", "stakeholder", "manager"]},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "list_team",
+        "description": "List known people (reports, peers, stakeholders).",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "log_evidence",
+        "description": "Record a piece of performance evidence about a person. Infer the category (leadership/delivery/technical/communication/collaboration/growth/ownership) from what happened.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "person": {"type": "string"},
+                "category": {"type": "string"},
+                "impact": {"type": "string"},
+                "artifact_link": {"type": "string"},
+            },
+            "required": ["person", "category", "impact"],
+        },
+    },
+    {
+        "name": "log_one_on_one",
+        "description": "Record a 1:1 with a person. Pass the raw notes; optionally a summary, sentiment (positive/neutral/concern), and action items.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "person": {"type": "string"},
+                "raw_text": {"type": "string"},
+                "summary": {"type": "string"},
+                "sentiment": {"type": "string"},
+                "action_items": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["person", "raw_text"],
+        },
+    },
+    {
+        "name": "record_competency",
+        "description": "Record a competency assessment for a person (e.g. technical: meets).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "person": {"type": "string"},
+                "competency": {"type": "string"},
+                "level": {"type": "string"},
+                "notes": {"type": "string"},
+            },
+            "required": ["person", "competency"],
+        },
+    },
+    {
+        "name": "person_dossier",
+        "description": "Get everything tracked about a person: evidence, 1:1s, competencies, open commitments.",
+        "input_schema": {"type": "object", "properties": {"person": {"type": "string"}}, "required": ["person"]},
+    },
+    {
+        "name": "draft_review",
+        "description": "Assemble a performance-review packet for a person from accumulated evidence/1:1s/competencies. Use its output to write a polished narrative.",
+        "input_schema": {"type": "object", "properties": {"person": {"type": "string"}}, "required": ["person"]},
+    },
+    {
+        "name": "capture_meeting",
+        "description": "Record a meeting from notes/transcript and extract decisions + action items (with owners) into tracked commitments.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"title": {"type": "string"}, "raw_text": {"type": "string"}},
+            "required": ["title", "raw_text"],
+        },
+    },
+    {
+        "name": "scan_risks",
+        "description": "Scan synced Jira/GitHub items and work items for things needing attention (overdue, at-risk, PRs awaiting review, high-priority/blocked). Returns findings you can turn into nudges via propose_* tools.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"risk_threshold": {"type": "integer"}, "limit": {"type": "integer"}},
+            "required": [],
+        },
+    },
+    {
+        "name": "propose_jira_comment",
+        "description": "Draft a Jira comment for approval (does NOT post).",
+        "input_schema": {
+            "type": "object",
+            "properties": {"issue_key": {"type": "string"}, "body": {"type": "string"}},
+            "required": ["issue_key", "body"],
+        },
+    },
+    {
+        "name": "propose_github_comment",
+        "description": "Draft a GitHub issue/PR comment for approval (does NOT post).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "issue_number": {"type": "integer"},
+                "body": {"type": "string"},
+                "owner": {"type": "string"},
+                "repo": {"type": "string"},
+            },
+            "required": ["issue_number", "body"],
+        },
+    },
+    {
+        "name": "propose_slack_message",
+        "description": "Draft a Slack message for approval (does NOT send).",
+        "input_schema": {
+            "type": "object",
+            "properties": {"channel": {"type": "string"}, "text": {"type": "string"}},
+            "required": ["channel", "text"],
+        },
+    },
+    {
+        "name": "propose_external_update",
+        "description": "Draft a generic external update/notification for approval.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"summary": {"type": "string"}, "draft": {"type": "string"}, "target": {"type": "string"}},
+            "required": ["draft"],
+        },
+    },
 ]
 
 
@@ -213,12 +368,14 @@ class ClaudeBackend(BaseBackend):
                 for block in response.content:
                     if block.type == "tool_use":
                         out, is_error = self._dispatch(conn, block.name, dict(block.input or {}), ctx)
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": out,
-                            **({"is_error": True} if is_error else {}),
-                        })
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": block.id,
+                                "content": out,
+                                **({"is_error": True} if is_error else {}),
+                            }
+                        )
                 messages.append({"role": "user", "content": tool_results})
                 continue
 
@@ -242,8 +399,11 @@ class ClaudeBackend(BaseBackend):
                 return json.dumps(self._read(conn, name, args), default=str), False
             if name == "capture_item":
                 inbox_id, created = agentcore.capture_item(
-                    conn, text=str(args.get("text", "")), kind=str(args.get("kind", "task")),
-                    owner=args.get("owner"), due_date=args.get("due_date"),
+                    conn,
+                    text=str(args.get("text", "")),
+                    kind=str(args.get("kind", "task")),
+                    owner=args.get("owner"),
+                    due_date=args.get("due_date"),
                 )
                 conn.commit()
                 return (f"captured inbox item #{inbox_id}" if created else "duplicate; already captured"), False
@@ -264,8 +424,12 @@ class ClaudeBackend(BaseBackend):
     @staticmethod
     def _read(conn, name: str, args: dict):
         if name == "get_brief":
-            return queries.brief(conn, float(args.get("meeting_hours", 0.0)),
-                                 int(args.get("top", 5)), int(args.get("risk_threshold", 60)))
+            return queries.brief(
+                conn,
+                float(args.get("meeting_hours", 0.0)),
+                int(args.get("top", 5)),
+                int(args.get("risk_threshold", 60)),
+            )
         if name == "list_at_risk":
             return queries.at_risk(conn, int(args.get("threshold", 50)), int(args.get("limit", 10)))
         if name == "list_waiting_on":
@@ -287,32 +451,52 @@ class ClaudeBackend(BaseBackend):
         if name == "draft_review":
             return {"packet_markdown": em.build_review_packet(conn, str(args.get("person", "")))}
         if name == "scan_risks":
-            return watch.scan_project_risks(conn, risk_threshold=int(args.get("risk_threshold", 60)),
-                                            limit=int(args.get("limit", 25)))
+            return watch.scan_project_risks(
+                conn, risk_threshold=int(args.get("risk_threshold", 60)), limit=int(args.get("limit", 25))
+            )
         return {"error": f"unknown read tool {name}"}
 
     @staticmethod
     def _em_write(conn, name: str, args: dict) -> str:
         if name == "upsert_person":
-            pid = em.upsert_person(conn, str(args.get("name", "")), role=args.get("role"),
-                                   team=args.get("team"), relation=args.get("relation", "report"))
+            pid = em.upsert_person(
+                conn,
+                str(args.get("name", "")),
+                role=args.get("role"),
+                team=args.get("team"),
+                relation=args.get("relation", "report"),
+            )
             return f"saved person #{pid} ({args.get('name')})"
         # Free-text redaction for EM writes now lives in em.py (the single chokepoint that
         # also covers the equivalent `myos note/1on1/meeting` CLI commands and the model-
         # supplied action_items list) — findings #2/#7. No wrapping needed here.
         if name == "log_evidence":
-            eid = em.record_evidence(conn, str(args.get("person", "")), str(args.get("category", "general")),
-                                     str(args.get("impact", "")), artifact_link=args.get("artifact_link"))
+            eid = em.record_evidence(
+                conn,
+                str(args.get("person", "")),
+                str(args.get("category", "general")),
+                str(args.get("impact", "")),
+                artifact_link=args.get("artifact_link"),
+            )
             return f"logged evidence #{eid} for {args.get('person')} [{args.get('category')}]"
         if name == "log_one_on_one":
-            res = em.log_one_on_one(conn, str(args.get("person", "")), str(args.get("raw_text", "")),
-                                    summary=args.get("summary"),
-                                    sentiment=args.get("sentiment"),
-                                    action_items=args.get("action_items"))
+            res = em.log_one_on_one(
+                conn,
+                str(args.get("person", "")),
+                str(args.get("raw_text", "")),
+                summary=args.get("summary"),
+                sentiment=args.get("sentiment"),
+                action_items=args.get("action_items"),
+            )
             return f"logged 1:1 #{res['one_on_one_id']} with {len(res['action_item_ids'])} action item(s)"
         if name == "record_competency":
-            cid = em.record_competency(conn, str(args.get("person", "")), str(args.get("competency", "")),
-                                       level=args.get("level"), notes=args.get("notes"))
+            cid = em.record_competency(
+                conn,
+                str(args.get("person", "")),
+                str(args.get("competency", "")),
+                level=args.get("level"),
+                notes=args.get("notes"),
+            )
             return f"recorded competency #{cid}"
         if name == "capture_meeting":
             res = em.capture_meeting(conn, str(args.get("title", "Meeting")), str(args.get("raw_text", "")))
@@ -327,18 +511,30 @@ class ClaudeBackend(BaseBackend):
             payload = {"target": "jira", "issue_key": args.get("issue_key", ""), "draft": args.get("body", "")}
         elif name == "propose_github_comment":
             title = f"GitHub comment on #{args.get('issue_number', '?')}"
-            payload = {"target": "github", "issue_number": args.get("issue_number"),
-                       "owner": args.get("owner", ""), "repo": args.get("repo", ""), "draft": args.get("body", "")}
+            payload = {
+                "target": "github",
+                "issue_number": args.get("issue_number"),
+                "owner": args.get("owner", ""),
+                "repo": args.get("repo", ""),
+                "draft": args.get("body", ""),
+            }
         elif name == "propose_slack_message":
             title = f"Slack message to {args.get('channel', '?')}"
             payload = {"target": "slack", "channel": args.get("channel", ""), "draft": args.get("text", "")}
         else:  # propose_external_update
             title = str(args.get("summary") or "External update")
-            payload = {"target": args.get("target", "outbox"), "summary": args.get("summary", ""),
-                       "draft": args.get("draft", "")}
+            payload = {
+                "target": args.get("target", "outbox"),
+                "summary": args.get("summary", ""),
+                "draft": args.get("draft", ""),
+            }
         action_id = agentcore.enqueue_proposal(
-            conn, task_id=ctx["task_id"], action_type="draft_external_update",
-            title=title, payload=payload, requires_approval=1,
+            conn,
+            task_id=ctx["task_id"],
+            action_type="draft_external_update",
+            title=title,
+            payload=payload,
+            requires_approval=1,
         )
         conn.commit()
         ctx["ids"].append(action_id)
@@ -352,7 +548,11 @@ class ClaudeBackend(BaseBackend):
         analogies = request.get("analogies") or []
         prompt = (
             f"Objective: {objective}\n\nContext: {context}\n\n"
-            + ("Relevant prior outcomes:\n" + "\n".join(f"- {a.get('content', a)}" for a in analogies[:5]) if analogies else "")
+            + (
+                "Relevant prior outcomes:\n" + "\n".join(f"- {a.get('content', a)}" for a in analogies[:5])
+                if analogies
+                else ""
+            )
             + "\n\nProduce a short plan and concrete proposed actions. Use action_type "
             '"create_inbox_item" only for safe local notes (requires_approval 0); use '
             '"draft_external_update" for anything that touches Jira/GitHub/Slack '
@@ -363,21 +563,31 @@ class ClaudeBackend(BaseBackend):
             "additionalProperties": False,
             "properties": {
                 "reply": {"type": "string"},
-                "plan": {"type": "array", "items": {
-                    "type": "object", "additionalProperties": False,
-                    "properties": {"step": {"type": "string"}, "detail": {"type": "string"}},
-                    "required": ["step", "detail"]}},
-                "actions": {"type": "array", "items": {
-                    "type": "object", "additionalProperties": False,
-                    "properties": {
-                        "action_type": {"type": "string"},
-                        "title": {"type": "string"},
-                        # Structured outputs require additionalProperties:false everywhere and
-                        # forbid free-form objects (review B1) — carry payload as a JSON string.
-                        "payload": {"type": "string", "description": "JSON-encoded payload object"},
-                        "requires_approval": {"type": "integer"},
+                "plan": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {"step": {"type": "string"}, "detail": {"type": "string"}},
+                        "required": ["step", "detail"],
                     },
-                    "required": ["action_type", "title", "payload", "requires_approval"]}},
+                },
+                "actions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "action_type": {"type": "string"},
+                            "title": {"type": "string"},
+                            # Structured outputs require additionalProperties:false everywhere and
+                            # forbid free-form objects (review B1) — carry payload as a JSON string.
+                            "payload": {"type": "string", "description": "JSON-encoded payload object"},
+                            "requires_approval": {"type": "integer"},
+                        },
+                        "required": ["action_type", "title", "payload", "requires_approval"],
+                    },
+                },
             },
             "required": ["reply", "plan", "actions"],
         }

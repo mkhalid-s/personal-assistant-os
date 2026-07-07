@@ -7,8 +7,17 @@ from .privacy import apply_privacy_filters
 
 _SENTENCE_RE = re.compile(r"[^.!?\n]+")
 _CLAIM_CUES = (
-    " is ", " are ", " has ", " have ", " needs ", " requires ",
-    " blocks ", " depends on ", " mitigates ", " supports ", " confirms ",
+    " is ",
+    " are ",
+    " has ",
+    " have ",
+    " needs ",
+    " requires ",
+    " blocks ",
+    " depends on ",
+    " mitigates ",
+    " supports ",
+    " confirms ",
 )
 
 

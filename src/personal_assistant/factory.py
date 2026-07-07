@@ -115,7 +115,9 @@ def set_policy(
     return int(row["id"])
 
 
-def _artifact(conn: sqlite3.Connection, factory_run_id: int, artifact_type: str, artifact_id: int, label: str = "") -> None:
+def _artifact(
+    conn: sqlite3.Connection, factory_run_id: int, artifact_type: str, artifact_id: int, label: str = ""
+) -> None:
     conn.execute(
         """
         INSERT OR IGNORE INTO factory_artifacts (factory_run_id, artifact_type, artifact_id, label)
@@ -297,7 +299,7 @@ def learning_insights(
         SELECT l.outcome, l.notes, l.retrospective_json, r.workflow_pack, r.mode
         FROM factory_learning l
         JOIN factory_runs r ON r.id = l.factory_run_id
-        WHERE {' AND '.join(clauses)}
+        WHERE {" AND ".join(clauses)}
         ORDER BY l.id DESC
         LIMIT ?
         """,
@@ -418,7 +420,9 @@ def start_review_first_run(
         raise ValueError(reason)
 
     plan_id = _latest_plan_for_intent(conn, int(intent_id)) or plans.create_plan(conn, intent_id=int(intent_id))
-    learning = _apply_learning_to_plan(conn, intent_id=int(intent_id), plan_id=int(plan_id), workflow_pack=workflow_pack)
+    learning = _apply_learning_to_plan(
+        conn, intent_id=int(intent_id), plan_id=int(plan_id), workflow_pack=workflow_pack
+    )
     conn.execute(
         """
         INSERT INTO factory_runs (
@@ -530,9 +534,7 @@ def start_review_first_run(
     else:
         execution = advance_execution(conn, factory_run_id)
         prepared_action_ids = [
-            int(item["action_id"])
-            for item in execution.get("results", [])
-            if item.get("action_id") is not None
+            int(item["action_id"]) for item in execution.get("results", []) if item.get("action_id") is not None
         ]
         _stage(
             conn,
@@ -591,7 +593,9 @@ def start_review_first_run(
     }
 
 
-def _connector_specs_from_evidence(conn: sqlite3.Connection, intent: dict[str, Any], objective: str) -> list[dict[str, Any]]:
+def _connector_specs_from_evidence(
+    conn: sqlite3.Connection, intent: dict[str, Any], objective: str
+) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
         SELECT x.connector, x.external_id, x.item_type, x.title, x.url
@@ -728,13 +732,13 @@ def _prepare_zero_software_action(
     timeout = int(context.get("timeout") or env_timeout or zero_executor.DEFAULT_TIMEOUT)
     max_turns = int(context.get("max_turns") or 0) or None
     verification_commands = [
-        str(command).strip()
-        for command in (context.get("verification_commands") or [])
-        if str(command).strip()
+        str(command).strip() for command in (context.get("verification_commands") or []) if str(command).strip()
     ]
     verification_block = ""
     if verification_commands:
-        verification_block = "\nSuggested verification commands:\n" + "\n".join(f"- {command}" for command in verification_commands)
+        verification_block = "\nSuggested verification commands:\n" + "\n".join(
+            f"- {command}" for command in verification_commands
+        )
     objective = (
         f"{intent['objective']}\n\n"
         "Leave changes uncommitted. Run relevant local verification if safe."
@@ -872,8 +876,7 @@ def _prepare_zero_software_action(
         follow_up_id = None
         if not result.terminal_ok():
             follow_up_text = (
-                f"Follow up on Zero executor {result.status} for factory run #{run['id']}: "
-                f"{intent['objective']}"
+                f"Follow up on Zero executor {result.status} for factory run #{run['id']}: {intent['objective']}"
             )
             follow_up_id = insert_inbox_item_dedup(
                 conn,
@@ -940,11 +943,15 @@ def _prepare_zero_software_action(
             )
         return action_id, agent_run_id
     finally:
-        subprocess.run(["git", "-C", root, "worktree", "remove", "--force", worktree], capture_output=True, text=True, check=False)
+        subprocess.run(
+            ["git", "-C", root, "worktree", "remove", "--force", worktree], capture_output=True, text=True, check=False
+        )
         shutil.rmtree(worktree, ignore_errors=True)
 
 
-def _execution_action_specs(conn: sqlite3.Connection, run: dict[str, Any], intent: dict[str, Any]) -> list[dict[str, Any]]:
+def _execution_action_specs(
+    conn: sqlite3.Connection, run: dict[str, Any], intent: dict[str, Any]
+) -> list[dict[str, Any]]:
     objective = str(intent["objective"])
     base = [
         {
@@ -1036,7 +1043,10 @@ def prepare_execution_actions(conn: sqlite3.Connection, factory_run_id: int) -> 
     )
     task_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
     _artifact(conn, int(factory_run_id), "agent_task", task_id, "execution task")
-    if str(run.get("workflow_pack") or "") == "software_delivery" and str(run.get("executor_backend") or "local") == "zero":
+    if (
+        str(run.get("workflow_pack") or "") == "software_delivery"
+        and str(run.get("executor_backend") or "local") == "zero"
+    ):
         action_id, agent_run_id = _prepare_zero_software_action(conn, run=run, intent=intent, task_id=task_id)
         _artifact(conn, int(factory_run_id), "agent_run", agent_run_id, "zero executor")
         _artifact(conn, int(factory_run_id), "agent_action", action_id, "zero apply_patch")
@@ -1154,7 +1164,13 @@ def advance_execution(conn: sqlite3.Connection, factory_run_id: int, *, approve:
         int(factory_run_id),
         "execution",
         status=status,
-        output={"actions": len(action_ids), "executed": executed, "pending": pending, "blocked": blocked, "results": results},
+        output={
+            "actions": len(action_ids),
+            "executed": executed,
+            "pending": pending,
+            "blocked": blocked,
+            "results": results,
+        },
     )
     conn.execute(
         """
@@ -1168,7 +1184,13 @@ def advance_execution(conn: sqlite3.Connection, factory_run_id: int, *, approve:
             int(factory_run_id),
         ),
     )
-    return {"actions": len(action_ids), "executed": executed, "pending": pending, "blocked": blocked, "results": results}
+    return {
+        "actions": len(action_ids),
+        "executed": executed,
+        "pending": pending,
+        "blocked": blocked,
+        "results": results,
+    }
 
 
 def record_stage(
@@ -1301,7 +1323,13 @@ def learn(
         """,
         (outcome, safe_notes, int(factory_run_id)),
     )
-    _stage(conn, int(factory_run_id), "learning", status="completed", output={"learning_id": learning_id, "outcome": outcome})
+    _stage(
+        conn,
+        int(factory_run_id),
+        "learning",
+        status="completed",
+        output={"learning_id": learning_id, "outcome": outcome},
+    )
     append_event(
         conn,
         "factory_learning_recorded",
@@ -1351,7 +1379,9 @@ def proactive_step(
     if active:
         run_id = int(active["id"])
         run = get_factory_run(conn, run_id)
-        waiting_execution = any(s["stage_name"] == "execution" and s["status"] == "waiting" for s in run["stages"]) if run else False
+        waiting_execution = (
+            any(s["stage_name"] == "execution" and s["status"] == "waiting" for s in run["stages"]) if run else False
+        )
         if waiting_execution:
             result = advance_execution(conn, run_id)
             return {"action": "continued", "factory_run_id": run_id, **result}

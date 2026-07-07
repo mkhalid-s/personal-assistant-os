@@ -228,7 +228,10 @@ def cleanup_traces(
     remaining = conn.execute("SELECT COUNT(*) AS c FROM execution_traces").fetchone()["c"]
     overflow = max(0, int(remaining) - max(1, int(max_rows)))
     if overflow:
-        ids = [row["id"] for row in conn.execute("SELECT id FROM execution_traces ORDER BY id ASC LIMIT ?", (overflow,)).fetchall()]
+        ids = [
+            row["id"]
+            for row in conn.execute("SELECT id FROM execution_traces ORDER BY id ASC LIMIT ?", (overflow,)).fetchall()
+        ]
         if ids:
             placeholders = ",".join("?" for _ in ids)
             _rollup_rows(conn, f"id IN ({placeholders})", tuple(ids))
