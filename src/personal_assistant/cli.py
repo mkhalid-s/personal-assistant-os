@@ -2484,6 +2484,7 @@ def build_parser() -> argparse.ArgumentParser:
     approve.add_argument("--execute", action="store_true")
     approve.add_argument("--limit", type=int, default=20)
     approve.add_argument("--json", action="store_true", help="With --list, emit a single JSON object instead of formatted text.")
+    approve.add_argument("--stale-only", action="store_true", dest="stale_only", help="With --list, show only approvals in nearing_expiry, expired, tampered, or invalid states.")
     approve.set_defaults(func=cmd_approve)
 
     receipt = sub.add_parser("execution-receipt", help="Inspect action execution receipts.")

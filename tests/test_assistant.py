@@ -311,6 +311,68 @@ class ProposeAndApproveTest(unittest.TestCase):
         self.assertEqual(summary["state"], "tampered")
         self.assertEqual(summary["reason"], "payload_hash_mismatch")
 
+    def test_approve_list_stale_only_filters_by_integrity_state(self):
+        """--stale-only must show only rows in {nearing_expiry, expired,
+        tampered, invalid} and exclude fresh and not-yet-approved rows.
+        Set up three rows in different states and assert the filter."""
+        import argparse
+        import io
+        import contextlib
+        from personal_assistant import agentcore
+        from personal_assistant.cli_agent import cmd_approve
+        from personal_assistant.execution import approve_and_execute
+
+        task_id = agentcore.ensure_turn_task(self.conn, "stale-filter")
+        proposed_id = agentcore.enqueue_proposal(
+            self.conn, task_id=task_id, action_type="create_inbox_item",
+            title="never approved", payload={"text": "queued", "kind": "task"},
+            requires_approval=1,
+        )
+        fresh_id = agentcore.enqueue_proposal(
+            self.conn, task_id=task_id, action_type="create_inbox_item",
+            title="just approved", payload={"text": "fresh", "kind": "task"},
+            requires_approval=1,
+        )
+        expired_id = agentcore.enqueue_proposal(
+            self.conn, task_id=task_id, action_type="create_inbox_item",
+            title="way past TTL", payload={"text": "old", "kind": "task"},
+            requires_approval=1,
+        )
+        self.conn.commit()
+        approve_and_execute(self.conn, fresh_id, do_approve=True, execute=False)
+        approve_and_execute(self.conn, expired_id, do_approve=True, execute=False)
+        self.conn.execute(
+            "UPDATE agent_actions SET approved_at = '2020-01-01 00:00:00' WHERE id = ?",
+            (expired_id,),
+        )
+        self.conn.commit()
+
+        # Without --stale-only: JSON payload must include all three rows.
+        buf = io.StringIO()
+        args = argparse.Namespace(
+            list=True, action=None, execute=False, limit=20,
+            json=True, stale_only=False,
+        )
+        with contextlib.redirect_stdout(buf):
+            cmd_approve(args)
+        full = json.loads(buf.getvalue())
+        self.assertEqual(full["count"], 3)
+        self.assertFalse(full["stale_only"])
+
+        # With --stale-only: only the expired row must remain.
+        buf = io.StringIO()
+        args = argparse.Namespace(
+            list=True, action=None, execute=False, limit=20,
+            json=True, stale_only=True,
+        )
+        with contextlib.redirect_stdout(buf):
+            cmd_approve(args)
+        stale = json.loads(buf.getvalue())
+        self.assertTrue(stale["stale_only"])
+        self.assertEqual(stale["count"], 1)
+        self.assertEqual(stale["actions"][0]["id"], expired_id)
+        self.assertEqual(stale["actions"][0]["integrity"]["state"], "expired")
+
     def test_run_turn_persists_retrieval_trace_ids(self):
         from personal_assistant import assistant
         from personal_assistant.inbox import ensure_work_item_node, index_chunk

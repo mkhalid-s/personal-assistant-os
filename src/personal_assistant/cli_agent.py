@@ -509,49 +509,70 @@ def _format_integrity_text_line(integrity: dict) -> str | None:
     return " ".join(parts)
 
 
+_STALE_INTEGRITY_STATES = frozenset({"nearing_expiry", "expired", "tampered", "invalid"})
+
+
 def cmd_approve(args: argparse.Namespace) -> None:
     conn = get_connection()
-    json_mode = bool(getattr(args, "json", False))
-    if args.list:
-        rows = _approval_queue_rows(conn, int(args.limit))
-        if json_mode:
-            payload = {
-                "schema": "myos.approve.list.v1",
-                "count": len(rows),
-                "limit": int(args.limit),
-                "actions": [_approval_queue_json_entry(row) for row in rows],
-            }
-            print(json.dumps(payload, ensure_ascii=True))
+    try:
+        json_mode = bool(getattr(args, "json", False))
+        stale_only = bool(getattr(args, "stale_only", False))
+        if args.list:
+            rows = _approval_queue_rows(conn, int(args.limit))
+            if stale_only:
+                # Filter down to entries whose integrity block requires operator
+                # attention before execution: nearing_expiry, expired, tampered,
+                # or invalid. `not_yet_approved` and `fresh` are excluded because
+                # they need no re-approval or intervention.
+                rows = [
+                    row
+                    for row in rows
+                    if _approval_integrity_summary(row).get("state") in _STALE_INTEGRITY_STATES
+                ]
+            if json_mode:
+                payload = {
+                    "schema": "myos.approve.list.v1",
+                    "count": len(rows),
+                    "limit": int(args.limit),
+                    "stale_only": stale_only,
+                    "actions": [_approval_queue_json_entry(row) for row in rows],
+                }
+                print(json.dumps(payload, ensure_ascii=True))
+                return
+            if not rows:
+                if stale_only:
+                    print("No stale approvals (no nearing_expiry, expired, tampered, or invalid entries).")
+                else:
+                    print("No approval-needed actions.")
+                return
+            print("Approval queue (stale only):" if stale_only else "Approval queue:")
+            for row in rows:
+                print(f"- action #{row['id']} task=#{row['agent_task_id']} [{row['action_type']}] {row['title']} status={row['status']}")
+                payload = json.loads(row["payload_json"] or "{}")
+                print(f"  target: {_provider_target_summary(payload)}")
+                for line in format_action_review_context(str(row["action_type"]), payload, requires_approval=True):
+                    print(f"  {line}")
+                _print_zero_approval_context(payload)
+                integrity_line = _format_integrity_text_line(_approval_integrity_summary(row))
+                if integrity_line:
+                    print(f"  {integrity_line}")
+                rollback = payload.get("rollback_note") or payload.get("rollback")
+                if rollback:
+                    print(f"  rollback: {rollback}")
+                preview = payload.get("draft") or payload.get("text")
+                if preview:
+                    snippet = str(preview) if len(str(preview)) <= 220 else str(preview)[:217] + "..."
+                    print(f"  preview: {snippet}")
             return
-        if not rows:
-            print("No approval-needed actions.")
-            return
-        print("Approval queue:")
-        for row in rows:
-            print(f"- action #{row['id']} task=#{row['agent_task_id']} [{row['action_type']}] {row['title']} status={row['status']}")
-            payload = json.loads(row["payload_json"] or "{}")
-            print(f"  target: {_provider_target_summary(payload)}")
-            for line in format_action_review_context(str(row["action_type"]), payload, requires_approval=True):
-                print(f"  {line}")
-            _print_zero_approval_context(payload)
-            integrity_line = _format_integrity_text_line(_approval_integrity_summary(row))
-            if integrity_line:
-                print(f"  {integrity_line}")
-            rollback = payload.get("rollback_note") or payload.get("rollback")
-            if rollback:
-                print(f"  rollback: {rollback}")
-            preview = payload.get("draft") or payload.get("text")
-            if preview:
-                snippet = str(preview) if len(str(preview)) <= 220 else str(preview)[:217] + "..."
-                print(f"  preview: {snippet}")
-        return
-    if args.action is None:
-        if json_mode:
-            print(json.dumps({"schema": "myos.approve.list.v1", "error": "provide --action or --list"}, ensure_ascii=True))
-        else:
-            print("Provide --action ID or use --list.")
-        raise SystemExit(1)
-    cmd_act(argparse.Namespace(task=None, action=args.action, list=False, approve=True, execute=args.execute, limit=args.limit))
+        if args.action is None:
+            if json_mode:
+                print(json.dumps({"schema": "myos.approve.list.v1", "error": "provide --action or --list"}, ensure_ascii=True))
+            else:
+                print("Provide --action ID or use --list.")
+            raise SystemExit(1)
+        cmd_act(argparse.Namespace(task=None, action=args.action, list=False, approve=True, execute=args.execute, limit=args.limit))
+    finally:
+        conn.close()
 
 
 def _receipt_show_row(conn, receipt_id: int):
