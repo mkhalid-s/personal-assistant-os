@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 
 from . import autonomy, autonomy_loop, command_registry
 from .db import connection
+from .privacy import apply_privacy_filters, get_policy_map
 
 
 def _loop_status_json_entry(row: dict) -> dict:
@@ -340,3 +342,196 @@ def cmd_loop(args: argparse.Namespace) -> None:
             print(str(exc))
             raise SystemExit(1) from exc
     raise SystemExit("Unknown loop command.")
+
+
+def cmd_autopilot_status(args: argparse.Namespace) -> None:
+    """Print recent autopilot runs and open approval-queue depth."""
+    with connection() as conn:
+        json_mode = bool(getattr(args, "json", False))
+        rows = conn.execute(
+            """
+            SELECT id, status, started_at, finished_at, summary
+            FROM autopilot_runs
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (args.limit,),
+        ).fetchall()
+        pending = conn.execute(
+            "SELECT COUNT(*) AS c FROM agent_actions WHERE requires_approval=1 AND status='proposed'"
+        ).fetchone()["c"]
+        open_tasks = conn.execute("SELECT COUNT(*) AS c FROM agent_tasks WHERE status='open'").fetchone()["c"]
+        if json_mode:
+            payload = {
+                "schema": "myos.autopilot_status.v1",
+                "count": len(rows),
+                "limit": int(args.limit),
+                "runs": [
+                    {
+                        "id": int(row["id"]),
+                        "status": str(row["status"] or ""),
+                        "started_at": str(row["started_at"] or ""),
+                        "finished_at": str(row["finished_at"] or ""),
+                        "summary": str(row["summary"] or ""),
+                    }
+                    for row in rows
+                ],
+                "state": {
+                    "open_agent_tasks": int(open_tasks),
+                    "approvals_pending": int(pending),
+                },
+            }
+            print(json.dumps(payload, ensure_ascii=True))
+            return
+        if not rows:
+            print("No autopilot runs found.")
+        else:
+            print("Autopilot runs:")
+            for row in rows:
+                print(
+                    f"- run #{row['id']} status={row['status']} started={row['started_at']} "
+                    f"finished={row['finished_at'] or 'running'} summary={row['summary'] or ''}"
+                )
+        print(f"Autopilot state: open_agent_tasks={open_tasks} approvals_pending={pending}")
+
+
+def cmd_digest(args: argparse.Namespace) -> None:
+    """Show the latest (or a specific) assistant digest, or an empty JSON envelope."""
+    json_mode = bool(getattr(args, "json", False))
+    with connection() as conn:
+        if args.id:
+            row = conn.execute(
+                "SELECT id, title, body, created_at FROM assistant_digests WHERE id = ?",
+                (args.id,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """
+                SELECT id, title, body, created_at
+                FROM assistant_digests
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+    if not row:
+        if json_mode:
+            print(json.dumps({"schema": "myos.digest.v1", "error": "not_found"}, ensure_ascii=True))
+        else:
+            print("No assistant digest found. Run `myos autopilot --once` first.")
+        return
+    if json_mode:
+        payload = {
+            "schema": "myos.digest.v1",
+            "id": int(row["id"]),
+            "title": str(row["title"] or ""),
+            "created_at": str(row["created_at"] or ""),
+            "body": str(row["body"] or "").rstrip(),
+        }
+        print(json.dumps(payload, ensure_ascii=True))
+        return
+    if args.title_only:
+        print(f"Digest #{row['id']}: {row['title']} ({row['created_at']})")
+        return
+    print(row["body"].rstrip())
+
+
+def cmd_goal(args: argparse.Namespace) -> None:
+    """Add/pause/resume/list assistant goals — the "standing goals" queue MYOS reasons about."""
+    with connection() as conn:
+        if args.goal_action == "add":
+            objective = apply_privacy_filters(conn, args.objective)
+            context = apply_privacy_filters(conn, args.context)
+            conn.execute(
+                """
+                INSERT INTO assistant_goals (objective, context, cadence_minutes, priority, status)
+                VALUES (?, ?, ?, ?, 'active')
+                """,
+                (objective, context, args.cadence_minutes, args.priority),
+            )
+            goal_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+            conn.commit()
+            print(f"Added assistant goal #{goal_id}: {objective}")
+            return
+        if args.goal_action == "pause":
+            conn.execute(
+                "UPDATE assistant_goals SET status='paused', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (args.id,),
+            )
+            conn.commit()
+            print(f"Paused assistant goal #{args.id}.")
+            return
+        if args.goal_action == "resume":
+            conn.execute(
+                "UPDATE assistant_goals SET status='active', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (args.id,),
+            )
+            conn.commit()
+            print(f"Resumed assistant goal #{args.id}.")
+            return
+        rows = conn.execute(
+            """
+            SELECT id, objective, status, cadence_minutes, priority, last_evaluated_at
+            FROM assistant_goals
+            ORDER BY status ASC, priority ASC, id ASC
+            LIMIT ?
+            """,
+            (args.limit,),
+        ).fetchall()
+        if not rows:
+            print("No assistant goals found.")
+            return
+        print("Assistant goals:")
+        for row in rows:
+            print(
+                f"- goal #{row['id']} status={row['status']} priority={row['priority']} "
+                f"cadence={row['cadence_minutes']}m last={row['last_evaluated_at'] or 'never'} objective={row['objective']}"
+            )
+
+
+def cmd_self_review(_: argparse.Namespace) -> None:
+    """Introspect MYOS' own autonomy posture and record the assessment to db."""
+    with connection() as conn:
+        policy = get_policy_map(conn)
+        checks: list[tuple[str, bool, str]] = []
+        active_goals = conn.execute("SELECT COUNT(*) AS c FROM assistant_goals WHERE status='active'").fetchone()["c"]
+        recent_runs = conn.execute(
+            "SELECT COUNT(*) AS c FROM autopilot_runs WHERE started_at >= datetime('now', '-1 day')"
+        ).fetchone()["c"]
+        pending = conn.execute(
+            "SELECT COUNT(*) AS c FROM agent_actions WHERE requires_approval=1 AND status='proposed'"
+        ).fetchone()["c"]
+        action_provider = bool(os.getenv("MYOS_ACTION_COMMAND", "").strip())
+        ai_provider = bool(os.getenv("MYOS_AI_COMMAND", "").strip())
+        connectors_ready = conn.execute("SELECT COUNT(*) AS c FROM sync_state WHERE last_status='ok'").fetchone()["c"]
+
+        checks.append(("standing_goals", active_goals > 0, f"active_goals={active_goals}"))
+        checks.append(("autopilot_recent", recent_runs > 0, f"runs_24h={recent_runs}"))
+        checks.append(("approval_queue", pending < 20, f"pending_approvals={pending}"))
+        checks.append(
+            (
+                "ai_reasoning",
+                ai_provider or policy.get("ai_provider") == "local",
+                f"ai_command={'yes' if ai_provider else 'no'}",
+            )
+        )
+        checks.append(("action_provider", action_provider, f"action_command={'yes' if action_provider else 'no'}"))
+        checks.append(("live_connectors", connectors_ready > 0, f"connectors_ok={connectors_ready}"))
+
+        missing = [name for name, ok, _ in checks if not ok]
+        status = "ready" if not missing else "needs_setup"
+        summary = ", ".join(f"{name}={'ok' if ok else 'missing'}" for name, ok, _ in checks)
+        conn.execute(
+            """
+            INSERT INTO assistant_self_reviews (status, summary, missing_capabilities_json)
+            VALUES (?, ?, ?)
+            """,
+            (status, summary, json.dumps(missing, ensure_ascii=True)),
+        )
+        conn.commit()
+    print(f"Autonomy self-review: {status}")
+    for name, ok, detail in checks:
+        print(f"- {'PASS' if ok else 'GAP'} {name}: {detail}")
+    if missing:
+        print("Next setup gaps:")
+        for item in missing:
+            print(f"- {item}")

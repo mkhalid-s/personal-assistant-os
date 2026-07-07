@@ -1,23 +1,21 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
-import json
 import os
 import sqlite3
 import sys
 import time
-from datetime import datetime
 from pathlib import Path
 
 from . import (
-    assistant,
     autonomy,
     autonomy_loop,
     cli_agent,
     cli_autonomy,
     cli_autopilot,
+    cli_chat,
     cli_diagnostics,
+    cli_em,
     cli_factory,
     cli_health,
     cli_knowledge,
@@ -30,43 +28,29 @@ from . import (
     cli_setup_live,
     cli_workflow,
     command_registry,
-    em,
     factory,
     graphrag,
     model_setup,
     observability,
-    providers,
     queries,
     router,
-    watch,
 )
 from . import (
     context as ctx,
 )
 from .connectors import AhaConnector, ConfluenceConnector, GitHubConnector, JiraConnector
-from .db import append_event, connection
+from .db import connection
 from .execution import (
     _execute_agent_action,  # noqa: F401  # re-exported for tests
-    _handle_proposals,
+    _handle_proposals,  # noqa: F401  # re-exported for tests
 )
-from .extraction import extract_suggestions
 
 # Helpers extracted out of this module (refactor #12); re-imported so existing
 # call sites (and tests importing them from cli) keep working unchanged.
 from .inbox import (
     ensure_work_item_node,
     index_chunk,
-    insert_inbox_item_dedup,
 )
-from .ingest.audio import transcribe_audio
-from .ingest.image import extract_image_text
-from .locks import acquire_lock, release_lock
-from .privacy import (
-    _file_sha256,
-    apply_privacy_filters,
-    get_policy_map,
-)
-from .pulse import run_cycle
 
 
 def load_env_file(path: str) -> int:
@@ -130,240 +114,46 @@ def _trace_enabled_for(args: argparse.Namespace) -> bool:
     return str(getattr(args, "command", "") or "") not in {"restore", "setup-live"}
 
 
-def _command_autonomy_decision(
-    conn: sqlite3.Connection, command: str, *, requested_mode: str = ""
-) -> dict[str, object]:
-    return cli_autonomy.command_autonomy_decision(conn, command, requested_mode=requested_mode)
+cmd_capture = cli_workflow.cmd_capture
 
 
-def _print_autonomy_decision(decision: dict[str, object]) -> None:
-    cli_autonomy.print_autonomy_decision(decision)
+# _is_watchable_file and _scan_watch_dirs moved to cli_workflow.py (P0.7 split).
+# Kept here as thin re-exports so existing test imports keep working unchanged.
+_is_watchable_file = cli_workflow._is_watchable_file
+_scan_watch_dirs = cli_workflow._scan_watch_dirs
 
 
-def _print_recommendations(conn: sqlite3.Connection, recommendations: list[dict[str, object]]) -> None:
-    cli_autonomy.print_recommendations(conn, recommendations)
+cmd_triage = cli_workflow.cmd_triage
 
 
-def cmd_capture(args: argparse.Namespace) -> None:
-    cli_workflow.cmd_capture(args)
+cmd_today = cli_workflow.cmd_today
 
 
-def _is_watchable_file(path: Path) -> bool:
-    return not path.is_symlink() and path.is_file() and path.suffix.lower() in {".txt", ".md", ".markdown", ".log"}
+cmd_risk_radar = cli_workflow.cmd_risk_radar
 
 
-def _scan_watch_dirs(conn, *, limit: int = 20, min_confidence: float = 0.65) -> tuple[int, int]:
-    policy = get_policy_map(conn)
-    max_file_bytes = int(policy.get("watch_max_file_bytes", str(2 * 1024 * 1024)))
-    max_candidates = max(limit * 50, 100)
-    watch_dirs = conn.execute(
-        """
-        SELECT id, path
-        FROM assistant_watch_dirs
-        WHERE status='active'
-        ORDER BY id ASC
-        """
-    ).fetchall()
-    files_ingested = 0
-    suggestions_created = 0
-    candidates_seen = 0
-    for watch_row in watch_dirs:
-        root = Path(watch_row["path"]).expanduser()
-        if not root.exists() or not root.is_dir():
-            continue
-        root_resolved = root.resolve()
-        for path in root.rglob("*"):
-            candidates_seen += 1
-            if candidates_seen > max_candidates:
-                return files_ingested, suggestions_created
-            if files_ingested >= limit:
-                return files_ingested, suggestions_created
-            if not _is_watchable_file(path):
-                continue
-            try:
-                resolved = path.resolve()
-                if not resolved.is_relative_to(root_resolved):
-                    continue
-                if path.stat().st_size > max_file_bytes:
-                    continue
-            except OSError:
-                continue
-            file_hash = _file_sha256(path)
-            reserve = conn.execute(
-                """
-                INSERT OR IGNORE INTO file_ingests (watch_dir_id, file_path, file_hash, status)
-                VALUES (?, ?, ?, 'processing')
-                """,
-                (watch_row["id"], str(path), file_hash),
-            )
-            if reserve.rowcount == 0:
-                continue
-            raw_text = path.read_text(errors="replace")
-            filtered = apply_privacy_filters(conn, raw_text)
-            if not filtered.strip():
-                conn.execute(
-                    "UPDATE file_ingests SET status='skipped_empty' WHERE file_path=? AND file_hash=?",
-                    (str(path), file_hash),
-                )
-                continue
-            conn.execute(
-                """
-                INSERT INTO media_assets (media_type, file_path, transcript_text, source)
-                VALUES ('file', ?, ?, 'watch_dir')
-                """,
-                (str(path), filtered),
-            )
-            media_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
-            conn.execute(
-                "INSERT OR IGNORE INTO media_imports (media_asset_id) VALUES (?)",
-                (media_id,),
-            )
-            conn.execute(
-                """
-                INSERT INTO provenance (source_type, source_ref, extractor, extractor_version, confidence, snippet)
-                VALUES ('file', ?, 'watch_dir', '1', 0.75, ?)
-                """,
-                (str(path), filtered[:400]),
-            )
-            provenance_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
-            index_chunk(conn, "media_asset", media_id, filtered, provenance_id=provenance_id)
-            for suggestion in extract_suggestions(filtered):
-                if suggestion.confidence < min_confidence:
-                    continue
-                inserted = insert_inbox_item_dedup(
-                    conn,
-                    text=suggestion.text,
-                    kind=suggestion.kind,
-                    owner=None,
-                    due_date=None,
-                    confidence=suggestion.confidence,
-                    source=f"watch_file:{file_hash}",
-                )
-                if inserted is not None:
-                    suggestions_created += 1
-            conn.execute(
-                """
-                UPDATE file_ingests
-                SET status='ingested', media_asset_id=?
-                WHERE file_path=? AND file_hash=?
-                """,
-                (media_id, str(path), file_hash),
-            )
-            files_ingested += 1
-    return files_ingested, suggestions_created
+cmd_close_day = cli_review.cmd_close_day
 
 
-def cmd_triage(args: argparse.Namespace) -> None:
-    cli_workflow.cmd_triage(args)
+cmd_morning_brief = cli_review.cmd_morning_brief
 
 
-def cmd_today(args: argparse.Namespace) -> None:
-    cli_workflow.cmd_today(args)
+cmd_transcribe = cli_workflow.cmd_transcribe
 
 
-def cmd_risk_radar(args: argparse.Namespace) -> None:
-    cli_workflow.cmd_risk_radar(args)
+cmd_ingest_image = cli_workflow.cmd_ingest_image
 
 
-def cmd_close_day(args: argparse.Namespace) -> None:
-    cli_review.cmd_close_day(args)
+cmd_link = cli_diagnostics.cmd_link
 
 
-def cmd_morning_brief(args: argparse.Namespace) -> None:
-    cli_review.cmd_morning_brief(args)
+cmd_related = cli_diagnostics.cmd_related
 
 
-def cmd_transcribe(args: argparse.Namespace) -> None:
-    audio_path = args.audio_file
-    transcript = transcribe_audio(audio_path, args.text)
-    if not transcript:
-        print("No transcript produced. Install 'faster-whisper' or provide --text.")
-        return
-
-    with connection() as conn:
-        filtered = apply_privacy_filters(conn, transcript)
-        conn.execute(
-            """
-            INSERT INTO media_assets (media_type, file_path, transcript_text, source)
-            VALUES (?, ?, ?, ?)
-            """,
-            ("audio", audio_path, filtered, "local"),
-        )
-        media_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
-        conn.execute(
-            """
-            INSERT INTO provenance (source_type, source_ref, extractor, extractor_version, confidence, snippet)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            ("audio", audio_path, "whisper_or_manual", "1", 0.7 if args.text else 0.82, filtered[:400]),
-        )
-        provenance_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
-        index_chunk(conn, "media_asset", media_id, filtered, provenance_id=provenance_id)
-        append_event(
-            conn,
-            "ingest_audio",
-            "media_asset",
-            media_id,
-            json.dumps({"path": audio_path}, ensure_ascii=True),
-        )
-        conn.commit()
-    print(f"Transcript stored as media asset #{media_id}.")
-    print("Run: myos inbox-process to generate suggested tasks.")
+cmd_context = cli_diagnostics.cmd_context
 
 
-def cmd_ingest_image(args: argparse.Namespace) -> None:
-    image_path = args.image_file
-    extracted = extract_image_text(image_path, args.text)
-    if not extracted:
-        print("Could not extract OCR text. Install tesseract or pass --text manually.")
-        return
-
-    with connection() as conn:
-        filtered = apply_privacy_filters(conn, extracted)
-        conn.execute(
-            """
-            INSERT INTO media_assets (media_type, file_path, extracted_text, source)
-            VALUES (?, ?, ?, ?)
-            """,
-            ("image", image_path, filtered, "local"),
-        )
-        media_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
-        conn.execute(
-            """
-            INSERT INTO provenance (source_type, source_ref, extractor, extractor_version, confidence, snippet)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            ("image", image_path, "ocr_or_manual", "1", 0.68 if args.text else 0.8, filtered[:400]),
-        )
-        provenance_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
-        index_chunk(conn, "media_asset", media_id, filtered, provenance_id=provenance_id)
-        append_event(
-            conn,
-            "ingest_image",
-            "media_asset",
-            media_id,
-            json.dumps({"path": image_path}, ensure_ascii=True),
-        )
-        conn.commit()
-
-    print(f"Image text stored as media asset #{media_id}.")
-    print('Tip: run `myos context "<topic>"` to retrieve relevant chunks.')
-
-
-def cmd_link(args: argparse.Namespace) -> None:
-    cli_diagnostics.cmd_link(args)
-
-
-def cmd_related(args: argparse.Namespace) -> None:
-    cli_diagnostics.cmd_related(args)
-
-
-def cmd_context(args: argparse.Namespace) -> None:
-    cli_diagnostics.cmd_context(args)
-
-
-def cmd_retrieval_run(args: argparse.Namespace) -> None:
-    cli_diagnostics.cmd_retrieval_run(args)
+cmd_retrieval_run = cli_diagnostics.cmd_retrieval_run
 
 
 def cmd_recall(args: argparse.Namespace) -> None:
@@ -503,24 +293,20 @@ def _repo_file(path: str) -> Path:
     return Path(__file__).resolve().parents[2] / path
 
 
-def cmd_doctor(args: argparse.Namespace) -> None:
-    cli_health.cmd_doctor(args)
+cmd_doctor = cli_health.cmd_doctor
 
 
 def _check_sqlite_file(path: Path) -> tuple[bool, str]:
     return cli_local_data._check_sqlite_file(path)
 
 
-def cmd_migrations(args: argparse.Namespace) -> None:
-    cli_local_data.cmd_migrations(args)
+cmd_migrations = cli_local_data.cmd_migrations
 
 
-def cmd_backup(args: argparse.Namespace) -> None:
-    cli_local_data.cmd_backup(args)
+cmd_backup = cli_local_data.cmd_backup
 
 
-def cmd_restore(args: argparse.Namespace) -> None:
-    cli_local_data.cmd_restore(args)
+cmd_restore = cli_local_data.cmd_restore
 
 
 def _pyproject_dependencies(pyproject: Path) -> list[str]:
@@ -597,40 +383,31 @@ def cmd_performance_baseline(args: argparse.Namespace) -> None:
     )
 
 
-def cmd_release_check(args: argparse.Namespace) -> None:
-    cli_health.cmd_release_check(args)
+cmd_release_check = cli_health.cmd_release_check
 
 
-def cmd_ingest_external(args: argparse.Namespace) -> None:
-    cli_workflow.cmd_ingest_external(args)
+cmd_ingest_external = cli_workflow.cmd_ingest_external
 
 
-def cmd_inbox_process(args: argparse.Namespace) -> None:
-    cli_workflow.cmd_inbox_process(args)
+cmd_inbox_process = cli_workflow.cmd_inbox_process
 
 
-def cmd_why(args: argparse.Namespace) -> None:
-    cli_diagnostics.cmd_why(args)
+cmd_why = cli_diagnostics.cmd_why
 
 
-def cmd_at_risk(args: argparse.Namespace) -> None:
-    cli_review.cmd_at_risk(args)
+cmd_at_risk = cli_review.cmd_at_risk
 
 
-def cmd_waiting_on(args: argparse.Namespace) -> None:
-    cli_review.cmd_waiting_on(args)
+cmd_waiting_on = cli_review.cmd_waiting_on
 
 
-def cmd_delegation_candidates(args: argparse.Namespace) -> None:
-    cli_review.cmd_delegation_candidates(args)
+cmd_delegation_candidates = cli_review.cmd_delegation_candidates
 
 
-def cmd_brief(args: argparse.Namespace) -> None:
-    cli_review.cmd_brief(args)
+cmd_brief = cli_review.cmd_brief
 
 
-def cmd_stop_doing(args: argparse.Namespace) -> None:
-    cli_review.cmd_stop_doing(args)
+cmd_stop_doing = cli_review.cmd_stop_doing
 
 
 def cmd_onboard(_: argparse.Namespace) -> None:
@@ -659,8 +436,7 @@ def cmd_onboard(_: argparse.Namespace) -> None:
         print("All connectors ready. Run: myos run-day --meeting-hours <n>")
 
 
-def cmd_config_init(args: argparse.Namespace) -> None:
-    cli_local_data.cmd_config_init(args)
+cmd_config_init = cli_local_data.cmd_config_init
 
 
 def _env_template(db_path: Path) -> str:
@@ -691,8 +467,7 @@ def cmd_setup_live(args: argparse.Namespace) -> None:
     cli_setup_live.cmd_setup_live(args, _setup_live_dependencies())
 
 
-def cmd_report(args: argparse.Namespace) -> None:
-    cli_review.cmd_report(args)
+cmd_report = cli_review.cmd_report
 
 
 def cmd_run_day(args: argparse.Namespace) -> dict[str, str] | None:
@@ -703,40 +478,32 @@ def cmd_go_live(args: argparse.Namespace) -> None:
     cli_operations.cmd_go_live(args, _operations_dependencies())
 
 
-def cmd_metrics(args: argparse.Namespace) -> None:
-    cli_review.cmd_metrics(args)
+cmd_metrics = cli_review.cmd_metrics
 
 
-def cmd_log_evidence(args: argparse.Namespace) -> None:
-    cli_review.cmd_log_evidence(args)
+cmd_log_evidence = cli_review.cmd_log_evidence
 
 
-def cmd_review_evidence(args: argparse.Namespace) -> None:
-    cli_review.cmd_review_evidence(args)
+cmd_review_evidence = cli_review.cmd_review_evidence
 
 
-def cmd_resolve_commitment(args: argparse.Namespace) -> None:
-    cli_review.cmd_resolve_commitment(args)
+cmd_resolve_commitment = cli_review.cmd_resolve_commitment
 
 
-def cmd_weekly_review(args: argparse.Namespace) -> None:
-    cli_review.cmd_weekly_review(args)
+cmd_weekly_review = cli_review.cmd_weekly_review
 
 
-def cmd_launchd_install(args: argparse.Namespace) -> None:
-    cli_launchd.cmd_launchd_install(args)
+cmd_launchd_install = cli_launchd.cmd_launchd_install
 
 
-def cmd_launchd_uninstall(args: argparse.Namespace) -> None:
-    cli_launchd.cmd_launchd_uninstall(args)
+cmd_launchd_uninstall = cli_launchd.cmd_launchd_uninstall
 
 
 def cmd_activate(args: argparse.Namespace) -> None:
     cli_launchd.cmd_activate(args, _launchd_runtime_dependencies())
 
 
-def cmd_launchd_status(args: argparse.Namespace) -> None:
-    cli_runtime.cmd_launchd_status(args)
+cmd_launchd_status = cli_runtime.cmd_launchd_status
 
 
 def cmd_start(args: argparse.Namespace) -> None:
@@ -747,32 +514,25 @@ def cmd_stop(args: argparse.Namespace) -> None:
     cli_launchd.cmd_stop(args, _launchd_runtime_dependencies())
 
 
-def cmd_dashboard(args: argparse.Namespace) -> None:
-    cli_runtime.cmd_dashboard(args)
+cmd_dashboard = cli_runtime.cmd_dashboard
 
 
-def cmd_sanity(args: argparse.Namespace) -> None:
-    cli_health.cmd_sanity(args)
+cmd_sanity = cli_health.cmd_sanity
 
 
-def cmd_runbook(args: argparse.Namespace) -> None:
-    cli_runtime.cmd_runbook(args)
+cmd_runbook = cli_runtime.cmd_runbook
 
 
-def cmd_cleanup(args: argparse.Namespace) -> None:
-    cli_local_data.cmd_cleanup(args)
+cmd_cleanup = cli_local_data.cmd_cleanup
 
 
-def cmd_renegotiate(args: argparse.Namespace) -> None:
-    cli_review.cmd_renegotiate(args)
+cmd_renegotiate = cli_review.cmd_renegotiate
 
 
-def cmd_next_action(args: argparse.Namespace) -> None:
-    cli_review.cmd_next_action(args)
+cmd_next_action = cli_review.cmd_next_action
 
 
-def cmd_snapshot(args: argparse.Namespace) -> None:
-    cli_health.cmd_snapshot(args)
+cmd_snapshot = cli_health.cmd_snapshot
 
 
 def cmd_morning(args: argparse.Namespace) -> None:
@@ -832,147 +592,82 @@ def cmd_live(args: argparse.Namespace) -> None:
     cli_launchd.cmd_live(args, _launchd_runtime_dependencies())
 
 
-def cmd_health(args: argparse.Namespace) -> None:
-    cli_runtime.cmd_health(args)
+cmd_health = cli_runtime.cmd_health
 
 
-def cmd_ui(args: argparse.Namespace) -> None:
-    cli_runtime.cmd_ui(args)
+cmd_ui = cli_runtime.cmd_ui
 
 
 def cmd_orchestrate(args: argparse.Namespace) -> None:
     cli_operations.cmd_orchestrate(args, _operations_dependencies())
 
 
-def cmd_workflow_runs(args: argparse.Namespace) -> None:
-    cli_operations.cmd_workflow_runs(args)
+cmd_workflow_runs = cli_operations.cmd_workflow_runs
 
 
-def cmd_policy(args: argparse.Namespace) -> None:
-    with connection() as conn:
-        if args.set:
-            if "=" not in args.set:
-                print("Invalid --set format. Use KEY=VALUE.")
-                raise SystemExit(1)
-            key, value = args.set.split("=", 1)
-            key = key.strip()
-            value = value.strip()
-            if not key:
-                print("Policy key cannot be empty.")
-                raise SystemExit(1)
-            conn.execute(
-                """
-                INSERT INTO assistant_policies (key, value, updated_at)
-                VALUES (?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP
-                """,
-                (key, value),
-            )
-            conn.commit()
-            print(f"Policy updated: {key}={value}")
-            return
-        print("Policy settings:")
-        for key, value in sorted(get_policy_map(conn).items()):
-            print(f"- {key}={value}")
+cmd_policy = cli_workflow.cmd_policy
 
 
-def cmd_queue_add(args: argparse.Namespace) -> None:
-    cli_operations.cmd_queue_add(args)
+cmd_queue_add = cli_operations.cmd_queue_add
 
 
 def cmd_worker(args: argparse.Namespace) -> None:
     cli_operations.cmd_worker(args, _operations_dependencies())
 
 
-def cmd_cutover_check(args: argparse.Namespace) -> None:
-    cli_health.cmd_cutover_check(args)
+cmd_cutover_check = cli_health.cmd_cutover_check
 
 
-def cmd_uat(args: argparse.Namespace) -> None:
-    cli_health.cmd_uat(args)
+cmd_uat = cli_health.cmd_uat
 
 
 def _percentile(values: list[int], pct: float) -> int:
     return cli_health._percentile(values, pct)
 
 
-def cmd_tune(args: argparse.Namespace) -> None:
-    cli_health.cmd_tune(args)
+cmd_tune = cli_health.cmd_tune
 
 
-def cmd_delegate(args: argparse.Namespace) -> None:
-    cli_agent.cmd_delegate(args)
+cmd_delegate = cli_agent.cmd_delegate
 
 
 # Paths a harnessed-agent patch may NEVER touch — editing these would let an
 # approved diff disable the autonomy gate or hijack hooks on the next run (#4).
-def cmd_action_provider(args: argparse.Namespace) -> None:
-    cli_agent.cmd_action_provider(args)
+cmd_action_provider = cli_agent.cmd_action_provider
 
 
-def cmd_act(args: argparse.Namespace) -> None:
-    cli_agent.cmd_act(args)
+cmd_act = cli_agent.cmd_act
 
 
-def cmd_code(args: argparse.Namespace) -> None:
-    cli_agent.cmd_code(args)
+cmd_code = cli_agent.cmd_code
 
 
-def cmd_learn(args: argparse.Namespace) -> None:
-    cli_agent.cmd_learn(args)
+cmd_learn = cli_agent.cmd_learn
 
 
-def cmd_coach(args: argparse.Namespace) -> None:
-    cli_agent.cmd_coach(args)
+cmd_coach = cli_agent.cmd_coach
 
 
-def cmd_agent_status(args: argparse.Namespace) -> None:
-    cli_agent.cmd_agent_status(args)
+cmd_agent_status = cli_agent.cmd_agent_status
 
 
-def cmd_do(args: argparse.Namespace) -> None:
-    with connection() as conn:
-        route_decision = router.route_with_feedback(conn, args.text, surface="do")
-        autonomy_decision = router.autonomy_decision_for_route(conn, route_decision)
-        _print_autonomy_decision(autonomy_decision)
-        _print_recommendations(
-            conn,
-            autonomy.recommend_next_steps(
-                autonomy_decision,
-                command="do",
-                intent=route_decision.intent,
-                workflow_pack=route_decision.workflow_pack,
-            ),
-        )
-        if autonomy_decision["decision"] == autonomy.BLOCKED:
-            raise SystemExit(1)
-        result = router.execute_route(conn, args.text, surface="do", decision=route_decision)
-        result["autonomy"] = autonomy_decision
-        conn.commit()
-    print(router.summarize_result(result))
-    decision = result["decision"]
-    if decision.get("requires_confirmation"):
-        print("Safety: route is review-first or clarification-oriented; external mutations remain approval-gated.")
+cmd_do = cli_chat.cmd_do
 
 
 def _print_model_plan(plan: dict[str, object]) -> None:
     cli_diagnostics._print_model_plan(plan)
 
 
-def cmd_model(args: argparse.Namespace) -> None:
-    cli_diagnostics.cmd_model(args)
+cmd_model = cli_diagnostics.cmd_model
 
 
-def cmd_router(args: argparse.Namespace) -> None:
-    cli_diagnostics.cmd_router(args)
+cmd_router = cli_diagnostics.cmd_router
 
 
-def cmd_trace(args: argparse.Namespace) -> None:
-    cli_diagnostics.cmd_trace(args)
+cmd_trace = cli_diagnostics.cmd_trace
 
 
-def cmd_autonomy(args: argparse.Namespace) -> None:
-    cli_autonomy.cmd_autonomy(args)
+cmd_autonomy = cli_autonomy.cmd_autonomy
 
 
 def cmd_smart_help(args: argparse.Namespace) -> None:
@@ -1020,487 +715,72 @@ def _print_goal_cycle_result(result: dict[str, object]) -> None:
     cli_autonomy.print_goal_cycle_result(result)
 
 
-def cmd_loop(args: argparse.Namespace) -> None:
-    cli_autonomy.cmd_loop(args)
+cmd_loop = cli_autonomy.cmd_loop
 
 
-def cmd_approve(args: argparse.Namespace) -> None:
-    cli_agent.cmd_approve(args)
+cmd_approve = cli_agent.cmd_approve
 
 
-def cmd_autopilot_status(args: argparse.Namespace) -> None:
-    with connection() as conn:
-        json_mode = bool(getattr(args, "json", False))
-        rows = conn.execute(
-            """
-            SELECT id, status, started_at, finished_at, summary
-            FROM autopilot_runs
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (args.limit,),
-        ).fetchall()
-        pending = conn.execute(
-            "SELECT COUNT(*) AS c FROM agent_actions WHERE requires_approval=1 AND status='proposed'"
-        ).fetchone()["c"]
-        open_tasks = conn.execute("SELECT COUNT(*) AS c FROM agent_tasks WHERE status='open'").fetchone()["c"]
-        if json_mode:
-            payload = {
-                "schema": "myos.autopilot_status.v1",
-                "count": len(rows),
-                "limit": int(args.limit),
-                "runs": [
-                    {
-                        "id": int(row["id"]),
-                        "status": str(row["status"] or ""),
-                        "started_at": str(row["started_at"] or ""),
-                        "finished_at": str(row["finished_at"] or ""),
-                        "summary": str(row["summary"] or ""),
-                    }
-                    for row in rows
-                ],
-                "state": {
-                    "open_agent_tasks": int(open_tasks),
-                    "approvals_pending": int(pending),
-                },
-            }
-            print(json.dumps(payload, ensure_ascii=True))
-            return
-        if not rows:
-            print("No autopilot runs found.")
-        else:
-            print("Autopilot runs:")
-            for row in rows:
-                print(
-                    f"- run #{row['id']} status={row['status']} started={row['started_at']} "
-                    f"finished={row['finished_at'] or 'running'} summary={row['summary'] or ''}"
-                )
-        print(f"Autopilot state: open_agent_tasks={open_tasks} approvals_pending={pending}")
+cmd_autopilot_status = cli_autonomy.cmd_autopilot_status
+cmd_digest = cli_autonomy.cmd_digest
+cmd_goal = cli_autonomy.cmd_goal
+cmd_self_review = cli_autonomy.cmd_self_review
 
 
-def cmd_digest(args: argparse.Namespace) -> None:
-    json_mode = bool(getattr(args, "json", False))
-    with connection() as conn:
-        row = None
-        if args.id:
-            row = conn.execute(
-                "SELECT id, title, body, created_at FROM assistant_digests WHERE id = ?",
-                (args.id,),
-            ).fetchone()
-        else:
-            row = conn.execute(
-                """
-                SELECT id, title, body, created_at
-                FROM assistant_digests
-                ORDER BY id DESC
-                LIMIT 1
-                """
-            ).fetchone()
-    if not row:
-        if json_mode:
-            print(json.dumps({"schema": "myos.digest.v1", "error": "not_found"}, ensure_ascii=True))
-        else:
-            print("No assistant digest found. Run `myos autopilot --once` first.")
-        return
-    if json_mode:
-        payload = {
-            "schema": "myos.digest.v1",
-            "id": int(row["id"]),
-            "title": str(row["title"] or ""),
-            "created_at": str(row["created_at"] or ""),
-            "body": str(row["body"] or "").rstrip(),
-        }
-        print(json.dumps(payload, ensure_ascii=True))
-        return
-    if args.title_only:
-        print(f"Digest #{row['id']}: {row['title']} ({row['created_at']})")
-        return
-    print(row["body"].rstrip())
+cmd_watch_dir = cli_workflow.cmd_watch_dir
 
 
-def cmd_goal(args: argparse.Namespace) -> None:
-    with connection() as conn:
-        if args.goal_action == "add":
-            objective = apply_privacy_filters(conn, args.objective)
-            context = apply_privacy_filters(conn, args.context)
-            conn.execute(
-                """
-                INSERT INTO assistant_goals (objective, context, cadence_minutes, priority, status)
-                VALUES (?, ?, ?, ?, 'active')
-                """,
-                (objective, context, args.cadence_minutes, args.priority),
-            )
-            goal_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
-            conn.commit()
-            print(f"Added assistant goal #{goal_id}: {objective}")
-            return
-        if args.goal_action == "pause":
-            conn.execute(
-                "UPDATE assistant_goals SET status='paused', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (args.id,),
-            )
-            conn.commit()
-            print(f"Paused assistant goal #{args.id}.")
-            return
-        if args.goal_action == "resume":
-            conn.execute(
-                "UPDATE assistant_goals SET status='active', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (args.id,),
-            )
-            conn.commit()
-            print(f"Resumed assistant goal #{args.id}.")
-            return
-        rows = conn.execute(
-            """
-            SELECT id, objective, status, cadence_minutes, priority, last_evaluated_at
-            FROM assistant_goals
-            ORDER BY status ASC, priority ASC, id ASC
-            LIMIT ?
-            """,
-            (args.limit,),
-        ).fetchall()
-        if not rows:
-            print("No assistant goals found.")
-            return
-        print("Assistant goals:")
-        for row in rows:
-            print(
-                f"- goal #{row['id']} status={row['status']} priority={row['priority']} "
-                f"cadence={row['cadence_minutes']}m last={row['last_evaluated_at'] or 'never'} objective={row['objective']}"
-            )
+cmd_watch_scan = cli_workflow.cmd_watch_scan
 
 
-def cmd_self_review(_: argparse.Namespace) -> None:
-    with connection() as conn:
-        policy = get_policy_map(conn)
-        checks: list[tuple[str, bool, str]] = []
-        active_goals = conn.execute("SELECT COUNT(*) AS c FROM assistant_goals WHERE status='active'").fetchone()["c"]
-        recent_runs = conn.execute(
-            "SELECT COUNT(*) AS c FROM autopilot_runs WHERE started_at >= datetime('now', '-1 day')"
-        ).fetchone()["c"]
-        pending = conn.execute(
-            "SELECT COUNT(*) AS c FROM agent_actions WHERE requires_approval=1 AND status='proposed'"
-        ).fetchone()["c"]
-        action_provider = bool(os.getenv("MYOS_ACTION_COMMAND", "").strip())
-        ai_provider = bool(os.getenv("MYOS_AI_COMMAND", "").strip())
-        connectors_ready = conn.execute("SELECT COUNT(*) AS c FROM sync_state WHERE last_status='ok'").fetchone()["c"]
-
-        checks.append(("standing_goals", active_goals > 0, f"active_goals={active_goals}"))
-        checks.append(("autopilot_recent", recent_runs > 0, f"runs_24h={recent_runs}"))
-        checks.append(("approval_queue", pending < 20, f"pending_approvals={pending}"))
-        checks.append(
-            (
-                "ai_reasoning",
-                ai_provider or policy.get("ai_provider") == "local",
-                f"ai_command={'yes' if ai_provider else 'no'}",
-            )
-        )
-        checks.append(("action_provider", action_provider, f"action_command={'yes' if action_provider else 'no'}"))
-        checks.append(("live_connectors", connectors_ready > 0, f"connectors_ok={connectors_ready}"))
-
-        missing = [name for name, ok, _ in checks if not ok]
-        status = "ready" if not missing else "needs_setup"
-        summary = ", ".join(f"{name}={'ok' if ok else 'missing'}" for name, ok, _ in checks)
-        conn.execute(
-            """
-            INSERT INTO assistant_self_reviews (status, summary, missing_capabilities_json)
-            VALUES (?, ?, ?)
-            """,
-            (status, summary, json.dumps(missing, ensure_ascii=True)),
-        )
-        conn.commit()
-    print(f"Autonomy self-review: {status}")
-    for name, ok, detail in checks:
-        print(f"- {'PASS' if ok else 'GAP'} {name}: {detail}")
-    if missing:
-        print("Next setup gaps:")
-        for item in missing:
-            print(f"- {item}")
+cmd_intent = cli_planning.cmd_intent
 
 
-def cmd_watch_dir(args: argparse.Namespace) -> None:
-    with connection() as conn:
-        if args.watch_action == "add":
-            path = str(Path(args.path).expanduser())
-            conn.execute(
-                """
-                INSERT INTO assistant_watch_dirs (path, label, status, updated_at)
-                VALUES (?, ?, 'active', CURRENT_TIMESTAMP)
-                ON CONFLICT(path) DO UPDATE SET label=excluded.label, status='active', updated_at=CURRENT_TIMESTAMP
-                """,
-                (path, args.label),
-            )
-            conn.commit()
-            print(f"Watching directory: {path}")
-            return
-        if args.watch_action == "pause":
-            conn.execute(
-                "UPDATE assistant_watch_dirs SET status='paused', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (args.id,),
-            )
-            conn.commit()
-            print(f"Paused watch directory #{args.id}.")
-            return
-        if args.watch_action == "resume":
-            conn.execute(
-                "UPDATE assistant_watch_dirs SET status='active', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (args.id,),
-            )
-            conn.commit()
-            print(f"Resumed watch directory #{args.id}.")
-            return
-        rows = conn.execute(
-            """
-            SELECT id, path, label, status
-            FROM assistant_watch_dirs
-            ORDER BY id ASC
-            LIMIT ?
-            """,
-            (args.limit,),
-        ).fetchall()
-        if not rows:
-            print("No watch directories configured.")
-            return
-        print("Watch directories:")
-        for row in rows:
-            label = f" label={row['label']}" if row["label"] else ""
-            print(f"- #{row['id']} status={row['status']}{label} path={row['path']}")
+cmd_plan = cli_planning.cmd_plan
 
 
-def cmd_watch_scan(args: argparse.Namespace) -> None:
-    with connection() as conn:
-        files, suggestions = _scan_watch_dirs(conn, limit=args.limit, min_confidence=args.min_confidence)
-        conn.commit()
-    print(f"Watch scan complete: files_ingested={files}, suggestions_created={suggestions}")
+cmd_evidence = cli_planning.cmd_evidence
 
 
-def cmd_intent(args: argparse.Namespace) -> None:
-    cli_planning.cmd_intent(args)
+cmd_review_packet = cli_planning.cmd_review_packet
 
 
-def cmd_plan(args: argparse.Namespace) -> None:
-    cli_planning.cmd_plan(args)
+cmd_execution_receipt = cli_agent.cmd_execution_receipt
 
 
-def cmd_evidence(args: argparse.Namespace) -> None:
-    cli_planning.cmd_evidence(args)
+cmd_agent_run = cli_agent.cmd_agent_run
 
 
-def cmd_review_packet(args: argparse.Namespace) -> None:
-    cli_planning.cmd_review_packet(args)
+cmd_factory = cli_factory.cmd_factory
 
 
-def cmd_execution_receipt(args: argparse.Namespace) -> None:
-    cli_agent.cmd_execution_receipt(args)
+cmd_entity = cli_knowledge.cmd_entity
 
 
-def cmd_agent_run(args: argparse.Namespace) -> None:
-    cli_agent.cmd_agent_run(args)
+cmd_relationship = cli_knowledge.cmd_relationship
 
 
-def cmd_factory(args: argparse.Namespace) -> None:
-    cli_factory.cmd_factory(args)
-
-
-def cmd_entity(args: argparse.Namespace) -> None:
-    cli_knowledge.cmd_entity(args)
-
-
-def cmd_relationship(args: argparse.Namespace) -> None:
-    cli_knowledge.cmd_relationship(args)
-
-
-def cmd_claim(args: argparse.Namespace) -> None:
-    cli_knowledge.cmd_claim(args)
+cmd_claim = cli_knowledge.cmd_claim
 
 
 def cmd_pulse(args: argparse.Namespace) -> None:
-    if args.env_file:
-        load_env_file(args.env_file)
-    if args.once:
-        outputs = run_cycle(meeting_hours=args.meeting_hours)
-        print("Pulse cycle done:", ", ".join(outputs))
-        return
-    with connection() as lock_conn:
-        owner = f"pulse-{os.getpid()}"
-        while True:
-            if acquire_lock(lock_conn, "pulse", owner):
-                try:
-                    outputs = run_cycle(meeting_hours=args.meeting_hours)
-                    print(f"[{datetime.now().isoformat(timespec='seconds')}] cycle -> {', '.join(outputs)}")
-                finally:
-                    release_lock(lock_conn, "pulse", owner)
-                    lock_conn.commit()
-            else:
-                print("pulse: another instance is mid-cycle; skipping this tick.")
-            time.sleep(args.interval_sec)
+    cli_workflow.cmd_pulse(args, load_env_file=load_env_file)
 
 
 def cmd_chat(args: argparse.Namespace) -> None:
-    if getattr(args, "env_file", ""):
-        load_env_file(args.env_file)
-    with connection() as conn:
-        backend = providers.get_backend(args.backend or None)
-        ok, detail = backend.available()
-        if not ok:
-            print(f"Backend '{backend.name}' is not available: {detail}")
-            raise SystemExit(1)
-        print(f"MYOS chat [{backend.name}] — ask anything; external changes are proposed for your approval.")
-        print("Type 'exit' to quit.")
-        history: list[dict] = []
-        conversation_id: int | None = None
-        while True:
-            try:
-                user = input("\nyou> ").strip()
-            except (EOFError, KeyboardInterrupt):
-                print()
-                break
-            if not user:
-                continue
-            if user.lower() in ("exit", "quit", ":q"):
-                break
-            result = assistant.run_turn(
-                conn,
-                user,
-                history,
-                backend_name=args.backend or None,
-                surface="chat",
-                conversation_id=conversation_id,
-            )
-            conversation_id = result.get("conversation_id", conversation_id)
-            history = result.get("history", history)
-            reply = (result.get("reply") or "").strip()
-            if reply:
-                print(f"\nmyos> {reply}")
-            _handle_proposals(conn, result.get("proposed_action_ids", []))
+    cli_chat.cmd_chat(args, load_env_file=load_env_file)
 
 
 def cmd_voice(args: argparse.Namespace) -> None:
-    from . import voice
-
-    if getattr(args, "env_file", ""):
-        load_env_file(args.env_file)
-    with connection() as conn:
-        backend = providers.get_backend(args.backend or None)
-        ok, detail = backend.available()
-        if not ok:
-            print(f"Backend '{backend.name}' is not available: {detail}")
-            raise SystemExit(1)
-        print(f"MYOS voice [{backend.name}] — push-to-talk. Ctrl-C to quit.")
-        history: list[dict] = []
-        conversation_id: int | None = None
-        while True:
-            try:
-                wav = voice.record_push_to_talk()
-            except (EOFError, KeyboardInterrupt):
-                print()
-                break
-            if not wav:
-                print("Voice capture unavailable; exiting voice mode.")
-                break
-            text = voice.transcribe(wav)
-            with contextlib.suppress(OSError):
-                os.remove(wav)
-            if not text:
-                print("(heard nothing — try again)")
-                continue
-            print(f"you> {text}")
-            result = assistant.run_turn(
-                conn,
-                text,
-                history,
-                backend_name=args.backend or None,
-                surface="voice",
-                conversation_id=conversation_id,
-            )
-            conversation_id = result.get("conversation_id", conversation_id)
-            history = result.get("history", history)
-            reply = (result.get("reply") or "").strip()
-            if reply:
-                print(f"myos> {reply}")
-                if not args.text_reply:
-                    voice.speak(reply)
-            _handle_proposals(conn, result.get("proposed_action_ids", []))
+    cli_chat.cmd_voice(args, load_env_file=load_env_file)
 
 
-def cmd_team(args: argparse.Namespace) -> None:
-    with connection() as conn:
-        if getattr(args, "team_action", None) == "add":
-            pid = em.upsert_person(conn, args.name, role=args.role, team=args.team, relation=args.relation)
-            conn.commit()
-            print(f"Saved person #{pid}: {args.name}")
-            return
-        rows = em.list_team(conn)
-        if not rows:
-            print('No people tracked yet. Add one: myos team add "<name>" --role ... --relation report')
-            return
-        print("Team & stakeholders:")
-        for r in rows:
-            extra = "".join(
-                filter(None, [f" — {r['role']}" if r["role"] else "", f" @{r['team']}" if r["team"] else ""])
-            )
-            print(f"- {r['name']} ({r['relation']}){extra}")
-
-
-def cmd_note(args: argparse.Namespace) -> None:
-    with connection() as conn:
-        res = em.route_note(conn, args.text)
-        conn.commit()
-    routed = res.pop("routed", "inbox")
-    detail = ", ".join(f"{k}={v}" for k, v in res.items() if k not in ("created",))
-    print(f"Inferred and routed → {routed}" + (f" ({detail})" if detail else ""))
-
-
-def cmd_one_on_one(args: argparse.Namespace) -> None:
-    with connection() as conn:
-        res = em.log_one_on_one(conn, args.person, args.notes)
-        conn.commit()
-    print(
-        f"Logged 1:1 #{res['one_on_one_id']} with {args.person}; "
-        f"{len(res['action_item_ids'])} action item(s) captured to your inbox."
-    )
-
-
-def cmd_meeting(args: argparse.Namespace) -> None:
-    with connection() as conn:
-        text = args.text or ""
-        source = "manual"
-        if args.audio:
-            from . import voice
-
-            text = voice.transcribe(args.audio) or text
-            source = "audio"
-            if not text:
-                print("No transcript produced (install faster-whisper, or pass notes as text).")
-                return
-        title = args.title or em._first_sentence(text, 60) or "Meeting"
-        res = em.capture_meeting(conn, title, text, source=source)
-        conn.commit()
-    print(
-        f"Captured meeting #{res['meeting_id']} '{title}': "
-        f"{res['action_items']} action item(s), {len(res['item_ids'])} item(s) total."
-    )
-
-
-def cmd_review_draft(args: argparse.Namespace) -> None:
-    with connection() as conn:
-        print(em.build_review_packet(conn, args.person))
-
-
-def cmd_risk_scan(args: argparse.Namespace) -> None:
-    with connection() as conn:
-        findings = watch.scan_project_risks(conn, risk_threshold=args.risk_threshold, limit=args.limit)
-        if not findings:
-            print("No project risks detected. (Sync connectors first: myos sync --connector all)")
-            return
-        print(f"Project risks ({len(findings)}):")
-        for f in findings:
-            owner = f" — {f['owner']}" if f["owner"] else ""
-            print(f"- [{f['severity']}] {f['kind']}: {f['title']} ({f['reason']}){owner}")
-        if args.draft_nudges:
-            ids = watch.draft_nudges(conn, findings, limit=args.nudge_limit)
-            print(f"\nDrafted {len(ids)} nudge(s) for approval: {', '.join('#' + str(i) for i in ids)}")
-            print("Review and send (graded autonomy gates external posts): myos approve --list")
+cmd_team = cli_em.cmd_team
+cmd_note = cli_em.cmd_note
+cmd_one_on_one = cli_em.cmd_one_on_one
+cmd_meeting = cli_em.cmd_meeting
+cmd_review_draft = cli_em.cmd_review_draft
+cmd_risk_scan = cli_em.cmd_risk_scan
 
 
 def build_parser() -> argparse.ArgumentParser:

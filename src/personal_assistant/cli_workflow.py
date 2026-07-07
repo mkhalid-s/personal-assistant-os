@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sqlite3
+import time
 from collections.abc import Callable
+from datetime import datetime
+from pathlib import Path
 
 from .connectors import AhaConnector, ConfluenceConnector, GitHubConnector, JiraConnector
 from .db import append_event, connection
@@ -16,8 +21,15 @@ from .inbox import (
     infer_risk,
     insert_inbox_item_dedup,
 )
-from .privacy import apply_privacy_filters
-from .pulse import detect_mode
+from .ingest.audio import transcribe_audio
+from .ingest.image import extract_image_text
+from .locks import acquire_lock, release_lock
+from .privacy import (
+    _file_sha256,
+    apply_privacy_filters,
+    get_policy_map,
+)
+from .pulse import detect_mode, run_cycle
 
 
 def cmd_capture(args: argparse.Namespace) -> None:
@@ -326,3 +338,298 @@ def cmd_inbox_process(args: argparse.Namespace) -> None:
             )
         conn.commit()
         print(f"Inbox process complete. Created {created} suggested items.")
+
+
+def cmd_transcribe(args: argparse.Namespace) -> None:
+    audio_path = args.audio_file
+    transcript = transcribe_audio(audio_path, args.text)
+    if not transcript:
+        print("No transcript produced. Install 'faster-whisper' or provide --text.")
+        return
+
+    with connection() as conn:
+        filtered = apply_privacy_filters(conn, transcript)
+        conn.execute(
+            """
+            INSERT INTO media_assets (media_type, file_path, transcript_text, source)
+            VALUES (?, ?, ?, ?)
+            """,
+            ("audio", audio_path, filtered, "local"),
+        )
+        media_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+        conn.execute(
+            """
+            INSERT INTO provenance (source_type, source_ref, extractor, extractor_version, confidence, snippet)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("audio", audio_path, "whisper_or_manual", "1", 0.7 if args.text else 0.82, filtered[:400]),
+        )
+        provenance_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+        index_chunk(conn, "media_asset", media_id, filtered, provenance_id=provenance_id)
+        append_event(
+            conn,
+            "ingest_audio",
+            "media_asset",
+            media_id,
+            json.dumps({"path": audio_path}, ensure_ascii=True),
+        )
+        conn.commit()
+    print(f"Transcript stored as media asset #{media_id}.")
+    print("Run: myos inbox-process to generate suggested tasks.")
+
+
+def cmd_ingest_image(args: argparse.Namespace) -> None:
+    image_path = args.image_file
+    extracted = extract_image_text(image_path, args.text)
+    if not extracted:
+        print("Could not extract OCR text. Install tesseract or pass --text manually.")
+        return
+
+    with connection() as conn:
+        filtered = apply_privacy_filters(conn, extracted)
+        conn.execute(
+            """
+            INSERT INTO media_assets (media_type, file_path, extracted_text, source)
+            VALUES (?, ?, ?, ?)
+            """,
+            ("image", image_path, filtered, "local"),
+        )
+        media_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+        conn.execute(
+            """
+            INSERT INTO provenance (source_type, source_ref, extractor, extractor_version, confidence, snippet)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("image", image_path, "ocr_or_manual", "1", 0.68 if args.text else 0.8, filtered[:400]),
+        )
+        provenance_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+        index_chunk(conn, "media_asset", media_id, filtered, provenance_id=provenance_id)
+        append_event(
+            conn,
+            "ingest_image",
+            "media_asset",
+            media_id,
+            json.dumps({"path": image_path}, ensure_ascii=True),
+        )
+        conn.commit()
+
+    print(f"Image text stored as media asset #{media_id}.")
+    print('Tip: run `myos context "<topic>"` to retrieve relevant chunks.')
+
+
+def _is_watchable_file(path: Path) -> bool:
+    return not path.is_symlink() and path.is_file() and path.suffix.lower() in {".txt", ".md", ".markdown", ".log"}
+
+
+def _scan_watch_dirs(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 20,
+    min_confidence: float = 0.65,
+) -> tuple[int, int]:
+    policy = get_policy_map(conn)
+    max_file_bytes = int(policy.get("watch_max_file_bytes", str(2 * 1024 * 1024)))
+    max_candidates = max(limit * 50, 100)
+    watch_dirs = conn.execute(
+        """
+        SELECT id, path
+        FROM assistant_watch_dirs
+        WHERE status='active'
+        ORDER BY id ASC
+        """
+    ).fetchall()
+    files_ingested = 0
+    suggestions_created = 0
+    candidates_seen = 0
+    for watch_row in watch_dirs:
+        root = Path(watch_row["path"]).expanduser()
+        if not root.exists() or not root.is_dir():
+            continue
+        root_resolved = root.resolve()
+        for path in root.rglob("*"):
+            candidates_seen += 1
+            if candidates_seen > max_candidates:
+                return files_ingested, suggestions_created
+            if files_ingested >= limit:
+                return files_ingested, suggestions_created
+            if not _is_watchable_file(path):
+                continue
+            try:
+                resolved = path.resolve()
+                if not resolved.is_relative_to(root_resolved):
+                    continue
+                if path.stat().st_size > max_file_bytes:
+                    continue
+            except OSError:
+                continue
+            file_hash = _file_sha256(path)
+            reserve = conn.execute(
+                """
+                INSERT OR IGNORE INTO file_ingests (watch_dir_id, file_path, file_hash, status)
+                VALUES (?, ?, ?, 'processing')
+                """,
+                (watch_row["id"], str(path), file_hash),
+            )
+            if reserve.rowcount == 0:
+                continue
+            raw_text = path.read_text(errors="replace")
+            filtered = apply_privacy_filters(conn, raw_text)
+            if not filtered.strip():
+                conn.execute(
+                    "UPDATE file_ingests SET status='skipped_empty' WHERE file_path=? AND file_hash=?",
+                    (str(path), file_hash),
+                )
+                continue
+            conn.execute(
+                """
+                INSERT INTO media_assets (media_type, file_path, transcript_text, source)
+                VALUES ('file', ?, ?, 'watch_dir')
+                """,
+                (str(path), filtered),
+            )
+            media_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+            conn.execute(
+                "INSERT OR IGNORE INTO media_imports (media_asset_id) VALUES (?)",
+                (media_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO provenance (source_type, source_ref, extractor, extractor_version, confidence, snippet)
+                VALUES ('file', ?, 'watch_dir', '1', 0.75, ?)
+                """,
+                (str(path), filtered[:400]),
+            )
+            provenance_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+            index_chunk(conn, "media_asset", media_id, filtered, provenance_id=provenance_id)
+            for suggestion in extract_suggestions(filtered):
+                if suggestion.confidence < min_confidence:
+                    continue
+                inserted = insert_inbox_item_dedup(
+                    conn,
+                    text=suggestion.text,
+                    kind=suggestion.kind,
+                    owner=None,
+                    due_date=None,
+                    confidence=suggestion.confidence,
+                    source=f"watch_file:{file_hash}",
+                )
+                if inserted is not None:
+                    suggestions_created += 1
+            conn.execute(
+                """
+                UPDATE file_ingests
+                SET status='ingested', media_asset_id=?
+                WHERE file_path=? AND file_hash=?
+                """,
+                (media_id, str(path), file_hash),
+            )
+            files_ingested += 1
+    return files_ingested, suggestions_created
+
+
+def cmd_watch_dir(args: argparse.Namespace) -> None:
+    with connection() as conn:
+        if args.watch_action == "add":
+            path = str(Path(args.path).expanduser())
+            conn.execute(
+                """
+                INSERT INTO assistant_watch_dirs (path, label, status, updated_at)
+                VALUES (?, ?, 'active', CURRENT_TIMESTAMP)
+                ON CONFLICT(path) DO UPDATE SET label=excluded.label, status='active', updated_at=CURRENT_TIMESTAMP
+                """,
+                (path, args.label),
+            )
+            conn.commit()
+            print(f"Watching directory: {path}")
+            return
+        if args.watch_action == "pause":
+            conn.execute(
+                "UPDATE assistant_watch_dirs SET status='paused', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (args.id,),
+            )
+            conn.commit()
+            print(f"Paused watch directory #{args.id}.")
+            return
+        if args.watch_action == "resume":
+            conn.execute(
+                "UPDATE assistant_watch_dirs SET status='active', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (args.id,),
+            )
+            conn.commit()
+            print(f"Resumed watch directory #{args.id}.")
+            return
+        rows = conn.execute(
+            """
+            SELECT id, path, label, status
+            FROM assistant_watch_dirs
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            (args.limit,),
+        ).fetchall()
+        if not rows:
+            print("No watch directories configured.")
+            return
+        print("Watch directories:")
+        for row in rows:
+            label = f" label={row['label']}" if row["label"] else ""
+            print(f"- #{row['id']} status={row['status']}{label} path={row['path']}")
+
+
+def cmd_watch_scan(args: argparse.Namespace) -> None:
+    with connection() as conn:
+        files, suggestions = _scan_watch_dirs(conn, limit=args.limit, min_confidence=args.min_confidence)
+        conn.commit()
+    print(f"Watch scan complete: files_ingested={files}, suggestions_created={suggestions}")
+
+
+def cmd_policy(args: argparse.Namespace) -> None:
+    """Manage MYOS' `assistant_policies` key/value store (safe-mode toggles, etc.)."""
+    with connection() as conn:
+        if args.set:
+            if "=" not in args.set:
+                print("Invalid --set format. Use KEY=VALUE.")
+                raise SystemExit(1)
+            key, value = args.set.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if not key:
+                print("Policy key cannot be empty.")
+                raise SystemExit(1)
+            conn.execute(
+                """
+                INSERT INTO assistant_policies (key, value, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP
+                """,
+                (key, value),
+            )
+            conn.commit()
+            print(f"Policy updated: {key}={value}")
+            return
+        print("Policy settings:")
+        for key, value in sorted(get_policy_map(conn).items()):
+            print(f"- {key}={value}")
+
+
+def cmd_pulse(args: argparse.Namespace, *, load_env_file: Callable[[str], int] | None = None) -> None:
+    """Run the daily pulse cycle once or as a bounded loop with a coop lock."""
+    if load_env_file is not None and args.env_file:
+        load_env_file(args.env_file)
+    if args.once:
+        outputs = run_cycle(meeting_hours=args.meeting_hours)
+        print("Pulse cycle done:", ", ".join(outputs))
+        return
+    with connection() as lock_conn:
+        owner = f"pulse-{os.getpid()}"
+        while True:
+            if acquire_lock(lock_conn, "pulse", owner):
+                try:
+                    outputs = run_cycle(meeting_hours=args.meeting_hours)
+                    print(f"[{datetime.now().isoformat(timespec='seconds')}] cycle -> {', '.join(outputs)}")
+                finally:
+                    release_lock(lock_conn, "pulse", owner)
+                    lock_conn.commit()
+            else:
+                print("pulse: another instance is mid-cycle; skipping this tick.")
+            time.sleep(args.interval_sec)
