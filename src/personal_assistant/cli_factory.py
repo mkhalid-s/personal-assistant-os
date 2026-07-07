@@ -51,7 +51,9 @@ def _print_executor_artifacts(conn, run: dict) -> None:
                 f"permissions:{permission_count} warnings:{warning_count} "
                 f"errors:{error_count} protocol_errors:{protocol_count}"
             )
-        for warning in [str(item).strip().replace("\n", " ") for item in artifact.get("warnings") or [] if str(item).strip()][:2]:
+        for warning in [
+            str(item).strip().replace("\n", " ") for item in artifact.get("warnings") or [] if str(item).strip()
+        ][:2]:
             print(f"  warning={warning[:200]}")
         for error in artifact.get("errors") or []:
             if not isinstance(error, dict):
@@ -77,7 +79,9 @@ def _print_executor_artifacts(conn, run: dict) -> None:
                 f"oversized_patch bytes:{int(artifact.get('diff_bytes') or 0)} "
                 f"limit:{int(artifact.get('diff_limit_bytes') or 0)}"
             )
-        verification_commands = [str(item).strip() for item in artifact.get("verification_commands") or [] if str(item).strip()]
+        verification_commands = [
+            str(item).strip() for item in artifact.get("verification_commands") or [] if str(item).strip()
+        ]
         for command in verification_commands[:5]:
             print(f"  verify={command}")
         summary = str(artifact.get("summary") or "").strip().replace("\n", " ")
@@ -107,7 +111,7 @@ def cmd_factory(args: argparse.Namespace) -> None:
                 autonomy_decision,
                 command="factory",
                 workflow_pack=args.pack,
-            )
+            ),
         )
         if autonomy_decision["decision"] == autonomy.BLOCKED:
             raise SystemExit(1)
@@ -150,7 +154,7 @@ def cmd_factory(args: argparse.Namespace) -> None:
                 command="factory",
                 workflow_pack=args.pack,
                 factory_run_id=result["id"],
-            )
+            ),
         )
         return
 
@@ -159,10 +163,12 @@ def cmd_factory(args: argparse.Namespace) -> None:
         json_mode = bool(getattr(args, "json", False))
         if run is None:
             if json_mode:
-                print(json.dumps(
-                    {"schema": "myos.factory.status.v1", "error": "not_found", "id": int(args.id)},
-                    ensure_ascii=True,
-                ))
+                print(
+                    json.dumps(
+                        {"schema": "myos.factory.status.v1", "error": "not_found", "id": int(args.id)},
+                        ensure_ascii=True,
+                    )
+                )
             else:
                 print(f"Factory run #{args.id} not found.")
             raise SystemExit(1)
@@ -193,7 +199,9 @@ def cmd_factory(args: argparse.Namespace) -> None:
                 "artifacts": [
                     {
                         "artifact_type": str(artifact.get("artifact_type") or ""),
-                        "artifact_id": int(artifact["artifact_id"]) if artifact.get("artifact_id") is not None else None,
+                        "artifact_id": int(artifact["artifact_id"])
+                        if artifact.get("artifact_id") is not None
+                        else None,
                         "label": str(artifact.get("label") or ""),
                     }
                     for artifact in run["artifacts"]
@@ -300,7 +308,9 @@ def cmd_factory(args: argparse.Namespace) -> None:
             "UPDATE factory_runs SET status=? WHERE id=?",
             ("approved_for_execution" if args.execute else "approved", int(args.id)),
         )
-        factory.record_stage(conn, factory_run_id=args.id, stage_name="approval", status="completed", note="factory approval recorded")
+        factory.record_stage(
+            conn, factory_run_id=args.id, stage_name="approval", status="completed", note="factory approval recorded"
+        )
         if args.execute:
             try:
                 execution = factory.advance_execution(conn, args.id, approve=True)
@@ -333,7 +343,9 @@ def cmd_factory(args: argparse.Namespace) -> None:
                 raise SystemExit(1) from exc
             conn.commit()
             scope = f"{args.scope_type}:{args.scope_id}" if args.scope_id else args.scope_type
-            print(f"Factory policy #{policy_id} {scope} connector={args.connector or 'all'} action={args.action_type or 'all'} mode={args.mode}")
+            print(
+                f"Factory policy #{policy_id} {scope} connector={args.connector or 'all'} action={args.action_type or 'all'} mode={args.mode}"
+            )
             return
         rows = conn.execute(
             """
@@ -352,7 +364,9 @@ def cmd_factory(args: argparse.Namespace) -> None:
             scope = f"{row['scope_type']}:{row['scope_id']}" if row["scope_id"] else row["scope_type"]
             connector = row["connector"] or "all"
             action_type = row["action_type"] or "all"
-            print(f"- #{row['id']} {scope} connector={connector} action={action_type} mode={row['allowed_mode']} status={row['status']}")
+            print(
+                f"- #{row['id']} {scope} connector={connector} action={action_type} mode={row['allowed_mode']} status={row['status']}"
+            )
         return
 
     if action == "learn":

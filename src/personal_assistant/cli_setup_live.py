@@ -17,50 +17,53 @@ class SetupLiveDependencies:
 
 
 def _env_template(db_path: Path) -> str:
-    return "\n".join(
-        [
-            "# Personal Assistant OS live configuration",
-            f"MYOS_DB_PATH={db_path}",
-            "",
-            "# Jira",
-            "JIRA_BASE_URL=",
-            "JIRA_USER_EMAIL=",
-            "JIRA_API_TOKEN=",
-            "",
-            "# GitHub",
-            "GITHUB_TOKEN=",
-            "GITHUB_OWNER=",
-            "GITHUB_REPO=",
-            "",
-            "# Confluence",
-            "CONFLUENCE_BASE_URL=",
-            "CONFLUENCE_USER_EMAIL=",
-            "CONFLUENCE_API_TOKEN=",
-            "",
-            "# Aha",
-            "AHA_BASE_URL=",
-            "AHA_API_TOKEN=",
-            "",
-            "# Optional AI reasoning provider",
-            "MYOS_AI_PROVIDER=local",
-            "MYOS_AI_COMMAND=",
-            "",
-            "# Optional tiny local router model for intent finding",
-            "MYOS_ROUTER_BACKEND=",
-            "MYOS_ROUTER_MODEL=",
-            "MYOS_ROUTER_COMMAND=",
-            "MYOS_ROUTER_TIMEOUT_SEC=8",
-            "MYOS_ROUTER_MIN_CONFIDENCE=0.70",
-            "",
-            "# Safe default: approved external actions go to local outbox",
-            "MYOS_ACTION_PROVIDER=builtin",
-            "MYOS_ACTION_COMMAND=myos action-provider",
-            "",
-            "# Optional notification hook for assistant digests",
-            "MYOS_NOTIFY_COMMAND=",
-            "",
-        ]
-    ) + "\n"
+    return (
+        "\n".join(
+            [
+                "# Personal Assistant OS live configuration",
+                f"MYOS_DB_PATH={db_path}",
+                "",
+                "# Jira",
+                "JIRA_BASE_URL=",
+                "JIRA_USER_EMAIL=",
+                "JIRA_API_TOKEN=",
+                "",
+                "# GitHub",
+                "GITHUB_TOKEN=",
+                "GITHUB_OWNER=",
+                "GITHUB_REPO=",
+                "",
+                "# Confluence",
+                "CONFLUENCE_BASE_URL=",
+                "CONFLUENCE_USER_EMAIL=",
+                "CONFLUENCE_API_TOKEN=",
+                "",
+                "# Aha",
+                "AHA_BASE_URL=",
+                "AHA_API_TOKEN=",
+                "",
+                "# Optional AI reasoning provider",
+                "MYOS_AI_PROVIDER=local",
+                "MYOS_AI_COMMAND=",
+                "",
+                "# Optional tiny local router model for intent finding",
+                "MYOS_ROUTER_BACKEND=",
+                "MYOS_ROUTER_MODEL=",
+                "MYOS_ROUTER_COMMAND=",
+                "MYOS_ROUTER_TIMEOUT_SEC=8",
+                "MYOS_ROUTER_MIN_CONFIDENCE=0.70",
+                "",
+                "# Safe default: approved external actions go to local outbox",
+                "MYOS_ACTION_PROVIDER=builtin",
+                "MYOS_ACTION_COMMAND=myos action-provider",
+                "",
+                "# Optional notification hook for assistant digests",
+                "MYOS_NOTIFY_COMMAND=",
+                "",
+            ]
+        )
+        + "\n"
+    )
 
 
 def _read_env_values(path: Path) -> dict[str, str]:
@@ -157,7 +160,9 @@ def _cmd_setup_live_check(env_path: Path, db_path: Path, watch_dir: Path) -> boo
     try:
         conn = sqlite3.connect(db_path)
         active_goals = conn.execute("SELECT COUNT(*) FROM assistant_goals WHERE status='active'").fetchone()[0]
-        active_watch_dirs = conn.execute("SELECT COUNT(*) FROM assistant_watch_dirs WHERE status='active'").fetchone()[0]
+        active_watch_dirs = conn.execute("SELECT COUNT(*) FROM assistant_watch_dirs WHERE status='active'").fetchone()[
+            0
+        ]
         recent_autopilot = conn.execute(
             "SELECT COUNT(*) FROM autopilot_runs WHERE started_at >= datetime('now', '-24 hours')"
         ).fetchone()[0]

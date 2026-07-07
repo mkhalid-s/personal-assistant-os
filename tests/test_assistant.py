@@ -52,8 +52,10 @@ class ProposeAndApproveTest(unittest.TestCase):
         backend = ClaudeBackend()
         ctx = {"task_id": None, "ids": []}
         out, is_error = backend._dispatch(
-            self.conn, "propose_jira_comment",
-            {"issue_key": "ABC-123", "body": "Following up on the launch dependency."}, ctx,
+            self.conn,
+            "propose_jira_comment",
+            {"issue_key": "ABC-123", "body": "Following up on the launch dependency."},
+            ctx,
         )
         self.assertFalse(is_error)
         self.assertIn("pending approval", out.lower())
@@ -65,7 +67,7 @@ class ProposeAndApproveTest(unittest.TestCase):
         ).fetchone()
         self.assertEqual(row["action_type"], "draft_external_update")
         self.assertEqual(row["requires_approval"], 1)  # external mutation MUST be gated
-        self.assertEqual(row["status"], "proposed")    # never auto-executed
+        self.assertEqual(row["status"], "proposed")  # never auto-executed
         self.assertIn("ABC-123", row["payload_json"])
 
     def test_read_tool_does_not_write(self):
@@ -96,8 +98,12 @@ class ProposeAndApproveTest(unittest.TestCase):
         task_id = agentcore.ensure_turn_task(self.conn, "test")
         # Even if a caller asks for requires_approval=0 on an external type, it is clamped.
         aid = agentcore.enqueue_proposal(
-            self.conn, task_id=task_id, action_type="draft_external_update",
-            title="x", payload={"draft": "y"}, requires_approval=0,
+            self.conn,
+            task_id=task_id,
+            action_type="draft_external_update",
+            title="x",
+            payload={"draft": "y"},
+            requires_approval=0,
         )
         self.conn.commit()
         row = self.conn.execute("SELECT requires_approval FROM agent_actions WHERE id = ?", (aid,)).fetchone()
@@ -109,8 +115,11 @@ class ProposeAndApproveTest(unittest.TestCase):
 
         task_id = agentcore.ensure_turn_task(self.conn, "integrity")
         aid = agentcore.enqueue_proposal(
-            self.conn, task_id=task_id, action_type="create_inbox_item",
-            title="capture note", payload={"text": "note body", "kind": "task"},
+            self.conn,
+            task_id=task_id,
+            action_type="create_inbox_item",
+            title="capture note",
+            payload={"text": "note body", "kind": "task"},
             requires_approval=1,
         )
         self.conn.commit()
@@ -150,8 +159,11 @@ class ProposeAndApproveTest(unittest.TestCase):
 
         task_id = agentcore.ensure_turn_task(self.conn, "tamper")
         aid = agentcore.enqueue_proposal(
-            self.conn, task_id=task_id, action_type="create_inbox_item",
-            title="original", payload={"text": "original body", "kind": "task"},
+            self.conn,
+            task_id=task_id,
+            action_type="create_inbox_item",
+            title="original",
+            payload={"text": "original body", "kind": "task"},
             requires_approval=1,
         )
         self.conn.commit()
@@ -186,8 +198,11 @@ class ProposeAndApproveTest(unittest.TestCase):
 
         task_id = agentcore.ensure_turn_task(self.conn, "stale")
         aid = agentcore.enqueue_proposal(
-            self.conn, task_id=task_id, action_type="create_inbox_item",
-            title="ttl gated", payload={"text": "stale body", "kind": "task"},
+            self.conn,
+            task_id=task_id,
+            action_type="create_inbox_item",
+            title="ttl gated",
+            payload={"text": "stale body", "kind": "task"},
             requires_approval=1,
         )
         self.conn.commit()
@@ -229,8 +244,11 @@ class ProposeAndApproveTest(unittest.TestCase):
 
         task_id = agentcore.ensure_turn_task(self.conn, "queue-vis")
         aid = agentcore.enqueue_proposal(
-            self.conn, task_id=task_id, action_type="create_inbox_item",
-            title="proposed only", payload={"text": "queued", "kind": "task"},
+            self.conn,
+            task_id=task_id,
+            action_type="create_inbox_item",
+            title="proposed only",
+            payload={"text": "queued", "kind": "task"},
             requires_approval=1,
         )
         self.conn.commit()
@@ -248,8 +266,11 @@ class ProposeAndApproveTest(unittest.TestCase):
 
         task_id = agentcore.ensure_turn_task(self.conn, "queue-vis-fresh")
         aid = agentcore.enqueue_proposal(
-            self.conn, task_id=task_id, action_type="create_inbox_item",
-            title="fresh approved", payload={"text": "will exec", "kind": "task"},
+            self.conn,
+            task_id=task_id,
+            action_type="create_inbox_item",
+            title="fresh approved",
+            payload={"text": "will exec", "kind": "task"},
             requires_approval=1,
         )
         self.conn.commit()
@@ -271,8 +292,11 @@ class ProposeAndApproveTest(unittest.TestCase):
 
         task_id = agentcore.ensure_turn_task(self.conn, "queue-vis-expired")
         aid = agentcore.enqueue_proposal(
-            self.conn, task_id=task_id, action_type="create_inbox_item",
-            title="expired approved", payload={"text": "stale", "kind": "task"},
+            self.conn,
+            task_id=task_id,
+            action_type="create_inbox_item",
+            title="expired approved",
+            payload={"text": "stale", "kind": "task"},
             requires_approval=1,
         )
         self.conn.commit()
@@ -293,8 +317,11 @@ class ProposeAndApproveTest(unittest.TestCase):
 
         task_id = agentcore.ensure_turn_task(self.conn, "queue-vis-tampered")
         aid = agentcore.enqueue_proposal(
-            self.conn, task_id=task_id, action_type="create_inbox_item",
-            title="tampered approved", payload={"text": "original body", "kind": "task"},
+            self.conn,
+            task_id=task_id,
+            action_type="create_inbox_item",
+            title="tampered approved",
+            payload={"text": "original body", "kind": "task"},
             requires_approval=1,
         )
         self.conn.commit()
@@ -338,7 +365,10 @@ class ProposeAndApproveTest(unittest.TestCase):
         # intent list --json
         buf = io.StringIO()
         args = argparse.Namespace(
-            intent_action="list", status="all", limit=20, json=True,
+            intent_action="list",
+            status="all",
+            limit=20,
+            json=True,
         )
         with contextlib.redirect_stdout(buf):
             cmd_intent(args)
@@ -394,18 +424,27 @@ class ProposeAndApproveTest(unittest.TestCase):
 
         task_id = agentcore.ensure_turn_task(self.conn, "stale-filter")
         proposed_id = agentcore.enqueue_proposal(
-            self.conn, task_id=task_id, action_type="create_inbox_item",
-            title="never approved", payload={"text": "queued", "kind": "task"},
+            self.conn,
+            task_id=task_id,
+            action_type="create_inbox_item",
+            title="never approved",
+            payload={"text": "queued", "kind": "task"},
             requires_approval=1,
         )
         fresh_id = agentcore.enqueue_proposal(
-            self.conn, task_id=task_id, action_type="create_inbox_item",
-            title="just approved", payload={"text": "fresh", "kind": "task"},
+            self.conn,
+            task_id=task_id,
+            action_type="create_inbox_item",
+            title="just approved",
+            payload={"text": "fresh", "kind": "task"},
             requires_approval=1,
         )
         expired_id = agentcore.enqueue_proposal(
-            self.conn, task_id=task_id, action_type="create_inbox_item",
-            title="way past TTL", payload={"text": "old", "kind": "task"},
+            self.conn,
+            task_id=task_id,
+            action_type="create_inbox_item",
+            title="way past TTL",
+            payload={"text": "old", "kind": "task"},
             requires_approval=1,
         )
         self.conn.commit()
@@ -420,8 +459,12 @@ class ProposeAndApproveTest(unittest.TestCase):
         # Without --stale-only: JSON payload must include all three rows.
         buf = io.StringIO()
         args = argparse.Namespace(
-            list=True, action=None, execute=False, limit=20,
-            json=True, stale_only=False,
+            list=True,
+            action=None,
+            execute=False,
+            limit=20,
+            json=True,
+            stale_only=False,
         )
         with contextlib.redirect_stdout(buf):
             cmd_approve(args)
@@ -432,8 +475,12 @@ class ProposeAndApproveTest(unittest.TestCase):
         # With --stale-only: only the expired row must remain.
         buf = io.StringIO()
         args = argparse.Namespace(
-            list=True, action=None, execute=False, limit=20,
-            json=True, stale_only=True,
+            list=True,
+            action=None,
+            execute=False,
+            limit=20,
+            json=True,
+            stale_only=True,
         )
         with contextlib.redirect_stdout(buf):
             cmd_approve(args)
@@ -475,9 +522,7 @@ class ProposeAndApproveTest(unittest.TestCase):
         self.assertIn("route_decision", result)
         self.assertEqual(result["route_decision"]["intent"], "unknown")
         self.assertEqual(result["reply"], "Here is the cited dashboard answer.")
-        turn = self.conn.execute(
-            "SELECT retrieval_run_ids FROM conversation_turns ORDER BY id DESC LIMIT 1"
-        ).fetchone()
+        turn = self.conn.execute("SELECT retrieval_run_ids FROM conversation_turns ORDER BY id DESC LIMIT 1").fetchone()
         self.assertIn(str(result["retrieval_run_ids"][0]), turn["retrieval_run_ids"])
 
 
@@ -527,11 +572,19 @@ class ClaudeLoopTest(unittest.TestCase):
             def stream(self, **kwargs):
                 self.calls += 1
                 if self.calls == 1:
-                    return _Stream(_Resp(
-                        [_Block(type="tool_use", id="t1", name="propose_jira_comment",
-                                input={"issue_key": "ABC-9", "body": "nudge"})],
-                        "tool_use",
-                    ))
+                    return _Stream(
+                        _Resp(
+                            [
+                                _Block(
+                                    type="tool_use",
+                                    id="t1",
+                                    name="propose_jira_comment",
+                                    input={"issue_key": "ABC-9", "body": "nudge"},
+                                )
+                            ],
+                            "tool_use",
+                        )
+                    )
                 return _Stream(_Resp([_Block(type="text", text="Drafted a Jira nudge for your approval.")], "end_turn"))
 
         class _Client:
@@ -567,7 +620,7 @@ class AgentCliBackendTest(unittest.TestCase):
 
         script = _write_script(
             Path(self.tmp) / "fake_agent.sh",
-            '#!/bin/sh\ncat >/dev/null\n'
+            "#!/bin/sh\ncat >/dev/null\n"
             'echo \'{"reply":"ok","plan":[{"step":"s","detail":"d"}],'
             '"actions":[{"action_type":"draft_external_update","title":"t","payload":{"draft":"x"},"requires_approval":1}]}\'\n',
         )
@@ -767,9 +820,7 @@ class ZeroExecutorStreamTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             script = _write_script(
                 Path(tmp) / "sleepy_zero.py",
-                "#!/usr/bin/env python3\n"
-                "import time\n"
-                "time.sleep(5)\n",
+                "#!/usr/bin/env python3\nimport time\ntime.sleep(5)\n",
             )
             os.environ["MYOS_AGENT_EXEC_ZERO_STREAM"] = f"{sys.executable} {script}"
             try:
@@ -844,10 +895,7 @@ class FactoryZeroExecutorTest(unittest.TestCase):
         still cleans up the worktree."""
         script = self.tmp / "hanging_zero.py"
         script.write_text(
-            "import sys, time\n"
-            "sys.stderr.write('starting long run\\n')\n"
-            "sys.stderr.flush()\n"
-            "time.sleep(30)\n"
+            "import sys, time\nsys.stderr.write('starting long run\\n')\nsys.stderr.flush()\ntime.sleep(30)\n"
         )
         os.environ["MYOS_AGENT_EXEC_ZERO_STREAM"] = f"{sys.executable} {script}"
 
@@ -884,7 +932,9 @@ class FactoryZeroExecutorTest(unittest.TestCase):
         action_id = result["proposed_action_ids"][0]
         self.assertFalse(Path(self.repo, "zeroed.txt").exists())
 
-        row = self.conn.execute("SELECT executor_backend, executor_context_json FROM factory_runs WHERE id = ?", (result["id"],)).fetchone()
+        row = self.conn.execute(
+            "SELECT executor_backend, executor_context_json FROM factory_runs WHERE id = ?", (result["id"],)
+        ).fetchone()
         self.assertEqual(row["executor_backend"], "zero")
         self.assertIn(str(self.repo), row["executor_context_json"])
 
@@ -946,7 +996,9 @@ class FactoryZeroExecutorTest(unittest.TestCase):
         self.assertEqual(receipt_request["approval_integrity"]["schema"], "myos.approval_integrity.v1")
         self.assertTrue(receipt_request["approval_integrity"]["ok"])
         self.assertTrue(receipt_request["approval_integrity"]["payload_hash_verified"])
-        learning_id = factory.learn(self.conn, factory_run_id=result["id"], outcome="success", notes="Fake Zero patch applied.")
+        learning_id = factory.learn(
+            self.conn, factory_run_id=result["id"], outcome="success", notes="Fake Zero patch applied."
+        )
         retro = factory.latest_retrospective(self.conn, result["id"])
         self.assertGreaterEqual(learning_id, 1)
         self.assertEqual(retro["outcome"], "success")
@@ -1019,7 +1071,9 @@ class FactoryZeroExecutorTest(unittest.TestCase):
         self.conn.commit()
 
         action_id = result["proposed_action_ids"][0]
-        row = self.conn.execute("SELECT action_type, payload_json FROM agent_actions WHERE id = ?", (action_id,)).fetchone()
+        row = self.conn.execute(
+            "SELECT action_type, payload_json FROM agent_actions WHERE id = ?", (action_id,)
+        ).fetchone()
         self.assertEqual(row["action_type"], "draft_external_update")
         self.assertIn("fake zero finished", row["payload_json"])
 
@@ -1038,7 +1092,9 @@ class FactoryZeroExecutorTest(unittest.TestCase):
         self.conn.commit()
 
         action_id = result["proposed_action_ids"][0]
-        action = self.conn.execute("SELECT action_type, payload_json FROM agent_actions WHERE id = ?", (action_id,)).fetchone()
+        action = self.conn.execute(
+            "SELECT action_type, payload_json FROM agent_actions WHERE id = ?", (action_id,)
+        ).fetchone()
         payload = json.loads(action["payload_json"])
         self.assertEqual(action["action_type"], "draft_external_update")
         self.assertTrue(payload["diff_too_large"])
@@ -1067,7 +1123,9 @@ class FactoryZeroExecutorTest(unittest.TestCase):
         self.conn.commit()
 
         action_id = result["proposed_action_ids"][0]
-        action = self.conn.execute("SELECT action_type, payload_json FROM agent_actions WHERE id = ?", (action_id,)).fetchone()
+        action = self.conn.execute(
+            "SELECT action_type, payload_json FROM agent_actions WHERE id = ?", (action_id,)
+        ).fetchone()
         self.assertEqual(action["action_type"], "draft_external_update")
         self.assertIn('"status": "missing"', action["payload_json"])
 
@@ -1123,11 +1181,7 @@ class FactoryZeroExecutorTest(unittest.TestCase):
 
         # Every temp worktree under our tmp dir was cleaned up on the finally
         # path, regardless of the timeout.
-        stray = [
-            path.name
-            for path in self.tmp.iterdir()
-            if path.is_dir() and path.name.startswith("myos-zero-wt-")
-        ]
+        stray = [path.name for path in self.tmp.iterdir() if path.is_dir() and path.name.startswith("myos-zero-wt-")]
         self.assertEqual(stray, [])
 
     def test_factory_zero_timeout_honors_env_override(self):
@@ -1151,9 +1205,9 @@ class FactoryZeroExecutorTest(unittest.TestCase):
 
         action_id = result["proposed_action_ids"][0]
         payload = json.loads(
-            self.conn.execute(
-                "SELECT payload_json FROM agent_actions WHERE id = ?", (action_id,)
-            ).fetchone()["payload_json"]
+            self.conn.execute("SELECT payload_json FROM agent_actions WHERE id = ?", (action_id,)).fetchone()[
+                "payload_json"
+            ]
         )
         self.assertTrue(payload["zero"]["timed_out"])
 

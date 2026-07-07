@@ -73,7 +73,9 @@ def detect_runtime(preferred: str = "auto") -> RuntimeStatus:
             return RuntimeStatus("llama-cpp", True, exe)
         if preferred == "llama-cpp":
             return RuntimeStatus("llama-cpp", False, "llama-server or llama-cli not found on PATH")
-    return RuntimeStatus("ollama", False, "no supported local runtime found; install Ollama or configure MYOS_ROUTER_COMMAND")
+    return RuntimeStatus(
+        "ollama", False, "no supported local runtime found; install Ollama or configure MYOS_ROUTER_COMMAND"
+    )
 
 
 def router_wrapper_path(runtime: str) -> Path:
@@ -83,7 +85,7 @@ def router_wrapper_path(runtime: str) -> Path:
 
 def _wrapper_source(runtime: str) -> str:
     if runtime == "ollama":
-        return r'''from __future__ import annotations
+        return r"""from __future__ import annotations
 
 import json
 import os
@@ -136,9 +138,9 @@ with urllib.request.urlopen(req, timeout=int(os.getenv("MYOS_ROUTER_TIMEOUT_SEC"
     data = json.loads(resp.read().decode("utf-8"))
 content = (data.get("message") or {}).get("content") or data.get("response") or "{}"
 print(content)
-'''
+"""
     if runtime == "llama-cpp":
-        return r'''from __future__ import annotations
+        return r"""from __future__ import annotations
 
 import json
 import os
@@ -177,7 +179,7 @@ with urllib.request.urlopen(req, timeout=int(os.getenv("MYOS_ROUTER_TIMEOUT_SEC"
     data = json.loads(resp.read().decode("utf-8"))
 content = data.get("choices", [{}])[0].get("message", {}).get("content", "{}")
 print(content)
-'''
+"""
     return ""
 
 
@@ -250,7 +252,13 @@ def apply_setup(plan: dict[str, Any], *, dry_run: bool = True) -> dict[str, Any]
     if dry_run or not command:
         wrapper = None if dry_run else write_wrapper(str(plan.get("runtime") or ""))
         status = "dry_run" if dry_run else "ok"
-        return {"status": status, "command": command, "stdout": "", "stderr": "", "wrapper": str(wrapper) if wrapper else ""}
+        return {
+            "status": status,
+            "command": command,
+            "stdout": "",
+            "stderr": "",
+            "wrapper": str(wrapper) if wrapper else "",
+        }
     proc = subprocess.run(command, capture_output=True, text=True, check=False)
     wrapper = write_wrapper(str(plan.get("runtime") or ""))
     return {

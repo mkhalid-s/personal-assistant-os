@@ -53,10 +53,13 @@ def _zero_base_argv() -> list[str]:
 
 
 def _prompt_input(task_text: str) -> str:
-    return json.dumps(
-        {"schemaVersion": SCHEMA_VERSION, "type": "prompt", "content": task_text},
-        ensure_ascii=True,
-    ) + "\n"
+    return (
+        json.dumps(
+            {"schemaVersion": SCHEMA_VERSION, "type": "prompt", "content": task_text},
+            ensure_ascii=True,
+        )
+        + "\n"
+    )
 
 
 def zero_stream_argv(
@@ -97,7 +100,9 @@ def run_zero_stream(
 ) -> ZeroRunResult:
     argv = zero_stream_argv(cwd=cwd, auto=auto, max_turns=max_turns, extra_args=extra_args)
     if not argv or not shutil.which(argv[0]):
-        return ZeroRunResult(status="missing", exit_code=127, errors=[{"code": "missing_zero", "message": "zero executable not found"}])
+        return ZeroRunResult(
+            status="missing", exit_code=127, errors=[{"code": "missing_zero", "message": "zero executable not found"}]
+        )
     started = time.monotonic()
     try:
         proc = subprocess.run(
@@ -166,7 +171,13 @@ def parse_zero_stream(stdout: str, *, exit_code: int = 0, stderr: str = "") -> Z
         elif event_type == "warning":
             result.warnings.append(str(event.get("message") or event.get("text") or ""))
         elif event_type == "error":
-            result.errors.append({"code": str(event.get("code") or "error"), "message": str(event.get("message") or ""), "recoverable": event.get("recoverable")})
+            result.errors.append(
+                {
+                    "code": str(event.get("code") or "error"),
+                    "message": str(event.get("message") or ""),
+                    "recoverable": event.get("recoverable"),
+                }
+            )
         elif event_type == "final":
             result.final_text = str(event.get("text") or "")
         elif event_type == "run_end":

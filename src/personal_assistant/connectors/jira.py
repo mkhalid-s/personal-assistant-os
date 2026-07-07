@@ -17,10 +17,11 @@ class JiraConnector(BaseConnector):
         base = os.environ["JIRA_BASE_URL"].rstrip("/")
         email = os.environ["JIRA_USER_EMAIL"]
         token = os.environ["JIRA_API_TOKEN"]
-        jql = urllib.parse.quote('assignee = currentUser() ORDER BY updated DESC')
+        jql = urllib.parse.quote("assignee = currentUser() ORDER BY updated DESC")
         url = f"{base}/rest/api/3/search?jql={jql}&maxResults=30"
         auth = (f"{email}:{token}").encode("utf-8")
         import base64
+
         headers = {
             "Accept": "application/json",
             "Authorization": f"Basic {base64.b64encode(auth).decode('utf-8')}",

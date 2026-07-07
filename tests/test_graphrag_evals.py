@@ -46,10 +46,7 @@ class GraphRAGEvalFixtureTest(unittest.TestCase):
             with self.subTest(case=case["name"]):
                 conn = self._conn()
                 try:
-                    ids_by_key = {
-                        item["key"]: self._work_item(conn, item["title"])
-                        for item in case["work_items"]
-                    }
+                    ids_by_key = {item["key"]: self._work_item(conn, item["title"]) for item in case["work_items"]}
                     for link in case["links"]:
                         connect_work_items(
                             conn,
@@ -68,8 +65,7 @@ class GraphRAGEvalFixtureTest(unittest.TestCase):
                     graph_paths = {tuple(hit["graph_path"]) for hit in hits if hit["graph_path"]}
                     for path in case["expected_graph_paths"]:
                         expected = tuple(
-                            f"work_item#{ids_by_key[part]}" if part in ids_by_key else part
-                            for part in path
+                            f"work_item#{ids_by_key[part]}" if part in ids_by_key else part for part in path
                         )
                         self.assertIn(expected, graph_paths)
                 finally:

@@ -30,9 +30,7 @@ class CommandInventorySmokeTest(unittest.TestCase):
 
         cls.parser: argparse.ArgumentParser = cli.build_parser()
         cls.subparser_action = next(
-            action
-            for action in cls.parser._actions
-            if getattr(action, "dest", "") == "command"
+            action for action in cls.parser._actions if getattr(action, "dest", "") == "command"
         )
         cls.parser_commands: set[str] = set(cls.subparser_action.choices)
         cls.registered_commands: tuple = command_registry.COMMAND_SPECS
@@ -60,15 +58,13 @@ class CommandInventorySmokeTest(unittest.TestCase):
             with self.subTest(command=spec.command):
                 if spec.command not in self.parser_commands:
                     failures.append(
-                        f"{spec.command}: registered in command_registry but "
-                        "missing from build_parser subparsers"
+                        f"{spec.command}: registered in command_registry but missing from build_parser subparsers"
                     )
                     continue
                 exit_code = self._run_help(spec.command)
                 if exit_code != 0:
                     failures.append(
-                        f"{spec.command}: `myos {spec.command} --help` exited "
-                        f"with code {exit_code} instead of 0"
+                        f"{spec.command}: `myos {spec.command} --help` exited with code {exit_code} instead of 0"
                     )
         self.assertEqual(failures, [], "\n".join(failures))
 
@@ -78,19 +74,13 @@ class CommandInventorySmokeTest(unittest.TestCase):
         every child parser must also resolve to a leaf that binds `func`."""
         if parser.get_default("func") is not None:
             return []
-        child_actions = [
-            action
-            for action in parser._actions
-            if isinstance(action, argparse._SubParsersAction)
-        ]
+        child_actions = [action for action in parser._actions if isinstance(action, argparse._SubParsersAction)]
         if not child_actions:
             return [f"{path}: no `func` bound and no child subparsers to dispatch to"]
         problems: list[str] = []
         for child_action in child_actions:
             for child_name, child_parser in child_action.choices.items():
-                problems.extend(
-                    self._dispatch_failures(child_parser, f"{path} {child_name}")
-                )
+                problems.extend(self._dispatch_failures(child_parser, f"{path} {child_name}"))
         return problems
 
     def test_every_registered_command_has_dispatch(self) -> None:

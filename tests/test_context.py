@@ -51,9 +51,7 @@ class ContextLoopTest(unittest.TestCase):
         # conversation + turn rows exist
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0], 1)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM conversation_turns").fetchone()[0], 1)
-        self.assertEqual(
-            self.conn.execute("SELECT turn_count FROM conversations").fetchone()["turn_count"], 1
-        )
+        self.assertEqual(self.conn.execute("SELECT turn_count FROM conversations").fetchone()["turn_count"], 1)
         # mirrored into searchable memory
         hits = queries.context_search(self.conn, "auth token rotation")
         self.assertTrue(any(h["source_type"] == "conversation" for h in hits), hits)
@@ -74,9 +72,7 @@ class ContextLoopTest(unittest.TestCase):
     def test_logging_kill_switch(self):
         from personal_assistant import context
 
-        self.conn.execute(
-            "INSERT INTO assistant_policies (key, value) VALUES ('log_conversations', 'false')"
-        )
+        self.conn.execute("INSERT INTO assistant_policies (key, value) VALUES ('log_conversations', 'false')")
         self.conn.commit()
         self.assertFalse(context.logging_enabled(self.conn))
         out = context.log_turn(self.conn, user_text="hi", assistant_text="hello", backend="fake")
@@ -253,9 +249,7 @@ class ContextLoopTest(unittest.TestCase):
         n = context.extract_observations(self.conn, None, "", "I'll follow up on the release by Friday.")
         self.conn.commit()
         self.assertGreaterEqual(n, 1)
-        row = self.conn.execute(
-            "SELECT subject FROM context_observations WHERE kind='commitment'"
-        ).fetchone()
+        row = self.conn.execute("SELECT subject FROM context_observations WHERE kind='commitment'").fetchone()
         self.assertIsNotNone(row)
         self.assertEqual(row["subject"], "MYOS")  # an assistant-side commitment is owned by MYOS
 
@@ -423,7 +417,8 @@ class RoundTwoRemediationTest(unittest.TestCase):
         self.assertEqual(
             self.conn.execute(
                 "SELECT COUNT(*) FROM context_insights WHERE subject='Priya' AND superseded_by IS NULL"
-            ).fetchone()[0], 1
+            ).fetchone()[0],
+            1,
         )
         # Remove the supporting observations, then reflect again: the open insight must expire.
         self.conn.execute("UPDATE context_observations SET status='decayed' WHERE subject='Priya'")
@@ -433,7 +428,8 @@ class RoundTwoRemediationTest(unittest.TestCase):
         self.assertEqual(
             self.conn.execute(
                 "SELECT COUNT(*) FROM context_insights WHERE subject='Priya' AND superseded_by IS NULL"
-            ).fetchone()[0], 0
+            ).fetchone()[0],
+            0,
         )
 
     def test_remember_redacts_at_chokepoint(self):  # round-2 #6
@@ -497,9 +493,13 @@ class RoundTwoRemediationTest(unittest.TestCase):
         from personal_assistant.providers.agent_cli import _audit
 
         _audit(
-            self.conn, "copilot",
+            self.conn,
+            "copilot",
             {"purpose": "chat", "objective": "email me at jane@example.com"},
-            "reply: call 555-123-4567", "ok", "", 5,
+            "reply: call 555-123-4567",
+            "ok",
+            "",
+            5,
         )
         row = self.conn.execute("SELECT request_json, response_json FROM ai_provider_calls").fetchone()
         self.assertNotIn("jane@example.com", row["request_json"])
@@ -535,22 +535,27 @@ class RoundThreeRemediationTest(unittest.TestCase):
             name = "stub"
 
             def reason(self, conn, request):
-                return {"reply": "ok", "plan": [],
-                        "actions": [{"action_type": "create_inbox_item", "title": "t",
-                                     "payload": {}, "requires_approval": "false"}]}
+                return {
+                    "reply": "ok",
+                    "plan": [],
+                    "actions": [
+                        {"action_type": "create_inbox_item", "title": "t", "payload": {}, "requires_approval": "false"}
+                    ],
+                }
 
         out = StubBackend().run_turn(self.conn, "do a thing", [])
         self.assertEqual(len(out["proposed_action_ids"]), 1)  # did not crash, enqueued
-        ra = self.conn.execute(
-            "SELECT requires_approval FROM agent_actions ORDER BY id DESC LIMIT 1"
-        ).fetchone()["requires_approval"]
+        ra = self.conn.execute("SELECT requires_approval FROM agent_actions ORDER BY id DESC LIMIT 1").fetchone()[
+            "requires_approval"
+        ]
         self.assertEqual(ra, 0)  # "false" coerced to 0, not a ValueError
 
     def test_em_one_on_one_redacts_table_and_inbox(self):  # round-3 #2/#7
         from personal_assistant import em
 
         em.log_one_on_one(
-            self.conn, "Priya",
+            self.conn,
+            "Priya",
             "1:1 with Priya, her cell is 555-123-4567. Action: email priya@example.com by Friday.",
             action_items=["call back at 555-987-6543"],
         )
@@ -568,7 +573,8 @@ class RoundThreeRemediationTest(unittest.TestCase):
         from personal_assistant.inbox import index_chunk
 
         res = em.capture_meeting(
-            self.conn, "Standup",
+            self.conn,
+            "Standup",
             "We decided to ship. Bob will call the vendor at 555-222-3333 by Monday.",
         )
         # mirror triage indexing the meeting raw_text into the FTS-backed text_chunks
@@ -586,9 +592,7 @@ class RoundThreeRemediationTest(unittest.TestCase):
 
         index_chunk(self.conn, "work_item", 42, "follow up with secret token=supersecretvalue123")
         self.conn.commit()
-        chunk = self.conn.execute(
-            "SELECT content FROM text_chunks WHERE source_id=42"
-        ).fetchone()["content"]
+        chunk = self.conn.execute("SELECT content FROM text_chunks WHERE source_id=42").fetchone()["content"]
         self.assertNotIn("supersecretvalue123", chunk)
         self.assertIn("[REDACTED_SECRET]", chunk)
 
@@ -609,15 +613,13 @@ class RoundThreeRemediationTest(unittest.TestCase):
 
         # Emit a valid {plan, actions} JSON whose action title carries a phone number.
         os.environ["MYOS_AI_COMMAND"] = (
-            "python3 -c \"import sys; "
-            "sys.stdout.write('{\\\"plan\\\":[{\\\"step\\\":\\\"s\\\",\\\"detail\\\":\\\"call 555-444-3210\\\"}],"
-            "\\\"actions\\\":[{\\\"action_type\\\":\\\"create_inbox_item\\\",\\\"title\\\":\\\"call 555-444-3210\\\","
-            "\\\"payload\\\":{},\\\"requires_approval\\\":1}]}')\""
+            'python3 -c "import sys; '
+            'sys.stdout.write(\'{\\"plan\\":[{\\"step\\":\\"s\\",\\"detail\\":\\"call 555-444-3210\\"}],'
+            '\\"actions\\":[{\\"action_type\\":\\"create_inbox_item\\",\\"title\\":\\"call 555-444-3210\\",'
+            '\\"payload\\":{},\\"requires_approval\\":1}]}\')"'
         )
         try:
-            planner._ai_reason_artifacts(
-                self.conn, purpose="chat", objective="hello", context="", analogies=[]
-            )
+            planner._ai_reason_artifacts(self.conn, purpose="chat", objective="hello", context="", analogies=[])
         finally:
             os.environ.pop("MYOS_AI_COMMAND", None)
         self.conn.commit()
@@ -631,8 +633,13 @@ class RoundThreeRemediationTest(unittest.TestCase):
     def test_international_phone_is_redacted(self):  # round-3 #9
         from personal_assistant.privacy import apply_privacy_filters
 
-        for intl in ("+44 20 7946 0958", "+91 98765 43210", "+33 1 23 45 67 89",
-                     "+442079460958", "reach me tel:+15551234567 today"):
+        for intl in (
+            "+44 20 7946 0958",
+            "+91 98765 43210",
+            "+33 1 23 45 67 89",
+            "+442079460958",
+            "reach me tel:+15551234567 today",
+        ):
             out = apply_privacy_filters(self.conn, intl)
             self.assertIn("[REDACTED_PHONE]", out, intl)
         # still no over-redaction of the round-2 benign cases or disabled-card text
@@ -671,7 +678,9 @@ class RoundFourRemediationTest(unittest.TestCase):
     def setUp(self):
         self.conn, self.db_path = _fresh_db_conn()
         self.conn.execute("INSERT OR IGNORE INTO assistant_policies (key, value) VALUES ('retention_media_days','30')")
-        self.conn.execute("INSERT OR IGNORE INTO assistant_policies (key, value) VALUES ('retention_evidence_days','365')")
+        self.conn.execute(
+            "INSERT OR IGNORE INTO assistant_policies (key, value) VALUES ('retention_evidence_days','365')"
+        )
         self.conn.commit()
 
     def tearDown(self):
@@ -683,8 +692,13 @@ class RoundFourRemediationTest(unittest.TestCase):
         from personal_assistant.inbox import insert_inbox_item_dedup
 
         insert_inbox_item_dedup(
-            self.conn, text="call vendor at 555-111-2222 about contract",
-            kind="task", owner=None, due_date=None, confidence=0.9, source="test"
+            self.conn,
+            text="call vendor at 555-111-2222 about contract",
+            kind="task",
+            owner=None,
+            due_date=None,
+            confidence=0.9,
+            source="test",
         )
         self.conn.commit()
         text = self.conn.execute("SELECT text FROM inbox_items ORDER BY id DESC LIMIT 1").fetchone()["text"]
@@ -697,12 +711,22 @@ class RoundFourRemediationTest(unittest.TestCase):
         from personal_assistant.inbox import insert_inbox_item_dedup
 
         id1 = insert_inbox_item_dedup(
-            self.conn, text="call Bob at 555-111-2222", kind="task",
-            owner=None, due_date=None, confidence=0.9, source="test"
+            self.conn,
+            text="call Bob at 555-111-2222",
+            kind="task",
+            owner=None,
+            due_date=None,
+            confidence=0.9,
+            source="test",
         )
         id2 = insert_inbox_item_dedup(
-            self.conn, text="call Bob at 555-333-4444", kind="task",
-            owner=None, due_date=None, confidence=0.9, source="test"
+            self.conn,
+            text="call Bob at 555-333-4444",
+            kind="task",
+            owner=None,
+            due_date=None,
+            confidence=0.9,
+            source="test",
         )
         self.conn.commit()
         self.assertIsNotNone(id1)
@@ -721,9 +745,7 @@ class RoundFourRemediationTest(unittest.TestCase):
             requires_approval=1,
         )
         self.conn.commit()
-        row = self.conn.execute(
-            "SELECT title, payload_json FROM agent_actions WHERE id=?", (action_id,)
-        ).fetchone()
+        row = self.conn.execute("SELECT title, payload_json FROM agent_actions WHERE id=?", (action_id,)).fetchone()
         self.assertNotIn("jane@example.com", row["title"])
         self.assertNotIn("555-777-9999", row["payload_json"])
         self.assertNotIn("sk-abc123xyz456def789", row["payload_json"])
@@ -741,16 +763,11 @@ class RoundFourRemediationTest(unittest.TestCase):
             "VALUES (NULL, 'test suggestion', 'rationale', 'do it', 'proposed')"
         )
         self.conn.commit()
-        sid = self.conn.execute(
-            "SELECT id FROM context_suggestions ORDER BY id DESC LIMIT 1"
-        ).fetchone()["id"]
+        sid = self.conn.execute("SELECT id FROM context_suggestions ORDER BY id DESC LIMIT 1").fetchone()["id"]
         decide_suggestion(
-            self.conn, sid, "dismissed",
-            feedback="email me at secret@corp.com or call 555-888-1234 with updates"
+            self.conn, sid, "dismissed", feedback="email me at secret@corp.com or call 555-888-1234 with updates"
         )
-        row = self.conn.execute(
-            "SELECT feedback FROM context_suggestions WHERE id=?", (sid,)
-        ).fetchone()
+        row = self.conn.execute("SELECT feedback FROM context_suggestions WHERE id=?", (sid,)).fetchone()
         self.assertNotIn("secret@corp.com", row["feedback"])
         self.assertNotIn("555-888-1234", row["feedback"])
 
@@ -762,9 +779,7 @@ class RoundFourRemediationTest(unittest.TestCase):
         skipped = index_chunk(self.conn, "work_item", 100, "   ")  # whitespace-only
         self.assertFalse(skipped)
         # skipped item must NOT have written a row
-        row = self.conn.execute(
-            "SELECT id FROM text_chunks WHERE source_id=100"
-        ).fetchone()
+        row = self.conn.execute("SELECT id FROM text_chunks WHERE source_id=100").fetchone()
         self.assertIsNone(row)
 
     def test_e164_lookbehind_prevents_mid_token_over_redaction(self):  # R4-7
@@ -774,9 +789,9 @@ class RoundFourRemediationTest(unittest.TestCase):
         # The lookbehind (?<![\w.\-]) guards these cases; '-' is in the lookbehind class.
         no_redact_cases = [
             "JIRA-+12345678",  # '-' before '+' is in the lookbehind class
-            "ver.+12345678",   # '.' before '+'
-            "x+12345678",      # word char before '+'
-            "+1234",           # too short (< 8 suffix digits after the first)
+            "ver.+12345678",  # '.' before '+'
+            "x+12345678",  # word char before '+'
+            "+1234",  # too short (< 8 suffix digits after the first)
         ]
         for text in no_redact_cases:
             out = apply_privacy_filters(self.conn, text)
@@ -824,16 +839,10 @@ class RoundFourRemediationTest(unittest.TestCase):
         _cleanup_policy_retention(self.conn)
         self.conn.commit()
         # Aged media deleted; fresh media survives.
-        self.assertIsNone(
-            self.conn.execute("SELECT id FROM media_assets WHERE id=?", (aged_id,)).fetchone()
-        )
-        self.assertIsNotNone(
-            self.conn.execute("SELECT id FROM media_assets WHERE id=?", (fresh_id,)).fetchone()
-        )
+        self.assertIsNone(self.conn.execute("SELECT id FROM media_assets WHERE id=?", (aged_id,)).fetchone())
+        self.assertIsNotNone(self.conn.execute("SELECT id FROM media_assets WHERE id=?", (fresh_id,)).fetchone())
         # Provenance must NOT be deleted — the path still has a surviving media asset.
-        self.assertIsNotNone(
-            self.conn.execute("SELECT id FROM provenance WHERE id=?", (prov_id,)).fetchone()
-        )
+        self.assertIsNotNone(self.conn.execute("SELECT id FROM provenance WHERE id=?", (prov_id,)).fetchone())
 
 
 if __name__ == "__main__":

@@ -274,7 +274,11 @@ class AutonomyPolicyDecisionTest(unittest.TestCase):
             examples = [
                 ("review_approvals", "myos approve --list", {"external_write"}),
                 ("review_factory", "myos factory review --id 1", {"local_db_write", "external_write"}),
-                ("dry_run_runtime_change", "myos setup-live --check", {"local_file_write", "local_db_write", "os_service_write"}),
+                (
+                    "dry_run_runtime_change",
+                    "myos setup-live --check",
+                    {"local_file_write", "local_db_write", "os_service_write"},
+                ),
                 ("inspect_loop_status", "myos loop status --task 1", set()),
                 ("run_goal_cycle", "myos loop run-goal --goal 1", {"local_db_write"}),
                 ("review_goals", "myos goal list", set()),

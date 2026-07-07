@@ -237,7 +237,9 @@ def cmd_act(args: argparse.Namespace) -> None:
         print("Agent actions:")
         for row in rows:
             approval = "approval_required" if row["requires_approval"] else "safe_local"
-            print(f"- action #{row['id']} task=#{row['agent_task_id']} [{row['action_type']}] {row['title']} status={row['status']} {approval}")
+            print(
+                f"- action #{row['id']} task=#{row['agent_task_id']} [{row['action_type']}] {row['title']} status={row['status']} {approval}"
+            )
             payload = json.loads(row["payload_json"] or "{}")
             print(f"  target: {_provider_target_summary(payload)}")
             for line in format_action_review_context(
@@ -388,7 +390,9 @@ def cmd_agent_status(args: argparse.Namespace) -> None:
     print("Agent tasks:")
     for row in rows:
         title = row["objective"] if len(row["objective"]) <= 100 else row["objective"][:97] + "..."
-        print(f"- task #{row['id']} status={row['status']} priority={row['priority']} updated={row['updated_at']} objective={title}")
+        print(
+            f"- task #{row['id']} status={row['status']} priority={row['priority']} updated={row['updated_at']} objective={title}"
+        )
 
 
 def _approval_queue_rows(conn, limit: int) -> list:
@@ -471,9 +475,7 @@ def _approval_queue_json_entry(row) -> dict:
         preview = str(preview)
     snippet = preview if len(preview) <= 220 else preview[:217] + "..."
     rollback = payload.get("rollback_note") or payload.get("rollback") or ""
-    review_context = list(
-        format_action_review_context(str(row["action_type"]), payload, requires_approval=True)
-    )
+    review_context = list(format_action_review_context(str(row["action_type"]), payload, requires_approval=True))
     return {
         "id": int(row["id"]),
         "agent_task_id": int(row["agent_task_id"]) if row["agent_task_id"] is not None else None,
@@ -524,11 +526,7 @@ def cmd_approve(args: argparse.Namespace) -> None:
                 # attention before execution: nearing_expiry, expired, tampered,
                 # or invalid. `not_yet_approved` and `fresh` are excluded because
                 # they need no re-approval or intervention.
-                rows = [
-                    row
-                    for row in rows
-                    if _approval_integrity_summary(row).get("state") in _STALE_INTEGRITY_STATES
-                ]
+                rows = [row for row in rows if _approval_integrity_summary(row).get("state") in _STALE_INTEGRITY_STATES]
             if json_mode:
                 payload = {
                     "schema": "myos.approve.list.v1",
@@ -547,7 +545,9 @@ def cmd_approve(args: argparse.Namespace) -> None:
                 return
             print("Approval queue (stale only):" if stale_only else "Approval queue:")
             for row in rows:
-                print(f"- action #{row['id']} task=#{row['agent_task_id']} [{row['action_type']}] {row['title']} status={row['status']}")
+                print(
+                    f"- action #{row['id']} task=#{row['agent_task_id']} [{row['action_type']}] {row['title']} status={row['status']}"
+                )
                 payload = json.loads(row["payload_json"] or "{}")
                 print(f"  target: {_provider_target_summary(payload)}")
                 for line in format_action_review_context(str(row["action_type"]), payload, requires_approval=True):
@@ -566,11 +566,19 @@ def cmd_approve(args: argparse.Namespace) -> None:
             return
         if args.action is None:
             if json_mode:
-                print(json.dumps({"schema": "myos.approve.list.v1", "error": "provide --action or --list"}, ensure_ascii=True))
+                print(
+                    json.dumps(
+                        {"schema": "myos.approve.list.v1", "error": "provide --action or --list"}, ensure_ascii=True
+                    )
+                )
             else:
                 print("Provide --action ID or use --list.")
             raise SystemExit(1)
-        cmd_act(argparse.Namespace(task=None, action=args.action, list=False, approve=True, execute=args.execute, limit=args.limit))
+        cmd_act(
+            argparse.Namespace(
+                task=None, action=args.action, list=False, approve=True, execute=args.execute, limit=args.limit
+            )
+        )
     finally:
         conn.close()
 
@@ -642,14 +650,23 @@ def cmd_execution_receipt(args: argparse.Namespace) -> None:
     if action == "show":
         if not args.id:
             if json_mode:
-                print(json.dumps({"schema": "myos.execution_receipt.show.v1", "error": "--id is required"}, ensure_ascii=True))
+                print(
+                    json.dumps(
+                        {"schema": "myos.execution_receipt.show.v1", "error": "--id is required"}, ensure_ascii=True
+                    )
+                )
             else:
                 print("--id is required for receipt show.")
             raise SystemExit(1)
         row = _receipt_show_row(conn, int(args.id))
         if not row:
             if json_mode:
-                print(json.dumps({"schema": "myos.execution_receipt.show.v1", "error": "not_found", "id": int(args.id)}, ensure_ascii=True))
+                print(
+                    json.dumps(
+                        {"schema": "myos.execution_receipt.show.v1", "error": "not_found", "id": int(args.id)},
+                        ensure_ascii=True,
+                    )
+                )
             else:
                 print(f"Execution receipt #{args.id} not found.")
             raise SystemExit(1)
@@ -699,7 +716,9 @@ def cmd_execution_receipt(args: argparse.Namespace) -> None:
             context_lines = (
                 format_compact_action_review_context(approval_context)
                 if isinstance(approval_context, dict)
-                else format_action_review_context(str(row["action_type"]), payload, requires_approval=bool(row["approved"]))
+                else format_action_review_context(
+                    str(row["action_type"]), payload, requires_approval=bool(row["approved"])
+                )
             )
             for line in context_lines:
                 if ": " in line:

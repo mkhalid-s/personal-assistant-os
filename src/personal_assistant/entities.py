@@ -161,7 +161,13 @@ def add_alias(
             source_id=COALESCE(excluded.source_id, entity_aliases.source_id),
             confidence=MAX(entity_aliases.confidence, excluded.confidence)
         """,
-        (int(entity_id), alias, source_type or None, str(source_id) if source_id is not None else None, float(confidence)),
+        (
+            int(entity_id),
+            alias,
+            source_type or None,
+            str(source_id) if source_id is not None else None,
+            float(confidence),
+        ),
     )
 
 

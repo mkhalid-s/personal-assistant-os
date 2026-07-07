@@ -18,8 +18,9 @@ class ConfluenceConnector(BaseConnector):
         email = os.environ["CONFLUENCE_USER_EMAIL"]
         token = os.environ["CONFLUENCE_API_TOKEN"]
         import base64
+
         auth = (f"{email}:{token}").encode("utf-8")
-        cql = urllib.parse.quote('type=page order by lastmodified desc')
+        cql = urllib.parse.quote("type=page order by lastmodified desc")
         url = f"{base}/wiki/rest/api/search?cql={cql}&limit=20"
         headers = {
             "Accept": "application/json",

@@ -18,9 +18,9 @@ def cmd_close_day(args: argparse.Namespace) -> None:
         "SELECT COUNT(*) AS c FROM work_items WHERE status = 'open' AND risk_score >= 60"
     ).fetchone()["c"]
     open_intents = conn.execute("SELECT COUNT(*) AS c FROM intents WHERE status = 'open'").fetchone()["c"]
-    pending_approvals = conn.execute(
-        "SELECT COUNT(*) AS c FROM agent_actions WHERE status = 'proposed'"
-    ).fetchone()["c"]
+    pending_approvals = conn.execute("SELECT COUNT(*) AS c FROM agent_actions WHERE status = 'proposed'").fetchone()[
+        "c"
+    ]
     active_factory_runs = conn.execute(
         """
         SELECT COUNT(*) AS c
@@ -553,7 +553,10 @@ def cmd_resolve_commitment(args: argparse.Namespace) -> None:
     if outcome in ("completed_on_time", "completed_late"):
         conn.execute("UPDATE work_items SET status='done', updated_at=CURRENT_TIMESTAMP WHERE id = ?", (args.item,))
     elif outcome == "missed":
-        conn.execute("UPDATE work_items SET risk_score = MIN(risk_score + 20, 100), updated_at=CURRENT_TIMESTAMP WHERE id = ?", (args.item,))
+        conn.execute(
+            "UPDATE work_items SET risk_score = MIN(risk_score + 20, 100), updated_at=CURRENT_TIMESTAMP WHERE id = ?",
+            (args.item,),
+        )
     conn.commit()
     print(f"Commitment #{args.item} resolved with outcome={outcome}.")
 
@@ -627,8 +630,8 @@ def cmd_renegotiate(args: argparse.Namespace) -> None:
         suggested = args.default_extension_days
         print(
             f"- #{row['id']} {row['title']} (due={row['due_date']}, risk={row['risk_score']})\n"
-            f"  suggested message: \"Hi {owner}, this item is at risk. Proposing a {suggested}-day extension "
-            f"or scope reduction. Can we confirm priority and deadline?\""
+            f'  suggested message: "Hi {owner}, this item is at risk. Proposing a {suggested}-day extension '
+            f'or scope reduction. Can we confirm priority and deadline?"'
         )
     append_event(
         conn,
@@ -642,7 +645,7 @@ def cmd_renegotiate(args: argparse.Namespace) -> None:
 
 def _daily_feedback_suffix(args: argparse.Namespace, label: str) -> str:
     command = getattr(args, "feedback_command", "myos next-action")
-    return f" [label={label} command=\"{command}\"]"
+    return f' [label={label} command="{command}"]'
 
 
 def _daily_feedback_score(conn, *, label: str, command: str) -> int:

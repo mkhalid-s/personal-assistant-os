@@ -99,7 +99,9 @@ def _autopilot_signal_exists(conn, key: str) -> bool:
     return conn.execute("SELECT 1 FROM autopilot_signals WHERE signal_key = ?", (key,)).fetchone() is not None
 
 
-def _detect_autopilot_signals(conn, risk_threshold: int, due_days: int, limit: int, watch_risks: bool = False) -> list[dict[str, object]]:
+def _detect_autopilot_signals(
+    conn, risk_threshold: int, due_days: int, limit: int, watch_risks: bool = False
+) -> list[dict[str, object]]:
     signals: list[dict[str, object]] = []
     delegated_work_items: set[int] = set()
     risk_rows = conn.execute(

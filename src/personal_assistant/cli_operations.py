@@ -146,9 +146,13 @@ def cmd_run_day(args: argparse.Namespace, deps: OperationsDependencies) -> dict[
             triaged += 1
 
         conn.commit()
-        print(f"Pipeline summary: external_ingested={external_created}, media_suggested={media_created}, triaged={triaged}")
+        print(
+            f"Pipeline summary: external_ingested={external_created}, media_suggested={media_created}, triaged={triaged}"
+        )
 
-        cli_review.cmd_brief(argparse.Namespace(meeting_hours=args.meeting_hours, top=10, risk_threshold=args.risk_threshold))
+        cli_review.cmd_brief(
+            argparse.Namespace(meeting_hours=args.meeting_hours, top=10, risk_threshold=args.risk_threshold)
+        )
         print()
         cli_review.cmd_stop_doing(
             argparse.Namespace(
@@ -352,7 +356,11 @@ def cmd_orchestrate(args: argparse.Namespace, deps: OperationsDependencies) -> N
                 ),
             )
         elif args.workflow == "weekly":
-            step("weekly_review", cli_review.cmd_weekly_review, argparse.Namespace(days=7, risk_threshold=args.risk_threshold, risk_alert=5))
+            step(
+                "weekly_review",
+                cli_review.cmd_weekly_review,
+                argparse.Namespace(days=7, risk_threshold=args.risk_threshold, risk_alert=5),
+            )
             step("metrics", cli_review.cmd_metrics, argparse.Namespace(days=7, risk_threshold=args.risk_threshold))
             step(
                 "report",
@@ -370,7 +378,11 @@ def cmd_orchestrate(args: argparse.Namespace, deps: OperationsDependencies) -> N
                 cli_review.cmd_renegotiate,
                 argparse.Namespace(days_ahead=2, default_extension_days=3, limit=20),
             )
-            step("next_action", cli_review.cmd_next_action, argparse.Namespace(meeting_hours=args.meeting_hours, risk_threshold=args.risk_threshold))
+            step(
+                "next_action",
+                cli_review.cmd_next_action,
+                argparse.Namespace(meeting_hours=args.meeting_hours, risk_threshold=args.risk_threshold),
+            )
         else:
             raise ValueError(f"Unknown workflow: {args.workflow}")
 
@@ -386,9 +398,7 @@ def cmd_orchestrate(args: argparse.Namespace, deps: OperationsDependencies) -> N
             (run_id,),
         ).fetchone()
         summary = (
-            f"completed={stats['completed_c'] or 0}, "
-            f"skipped={stats['skipped_c'] or 0}, "
-            f"failed={stats['failed_c'] or 0}"
+            f"completed={stats['completed_c'] or 0}, skipped={stats['skipped_c'] or 0}, failed={stats['failed_c'] or 0}"
         )
         conn.execute(
             "UPDATE workflow_runs SET status='completed', finished_at=CURRENT_TIMESTAMP, summary=? WHERE id=?",

@@ -29,9 +29,15 @@ class GuardUnitTest(unittest.TestCase):
     def test_protected_path_covers_package_and_blocks_escape(self):
         from personal_assistant.execution import _path_is_protected
 
-        for p in ("personal_assistant/privacy.py", "src/personal_assistant/autopilot.py",
-                  ".claude/settings.json", ".git/hooks/pre-commit", "x/../../etc/passwd",
-                  "/etc/passwd", "settings.local.json"):
+        for p in (
+            "personal_assistant/privacy.py",
+            "src/personal_assistant/autopilot.py",
+            ".claude/settings.json",
+            ".git/hooks/pre-commit",
+            "x/../../etc/passwd",
+            "/etc/passwd",
+            "settings.local.json",
+        ):
             self.assertTrue(_path_is_protected(p), p)
         for p in ("tests/test_db.py", "docs/cli.py.md", "myproject/main.py", "src/app/db.py"):
             self.assertFalse(_path_is_protected(p), p)  # A-1/C-4: don't over-block
@@ -53,8 +59,12 @@ class ApplyPatchHardeningTest(unittest.TestCase):
     def setUp(self):
         self.conn, self.db_path = _fresh_db_conn()
         self.repo = tempfile.mkdtemp()
-        for a in (("init", "-q", "-b", "main"), ("config", "user.email", "t@t"),
-                  ("config", "user.name", "t"), ("config", "commit.gpgsign", "false")):
+        for a in (
+            ("init", "-q", "-b", "main"),
+            ("config", "user.email", "t@t"),
+            ("config", "user.name", "t"),
+            ("config", "commit.gpgsign", "false"),
+        ):
             subprocess.run(["git", "-C", self.repo, *a], capture_output=True, check=True)
         Path(self.repo, "seed.txt").write_text("seed\n")
         subprocess.run(["git", "-C", self.repo, "add", "-A"], capture_output=True, check=True)
@@ -79,19 +89,24 @@ class ApplyPatchHardeningTest(unittest.TestCase):
         return cli._execute_agent_action(self.conn, row)
 
     def test_rename_header_into_package_is_blocked(self):
-        diff = ("diff --git a/notes.txt b/notes.txt\nsimilarity index 100%\n"
-                "rename from notes.txt\nrename to src/personal_assistant/evil.py\n")
+        diff = (
+            "diff --git a/notes.txt b/notes.txt\nsimilarity index 100%\n"
+            "rename from notes.txt\nrename to src/personal_assistant/evil.py\n"
+        )
         self.assertIn("blocked", self._run_patch(diff).lower())  # C-1 + A-1
 
     def test_symlink_hunk_is_blocked(self):
-        diff = ("diff --git a/link b/link\nnew file mode 120000\n"
-                "--- /dev/null\n+++ b/link\n@@ -0,0 +1 @@\n+/etc/passwd\n")
+        diff = (
+            "diff --git a/link b/link\nnew file mode 120000\n--- /dev/null\n+++ b/link\n@@ -0,0 +1 @@\n+/etc/passwd\n"
+        )
         self.assertIn("blocked", self._run_patch(diff).lower())  # C-2
 
     def test_patch_to_extracted_safety_module_is_blocked(self):
-        diff = ("diff --git a/src/personal_assistant/privacy.py b/src/personal_assistant/privacy.py\n"
-                "--- a/src/personal_assistant/privacy.py\n+++ b/src/personal_assistant/privacy.py\n"
-                "@@ -1 +1 @@\n-x\n+y\n")
+        diff = (
+            "diff --git a/src/personal_assistant/privacy.py b/src/personal_assistant/privacy.py\n"
+            "--- a/src/personal_assistant/privacy.py\n+++ b/src/personal_assistant/privacy.py\n"
+            "@@ -1 +1 @@\n-x\n+y\n"
+        )
         self.assertIn("blocked", self._run_patch(diff).lower())  # A-1: new modules protected
 
 
@@ -107,8 +122,14 @@ class RedactObjTest(unittest.TestCase):
     def test_redact_preserves_non_strings_and_valid_json(self):
         from personal_assistant.privacy import redact_obj
 
-        payload = {"issue_number": 123456789012, "count": 42, "ok": True, "x": None,
-                   "draft": "reach me at 555-867-5309", "nested": {"phone": "+1 555 222 3333", "n": 7}}
+        payload = {
+            "issue_number": 123456789012,
+            "count": 42,
+            "ok": True,
+            "x": None,
+            "draft": "reach me at 555-867-5309",
+            "nested": {"phone": "+1 555 222 3333", "n": 7},
+        }
         out = redact_obj(self.conn, payload)
         self.assertEqual(out["issue_number"], 123456789012)  # int NOT mangled (C-3)
         self.assertEqual(out["count"], 42)
@@ -124,8 +145,9 @@ class FtsLedgerTest(unittest.TestCase):
     def test_fts_migrations_recorded(self):  # B-1/B-2
         conn, db_path = _fresh_db_conn()
         try:
-            rows = {r[0] for r in conn.execute(
-                "SELECT version FROM schema_migrations WHERE version IN (17, 19)").fetchall()}
+            rows = {
+                r[0] for r in conn.execute("SELECT version FROM schema_migrations WHERE version IN (17, 19)").fetchall()
+            }
             self.assertEqual(rows, {17, 19})
         finally:
             conn.close()

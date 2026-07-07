@@ -181,7 +181,9 @@ def print_loop_result(result: dict[str, object]) -> None:
     if result.get("pending_approvals"):
         print("Recommendation: review pending approvals -> myos approve --list [label=review_approvals]")
     else:
-        print(f"Recommendation: inspect loop status -> myos loop status --task {result['task_id']} [label=inspect_loop_status]")
+        print(
+            f"Recommendation: inspect loop status -> myos loop status --task {result['task_id']} [label=inspect_loop_status]"
+        )
 
 
 def print_goal_cycle_result(result: dict[str, object]) -> None:

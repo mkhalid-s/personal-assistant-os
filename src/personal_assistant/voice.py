@@ -82,8 +82,7 @@ def speak(text: str) -> None:
     command = os.getenv("MYOS_TTS_COMMAND", "").strip()
     if command:
         try:
-            subprocess.run(shlex.split(command), input=text, text=True,
-                           capture_output=True, timeout=120, check=False)
+            subprocess.run(shlex.split(command), input=text, text=True, capture_output=True, timeout=120, check=False)
             return
         except Exception:  # noqa: BLE001 - fall through to other engines
             pass

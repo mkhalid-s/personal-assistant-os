@@ -19,10 +19,7 @@ class ZeroBackend(AgentCliBackend):
         super().__init__(name="zero", input_mode="prompt_arg")
 
     def _default_command(self) -> str:
-        return (
-            os.getenv("MYOS_AGENT_CMD_ZERO", "").strip()
-            or "zero exec --output-format text --auto low --no-notify"
-        )
+        return os.getenv("MYOS_AGENT_CMD_ZERO", "").strip() or "zero exec --output-format text --auto low --no-notify"
 
     def available(self) -> tuple[bool, str]:
         argv = self._argv()

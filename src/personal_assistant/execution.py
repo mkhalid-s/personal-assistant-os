@@ -143,6 +143,7 @@ def verify_approval_integrity(row: Any, *, ttl_seconds: int | None = None) -> di
             ctx["ttl_remaining_seconds"] = max(0, ttl - age) if ttl else None
     return ctx
 
+
 # Path *segments* a harnessed-agent patch may NEVER touch. We protect the whole
 # MYOS package directory (not drifting individual filenames — review A-1/C-4) so
 # relocating safety code can't silently un-protect it. ".git/.claude/hooks" guard
@@ -187,8 +188,7 @@ def _patch_target_paths(diff: str) -> list[str]:
 def _git_numstat_paths(root: str, diff: str) -> list[str]:
     """Authoritative path list from git itself — catches anything our textual
     parser misses (renames/copies/binary). Returns [] if git can't enumerate."""
-    proc = subprocess.run(["git", "-C", root, "apply", "--numstat"], input=diff,
-                          text=True, capture_output=True)
+    proc = subprocess.run(["git", "-C", root, "apply", "--numstat"], input=diff, text=True, capture_output=True)
     if proc.returncode != 0:
         return []
     paths = []
@@ -238,7 +238,10 @@ def _payload_target(payload: dict[str, object]) -> str:
 
 
 def _is_connector_payload(payload: dict[str, object]) -> bool:
-    return _payload_target(payload) in CONNECTOR_TARGETS or str(payload.get("operation") or "").strip() in CONNECTOR_OPERATIONS
+    return (
+        _payload_target(payload) in CONNECTOR_TARGETS
+        or str(payload.get("operation") or "").strip() in CONNECTOR_OPERATIONS
+    )
 
 
 def _connector_target_ref(payload: dict[str, object], connector: str) -> str:
@@ -290,20 +293,14 @@ def normalize_connector_mutation(payload: dict[str, object], *, title: str = "As
     }
 
 
-def _verification_receipt_context(
-    conn: sqlite3.Connection, payload: dict[str, object]
-) -> dict[str, object] | None:
+def _verification_receipt_context(conn: sqlite3.Connection, payload: dict[str, object]) -> dict[str, object] | None:
     raw = payload.get("verification_commands") or []
     # Payloads are hand-drafted JSON — a scalar (e.g. a single string) in
     # `verification_commands` would silently iterate as characters and produce
     # garbage receipt entries. Defensively require an iterable *container*.
     if not isinstance(raw, (list, tuple)):
         return None
-    commands = [
-        apply_privacy_filters(conn, str(command).strip())[:300]
-        for command in raw
-        if str(command).strip()
-    ][:5]
+    commands = [apply_privacy_filters(conn, str(command).strip())[:300] for command in raw if str(command).strip()][:5]
     if not commands:
         return None
     return {
@@ -380,10 +377,7 @@ def _record_execution_receipt(
         receipt_id=receipt_id,
     )
     if follow_up_required:
-        follow_up_text = (
-            f"Follow up on {final_status} action #{row['id']}: "
-            f"{row['title']} -- {result[:300]}"
-        )
+        follow_up_text = f"Follow up on {final_status} action #{row['id']}: {row['title']} -- {result[:300]}"
         follow_up_id = insert_inbox_item_dedup(
             conn,
             text=follow_up_text,
@@ -454,7 +448,8 @@ def _execute_agent_action(conn: sqlite3.Connection, row: Any) -> str:
         # Resolve repo root via git (don't trust an arbitrary payload path).
         rp = subprocess.run(
             ["git", "-C", str(payload.get("repo_root", "")) or os.getcwd(), "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         if rp.returncode != 0 or not rp.stdout.strip():
             return "blocked: apply_patch repo_root is not a git repository"
@@ -469,7 +464,9 @@ def _execute_agent_action(conn: sqlite3.Connection, row: Any) -> str:
         bad = sorted(p for p in targets if _path_is_protected(p))
         if bad:
             append_event(conn, "autonomy_block", "agent_action", row["id"], f"patch touches protected paths: {bad[:5]}")
-            return f"blocked: patch touches protected/out-of-tree paths {bad[:5]} — refused to protect the safety policy"
+            return (
+                f"blocked: patch touches protected/out-of-tree paths {bad[:5]} — refused to protect the safety policy"
+            )
         check = subprocess.run(["git", "-C", root, "apply", "--check"], input=diff, text=True, capture_output=True)
         if check.returncode != 0:
             return f"patch failed pre-check (git apply --check): {(check.stderr or '')[:300]}"
@@ -500,9 +497,7 @@ def _execute_agent_action(conn: sqlite3.Connection, row: Any) -> str:
     return "marked complete; external mutation adapter not configured"
 
 
-def _execute_action_provider(
-    conn: sqlite3.Connection, row: Any, payload: dict[str, object]
-) -> str:
+def _execute_action_provider(conn: sqlite3.Connection, row: Any, payload: dict[str, object]) -> str:
     command = os.getenv("MYOS_ACTION_COMMAND", "").strip()
     provider = os.getenv("MYOS_ACTION_PROVIDER", "command")
     clean_payload = redact_obj(conn, payload)  # redact leaves, never the JSON envelope (C-3)
@@ -778,16 +773,19 @@ def approve_and_execute(
         # at execute time (review finding: approval integrity/expiry).
         pinned_hash = _compute_payload_hash(row["payload_json"] or "{}")
         conn.execute(
-            "UPDATE agent_actions "
-            "SET status='approved', approved_at=CURRENT_TIMESTAMP, payload_hash=? "
-            "WHERE id = ?",
+            "UPDATE agent_actions SET status='approved', approved_at=CURRENT_TIMESTAMP, payload_hash=? WHERE id = ?",
             (pinned_hash, action_id),
         )
         conn.commit()
         approved = True
         row = conn.execute("SELECT * FROM agent_actions WHERE id = ?", (action_id,)).fetchone()
     if not execute:
-        return {"code": "approved_only" if approved else "noop", "approved": approved, "result": "", "status": row["status"]}
+        return {
+            "code": "approved_only" if approved else "noop",
+            "approved": approved,
+            "result": "",
+            "status": row["status"],
+        }
     if row["requires_approval"] and row["status"] not in ("approved", "executed"):
         return {"code": "needs_approval", "approved": approved, "result": "", "status": row["status"]}
     if row["status"] == "executed":
@@ -818,7 +816,11 @@ def approve_and_execute(
             json.dumps({"reason": reason, "context": integrity}, ensure_ascii=True),
         )
         _record_execution_receipt(
-            conn, row, approved=approved, final_status="failed", result=result,
+            conn,
+            row,
+            approved=approved,
+            final_status="failed",
+            result=result,
             integrity=integrity,
         )
         conn.commit()
@@ -855,8 +857,12 @@ def approve_and_execute(
         json.dumps({"task_id": row["agent_task_id"], "result": result}, ensure_ascii=True),
     )
     conn.commit()
-    return {"code": "failed" if new_status == "failed" else "executed",
-            "approved": approved, "result": result, "status": new_status}
+    return {
+        "code": "failed" if new_status == "failed" else "executed",
+        "approved": approved,
+        "result": result,
+        "status": new_status,
+    }
 
 
 def _print_exec_outcome(res: dict[str, Any], action_id: int) -> None:

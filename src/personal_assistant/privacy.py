@@ -40,10 +40,10 @@ def _policy_int(value: str, default: int) -> int:
 # conversation log. Names are intentionally NOT redacted — the EM domain is built on them
 # and this is local-only data; redacting every capitalized word would destroy the product.
 _SECRET_PATTERNS = (
-    r"\bAKIA[0-9A-Z]{16}\b",                                  # AWS access key id
-    r"\bgh[pousr]_[A-Za-z0-9]{16,}\b",                        # GitHub tokens
-    r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b",                      # Slack tokens
-    r"\b(?:sk|pk|rk)-[A-Za-z0-9]{16,}\b",                     # provider secret/publishable keys
+    r"\bAKIA[0-9A-Z]{16}\b",  # AWS access key id
+    r"\bgh[pousr]_[A-Za-z0-9]{16,}\b",  # GitHub tokens
+    r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b",  # Slack tokens
+    r"\b(?:sk|pk|rk)-[A-Za-z0-9]{16,}\b",  # provider secret/publishable keys
     r"\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\b",  # JWT
     r"(?i)\b(?:api[_-]?key|secret|token|password|passwd|bearer)\b\s*[:=]\s*['\"]?[A-Za-z0-9._\-]{6,}",
 )
@@ -72,9 +72,9 @@ _PHONE_PATTERN = (
     r"|"
     # 2) NANP 3-3-4 with separators / parenthesized area / optional +country code.
     r"(?<![\w.\-])"
-    r"(?:\+\d{1,3}[\s.\-]?)?"               #    optional +country
-    r"(?:\(\d{3}\)[\s.\-]?|\d{3}[\s.\-])"   #    area code: (555) or 555-
-    r"\d{3}[\s.\-]\d{4}(?!\d)"              #    local 3-4 with a separator
+    r"(?:\+\d{1,3}[\s.\-]?)?"  #    optional +country
+    r"(?:\(\d{3}\)[\s.\-]?|\d{3}[\s.\-])"  #    area code: (555) or 555-
+    r"\d{3}[\s.\-]\d{4}(?!\d)"  #    local 3-4 with a separator
     r")"
 )
 
@@ -115,9 +115,7 @@ def apply_privacy_filters(conn: sqlite3.Connection, text: str) -> str:
     # just cards (Luhn still chance-matches some legitimate 13–19 digit IDs) without losing
     # secret/SSN redaction.
     if _policy_bool(policy.get("redact_cards", "1"), True):
-        cleaned = _CARD_CANDIDATE.sub(
-            lambda m: "[REDACTED_CARD]" if _luhn_ok(m.group(0)) else m.group(0), cleaned
-        )
+        cleaned = _CARD_CANDIDATE.sub(lambda m: "[REDACTED_CARD]" if _luhn_ok(m.group(0)) else m.group(0), cleaned)
     if _policy_bool(policy.get("redact_phones", "1"), True):
         cleaned = re.sub(_PHONE_PATTERN, "[REDACTED_PHONE]", cleaned)
     return cleaned

@@ -52,9 +52,7 @@ def cmd_capture(args: argparse.Namespace) -> None:
 
 def cmd_triage(_: argparse.Namespace) -> None:
     conn = get_connection()
-    rows = conn.execute(
-        "SELECT * FROM inbox_items WHERE status = 'new' ORDER BY created_at ASC"
-    ).fetchall()
+    rows = conn.execute("SELECT * FROM inbox_items WHERE status = 'new' ORDER BY created_at ASC").fetchall()
 
     if not rows:
         print("No new inbox items to triage.")

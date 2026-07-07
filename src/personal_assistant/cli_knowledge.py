@@ -61,10 +61,7 @@ def cmd_relationship(args: argparse.Namespace) -> None:
         for rel in recorded:
             src = rel["from_entity"]["canonical_name"]
             dst = rel["to_entity"]["canonical_name"]
-            print(
-                f"- #{rel['id']} {src} -[{rel['relation_type']}]-> {dst} "
-                f"confidence={rel['confidence']:.2f}"
-            )
+            print(f"- #{rel['id']} {src} -[{rel['relation_type']}]-> {dst} confidence={rel['confidence']:.2f}")
         return
 
     if action == "list":

@@ -25,8 +25,12 @@ class CliFlowTest(unittest.TestCase):
     def test_ci_release_readiness_uses_installed_command_path(self) -> None:
         workflow = Path(".github/workflows/ci.yml").read_text()
         release_job = workflow.split("  release-readiness:", 1)[1]
-        self.assertLess(release_job.index("Smoke installed myos command"), release_job.index("Build wheel artifact smoke"))
-        self.assertLess(release_job.index("Build wheel artifact smoke"), release_job.index("Run release readiness gate"))
+        self.assertLess(
+            release_job.index("Smoke installed myos command"), release_job.index("Build wheel artifact smoke")
+        )
+        self.assertLess(
+            release_job.index("Build wheel artifact smoke"), release_job.index("Run release readiness gate")
+        )
         self.assertIn("run: myos release-check --strict", release_job)
         self.assertNotIn("PYTHONPATH: src", release_job)
 
@@ -73,7 +77,17 @@ class CliFlowTest(unittest.TestCase):
         env = os.environ.copy()
         env["PYTHONPATH"] = str(Path.cwd() / "src")
         out = subprocess.run(
-            [sys.executable, "-m", "personal_assistant.cli", "router", "commands", "--safety", "approval_gated", "--limit", "10"],
+            [
+                sys.executable,
+                "-m",
+                "personal_assistant.cli",
+                "router",
+                "commands",
+                "--safety",
+                "approval_gated",
+                "--limit",
+                "10",
+            ],
             cwd=Path.cwd(),
             env=env,
             check=True,
@@ -257,7 +271,9 @@ class CliFlowTest(unittest.TestCase):
             inbox_count = conn.execute("SELECT COUNT(*) FROM inbox_items WHERE source='smart_do'").fetchone()[0]
             plan_count = conn.execute("SELECT COUNT(*) FROM plans").fetchone()[0]
             route_events = conn.execute("SELECT COUNT(*) FROM event_log WHERE event_type='smart_route'").fetchone()[0]
-            traces = conn.execute("SELECT COUNT(*) FROM execution_traces WHERE command_path='do' AND route_event_id IS NOT NULL").fetchone()[0]
+            traces = conn.execute(
+                "SELECT COUNT(*) FROM execution_traces WHERE command_path='do' AND route_event_id IS NOT NULL"
+            ).fetchone()[0]
             conn.close()
             self.assertEqual(inbox_count, 1)
             self.assertEqual(plan_count, 1)
@@ -276,12 +292,12 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("Autonomy eval:", autonomy_eval)
             self.assertIn("accuracy=100.00%", autonomy_eval)
             recommendation_help = run("autonomy", "recommendation-feedback", "--help")
-            self.assertIn("[label=daily_reduce_risk command=\"myos next-action\"]", recommendation_help)
+            self.assertIn('[label=daily_reduce_risk command="myos next-action"]', recommendation_help)
             self.assertIn("Printed label, e.g. daily_reduce_risk.", recommendation_help)
             self.assertIn("myos next-action or myos now", recommendation_help)
-            self.assertIn("--label review_approvals --command \"myos approve --list\"", recommendation_help)
-            self.assertIn("--label run_goal_cycle --command \"myos loop run-goal --goal 1\"", recommendation_help)
-            self.assertIn("--label review_goals --command \"myos goal list\"", recommendation_help)
+            self.assertIn('--label review_approvals --command "myos approve --list"', recommendation_help)
+            self.assertIn('--label run_goal_cycle --command "myos loop run-goal --goal 1"', recommendation_help)
+            self.assertIn('--label review_goals --command "myos goal list"', recommendation_help)
             recommendations_help = run("autonomy", "recommendations", "--help")
             self.assertIn("recent_score_30d", recommendations_help)
             self.assertIn("mixed_recent", recommendations_help)
@@ -291,7 +307,9 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("surface=goal_scheduler", recommendations_help)
             self.assertIn("active daily feedback visible", recommendations_help)
             conn = sqlite3.connect(db_path)
-            trace_id = conn.execute("SELECT id FROM execution_traces WHERE command_path='do' ORDER BY id DESC LIMIT 1").fetchone()[0]
+            trace_id = conn.execute(
+                "SELECT id FROM execution_traces WHERE command_path='do' ORDER BY id DESC LIMIT 1"
+            ).fetchone()[0]
             conn.close()
             feedback = run(
                 "autonomy",
@@ -443,9 +461,7 @@ class CliFlowTest(unittest.TestCase):
             )
             claude = bin_dir / "claude"
             claude.write_text(
-                "#!/usr/bin/env python3\n"
-                "import sys\n"
-                "print('claude-code reply: ' + sys.argv[-1].splitlines()[-1])\n",
+                "#!/usr/bin/env python3\nimport sys\nprint('claude-code reply: ' + sys.argv[-1].splitlines()[-1])\n",
                 encoding="utf-8",
             )
             os.chmod(agent, 0o755)
@@ -508,7 +524,11 @@ class CliFlowTest(unittest.TestCase):
             # act on (task id, status, pending approvals, cycles).
             status_json_out = subprocess.run(
                 [sys.executable, "-m", "personal_assistant.cli", "loop", "status", "--task", "1", "--json"],
-                cwd=Path.cwd(), env=env, check=True, capture_output=True, text=True,
+                cwd=Path.cwd(),
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
             ).stdout.strip()
             status_payload = json.loads(status_json_out)
             self.assertEqual(status_payload["schema"], "myos.loop.status.v1")
@@ -531,7 +551,11 @@ class CliFlowTest(unittest.TestCase):
             # consumers can filter by task and consume parsed metadata.
             ledger_json_out = subprocess.run(
                 [sys.executable, "-m", "personal_assistant.cli", "loop", "ledger", "--task", "1", "--json"],
-                cwd=Path.cwd(), env=env, check=True, capture_output=True, text=True,
+                cwd=Path.cwd(),
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
             ).stdout.strip()
             ledger_payload = json.loads(ledger_json_out)
             self.assertEqual(ledger_payload["schema"], "myos.loop.ledger.v1")
@@ -556,7 +580,9 @@ class CliFlowTest(unittest.TestCase):
                   AND status='proposed' AND requires_approval=1
                 """
             ).fetchone()[0]
-            cycles = json.loads(conn.execute("SELECT constraints_json FROM agent_tasks WHERE id=1").fetchone()[0])["cycles"]
+            cycles = json.loads(conn.execute("SELECT constraints_json FROM agent_tasks WHERE id=1").fetchone()[0])[
+                "cycles"
+            ]
             conn.close()
             self.assertGreaterEqual(trace_link, 2)
             self.assertEqual(pending_external, 1)
@@ -670,8 +696,12 @@ class CliFlowTest(unittest.TestCase):
             )
             self.assertIn("Router feedback recorded:", feedback)
             conn = sqlite3.connect(db_path)
-            row = conn.execute("SELECT expected_intent, actual_intent, note_hash, note_length, text_hash FROM route_feedback").fetchone()
-            override = conn.execute("SELECT expected_intent FROM route_overrides WHERE text_hash=?", (row[4],)).fetchone()
+            row = conn.execute(
+                "SELECT expected_intent, actual_intent, note_hash, note_length, text_hash FROM route_feedback"
+            ).fetchone()
+            override = conn.execute(
+                "SELECT expected_intent FROM route_overrides WHERE text_hash=?", (row[4],)
+            ).fetchone()
             conn.close()
             self.assertEqual(row[0], "daily_brief")
             self.assertEqual(row[1], "capture")
@@ -1274,9 +1304,15 @@ class CliFlowTest(unittest.TestCase):
             started = run("factory", "start", "--intent", "1").stdout
             self.assertIn("Autonomy: decision=needs_approval", started)
             self.assertIn("safety=approval_gated", started)
-            self.assertIn("Recommendation: Review the generated packet before approving execution -> myos factory review --id <run_id>", started)
+            self.assertIn(
+                "Recommendation: Review the generated packet before approving execution -> myos factory review --id <run_id>",
+                started,
+            )
             self.assertIn("Factory run #1 for intent #1 status=awaiting_approval", started)
-            self.assertIn("Recommendation: Review the generated packet before approving execution -> myos factory review --id 1", started)
+            self.assertIn(
+                "Recommendation: Review the generated packet before approving execution -> myos factory review --id 1",
+                started,
+            )
             self.assertIn("review_packet=#", started)
             self.assertIn("stopped_before_execution=True", started)
 
@@ -1320,7 +1356,9 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("Review gate: factory_execution_approval_required", review)
             self.assertIn("Safer next: myos approve --list; myos execution-receipt list", review)
             self.assertIn("Execution remains approval-gated.", review)
-            learn = run("factory", "learn", "--id", "2", "--outcome", "partial", "--notes", "Reviewer caught missing validation").stdout
+            learn = run(
+                "factory", "learn", "--id", "2", "--outcome", "partial", "--notes", "Reviewer caught missing validation"
+            ).stdout
             self.assertIn("Factory learning #1 recorded for run #2: partial", learn)
             retro = run("factory", "retrospective", "--id", "2").stdout
             self.assertIn("Factory retrospective #2: outcome=partial", retro)
@@ -1365,9 +1403,13 @@ class CliFlowTest(unittest.TestCase):
             repo = Path(tmp) / "repo"
             repo.mkdir()
             subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "main"], check=True, capture_output=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@example.com"], check=True, capture_output=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "user.email", "t@example.com"], check=True, capture_output=True
+            )
             subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True, capture_output=True)
-            subprocess.run(["git", "-C", str(repo), "config", "commit.gpgsign", "false"], check=True, capture_output=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "commit.gpgsign", "false"], check=True, capture_output=True
+            )
             Path(repo, "README.md").write_text("seed\n")
             subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
             subprocess.run(["git", "-C", str(repo), "commit", "-qm", "init"], check=True, capture_output=True)
@@ -1438,7 +1480,11 @@ class CliFlowTest(unittest.TestCase):
             # factory cycle without regex-parsing the human-readable output.
             factory_json_out = subprocess.run(
                 [sys.executable, "-m", "personal_assistant.cli", "factory", "status", "--id", "1", "--json"],
-                cwd=Path.cwd(), env=env, check=True, capture_output=True, text=True,
+                cwd=Path.cwd(),
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
             ).stdout.strip()
             factory_payload = json.loads(factory_json_out)
             self.assertEqual(factory_payload["schema"], "myos.factory.status.v1")
@@ -1447,9 +1493,7 @@ class CliFlowTest(unittest.TestCase):
             stage_names = {stage["stage_name"] for stage in factory_payload["stages"]}
             self.assertIn("execution", stage_names)
             self.assertTrue(factory_payload["executor_artifacts"])
-            zero_artifact = next(
-                a for a in factory_payload["executor_artifacts"] if a.get("type") == "zero_executor"
-            )
+            zero_artifact = next(a for a in factory_payload["executor_artifacts"] if a.get("type") == "zero_executor")
             self.assertEqual(zero_artifact.get("status"), "success")
             self.assertEqual(zero_artifact.get("exit_code"), 0)
             self.assertIn("changed_files=cli-zero.txt", status)
@@ -1481,7 +1525,11 @@ class CliFlowTest(unittest.TestCase):
             # exact set of pending approvals the human reviewer would.
             approve_json_out = subprocess.run(
                 [sys.executable, "-m", "personal_assistant.cli", "approve", "--list", "--json"],
-                cwd=Path.cwd(), env=env, check=True, capture_output=True, text=True,
+                cwd=Path.cwd(),
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
             ).stdout.strip()
             approve_payload = json.loads(approve_json_out)
             self.assertEqual(approve_payload["schema"], "myos.approve.list.v1")
@@ -1517,7 +1565,11 @@ class CliFlowTest(unittest.TestCase):
             # verification block downstream automation and audit consumers need.
             list_json_out = subprocess.run(
                 [sys.executable, "-m", "personal_assistant.cli", "execution-receipt", "list", "--json"],
-                cwd=Path.cwd(), env=env, check=True, capture_output=True, text=True,
+                cwd=Path.cwd(),
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
             ).stdout.strip()
             list_payload = json.loads(list_json_out)
             self.assertEqual(list_payload["schema"], "myos.execution_receipt.list.v1")
@@ -1533,7 +1585,11 @@ class CliFlowTest(unittest.TestCase):
 
             show_json_out = subprocess.run(
                 [sys.executable, "-m", "personal_assistant.cli", "execution-receipt", "show", "--id", "1", "--json"],
-                cwd=Path.cwd(), env=env, check=True, capture_output=True, text=True,
+                cwd=Path.cwd(),
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
             ).stdout.strip()
             show_payload = json.loads(show_json_out)
             self.assertEqual(show_payload["schema"], "myos.execution_receipt.show.v1")
@@ -1586,7 +1642,9 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("role ok factory_reviewer", provider_row[1])
 
             run("intent", "create", "Update connector stakeholders", "--priority", "2")
-            denied = run("factory", "start", "--intent", "2", "--mode", "full_autonomous", "--pack", "connector_ops", check=False)
+            denied = run(
+                "factory", "start", "--intent", "2", "--mode", "full_autonomous", "--pack", "connector_ops", check=False
+            )
             self.assertNotEqual(denied.returncode, 0)
             self.assertIn("full_autonomous requires an explicit factory policy", denied.stdout)
             run("factory", "policy", "set", "--mode", "full_autonomous", "--scope-type", "intent", "--scope-id", "2")
@@ -1601,16 +1659,27 @@ class CliFlowTest(unittest.TestCase):
                 "--action-type",
                 "draft_external_update",
             )
-            full = run("factory", "start", "--intent", "2", "--mode", "full_autonomous", "--pack", "connector_ops").stdout
+            full = run(
+                "factory", "start", "--intent", "2", "--mode", "full_autonomous", "--pack", "connector_ops"
+            ).stdout
             self.assertIn("status=execution_completed", full)
             full_status = run("factory", "status", "--id", "2").stdout
             self.assertIn("execution_receipt#", full_status)
             self.assertIn("agent_action#", full_status)
 
-            learn = run("factory", "learn", "--id", "2", "--outcome", "failed", "--notes", "blocked connector update needed reviewer").stdout
+            learn = run(
+                "factory",
+                "learn",
+                "--id",
+                "2",
+                "--outcome",
+                "failed",
+                "--notes",
+                "blocked connector update needed reviewer",
+            ).stdout
             self.assertIn("Factory learning", learn)
             insights = run("factory", "insights", "--intent", "2").stdout
-            self.assertIn("outcomes={\"failed\": 1}", insights)
+            self.assertIn('outcomes={"failed": 1}', insights)
             self.assertIn("side_effects=", insights)
             self.assertIn("external_write", insights)
             self.assertIn("blocked connector update", insights)
@@ -1679,10 +1748,38 @@ class CliFlowTest(unittest.TestCase):
             )
             task_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
             payloads = [
-                {"connector": "jira", "operation": "comment", "target_ref": "PROJ-1", "draft": "Jira dry run", "rollback_note": "Remove Jira comment.", "dry_run": True},
-                {"connector": "github", "operation": "comment", "target_ref": "owner/repo#7", "draft": "GitHub dry run", "rollback_note": "Remove GitHub comment.", "dry_run": True},
-                {"connector": "confluence", "operation": "draft_note", "target_ref": "PAGE-1", "draft": "Confluence dry run", "rollback_note": "Remove Confluence draft.", "dry_run": True},
-                {"connector": "aha", "operation": "link_back", "target_ref": "FEAT-1", "draft": "Aha dry run", "rollback_note": "Remove Aha update.", "dry_run": True},
+                {
+                    "connector": "jira",
+                    "operation": "comment",
+                    "target_ref": "PROJ-1",
+                    "draft": "Jira dry run",
+                    "rollback_note": "Remove Jira comment.",
+                    "dry_run": True,
+                },
+                {
+                    "connector": "github",
+                    "operation": "comment",
+                    "target_ref": "owner/repo#7",
+                    "draft": "GitHub dry run",
+                    "rollback_note": "Remove GitHub comment.",
+                    "dry_run": True,
+                },
+                {
+                    "connector": "confluence",
+                    "operation": "draft_note",
+                    "target_ref": "PAGE-1",
+                    "draft": "Confluence dry run",
+                    "rollback_note": "Remove Confluence draft.",
+                    "dry_run": True,
+                },
+                {
+                    "connector": "aha",
+                    "operation": "link_back",
+                    "target_ref": "FEAT-1",
+                    "draft": "Aha dry run",
+                    "rollback_note": "Remove Aha update.",
+                    "dry_run": True,
+                },
                 {"connector": "jira", "operation": "comment", "draft": "Missing target", "rollback_note": "No-op."},
             ]
             for index, payload in enumerate(payloads, start=1):
@@ -1720,13 +1817,21 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("Outbox: #1 provider=connector:jira target=jira:PROJ-1 status=drafted", receipt)
 
             conn = sqlite3.connect(db_path)
-            outbox = dict(conn.execute("SELECT target_type, COUNT(*) FROM action_outbox GROUP BY target_type").fetchall())
-            receipt_statuses = dict(conn.execute("SELECT final_status, COUNT(*) FROM action_execution_receipts GROUP BY final_status").fetchall())
+            outbox = dict(
+                conn.execute("SELECT target_type, COUNT(*) FROM action_outbox GROUP BY target_type").fetchall()
+            )
+            receipt_statuses = dict(
+                conn.execute(
+                    "SELECT final_status, COUNT(*) FROM action_execution_receipts GROUP BY final_status"
+                ).fetchall()
+            )
             follow_up = conn.execute(
                 "SELECT follow_up_required, follow_up_inbox_id FROM action_execution_receipts WHERE agent_action_id = 5"
             ).fetchone()
             receipt_request = json.loads(
-                conn.execute("SELECT request_json FROM action_execution_receipts WHERE agent_action_id = 1").fetchone()[0]
+                conn.execute("SELECT request_json FROM action_execution_receipts WHERE agent_action_id = 1").fetchone()[
+                    0
+                ]
             )
             conn.close()
             self.assertEqual(outbox, {"aha": 1, "confluence": 1, "github": 1, "jira": 1})
@@ -1761,7 +1866,9 @@ class CliFlowTest(unittest.TestCase):
                 "--action-type",
                 "draft_external_update",
             )
-            factory_out = run("factory", "start", "--intent", "1", "--mode", "full_autonomous", "--pack", "connector_ops").stdout
+            factory_out = run(
+                "factory", "start", "--intent", "1", "--mode", "full_autonomous", "--pack", "connector_ops"
+            ).stdout
             self.assertIn("status=execution_completed", factory_out)
             conn = sqlite3.connect(db_path)
             target = conn.execute(
@@ -1832,9 +1939,7 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("approval_gate: True", out)
 
             conn = sqlite3.connect(db_path)
-            row = conn.execute(
-                "SELECT agent_name, provider, status, summary FROM agent_runs WHERE id = 1"
-            ).fetchone()
+            row = conn.execute("SELECT agent_name, provider, status, summary FROM agent_runs WHERE id = 1").fetchone()
             conn.close()
             self.assertEqual(row[0], "reviewer")
             self.assertEqual(row[1], "local")
@@ -1879,9 +1984,9 @@ class CliFlowTest(unittest.TestCase):
             run("triage")
             next_action = run("next-action")
             self.assertIn("Next action recommendation", next_action)
-            self.assertIn("[label=daily_focus_block command=\"myos next-action\"]", next_action)
+            self.assertIn('[label=daily_focus_block command="myos next-action"]', next_action)
             now = run("now")
-            self.assertIn("[label=daily_focus_block command=\"myos now\"]", now)
+            self.assertIn('[label=daily_focus_block command="myos now"]', now)
             conn = sqlite3.connect(db_path)
             conn.execute(
                 """
@@ -1898,7 +2003,7 @@ class CliFlowTest(unittest.TestCase):
             conn.commit()
             conn.close()
             default_meeting = run("next-action", "--meeting-hours", "7")
-            self.assertIn("[label=daily_nudge_owner command=\"myos next-action\"]", default_meeting)
+            self.assertIn('[label=daily_nudge_owner command="myos next-action"]', default_meeting)
             self.assertNotIn("ranking context:", default_meeting)
             feedback_ack = run(
                 "autonomy",
@@ -1914,7 +2019,9 @@ class CliFlowTest(unittest.TestCase):
             )
             self.assertIn("Recommendation feedback recorded:", feedback_ack)
             self.assertIn("useful=True", feedback_ack)
-            self.assertIn("Privacy: note text was hashed; raw recommendation feedback text was not stored.", feedback_ack)
+            self.assertIn(
+                "Privacy: note text was hashed; raw recommendation feedback text was not stored.", feedback_ack
+            )
             self.assertNotIn("Risk reduction was the better daily recommendation.", feedback_ack)
             for _ in range(2):
                 run(
@@ -1930,14 +2037,14 @@ class CliFlowTest(unittest.TestCase):
                     "Risk reduction was the better daily recommendation.",
                 )
             tuned_meeting = run("next-action", "--meeting-hours", "7")
-            self.assertIn("[label=daily_reduce_risk command=\"myos next-action\"]", tuned_meeting)
+            self.assertIn('[label=daily_reduce_risk command="myos next-action"]', tuned_meeting)
             self.assertIn(
                 "ranking context: feedback adjusted selection from daily_nudge_owner to daily_reduce_risk (selected_score=+3 baseline_score=+0)",
                 tuned_meeting,
             )
             self.assertNotIn("Risk reduction was the better daily recommendation.", tuned_meeting)
             now_after_next_action_feedback = run("now", "--meeting-hours", "7")
-            self.assertIn("[label=daily_nudge_owner command=\"myos now\"]", now_after_next_action_feedback)
+            self.assertIn('[label=daily_nudge_owner command="myos now"]', now_after_next_action_feedback)
             self.assertNotIn("ranking context:", now_after_next_action_feedback)
             for _ in range(3):
                 run(
@@ -1953,7 +2060,7 @@ class CliFlowTest(unittest.TestCase):
                     "Now should prefer the risk recommendation independently.",
                 )
             tuned_now = run("now", "--meeting-hours", "7")
-            self.assertIn("[label=daily_reduce_risk command=\"myos now\"]", tuned_now)
+            self.assertIn('[label=daily_reduce_risk command="myos now"]', tuned_now)
             self.assertIn(
                 "ranking context: feedback adjusted selection from daily_nudge_owner to daily_reduce_risk (selected_score=+3 baseline_score=+0)",
                 tuned_now,
@@ -1978,10 +2085,10 @@ class CliFlowTest(unittest.TestCase):
             conn.commit()
             conn.close()
             decayed_meeting = run("next-action", "--meeting-hours", "7")
-            self.assertIn("[label=daily_nudge_owner command=\"myos next-action\"]", decayed_meeting)
+            self.assertIn('[label=daily_nudge_owner command="myos next-action"]', decayed_meeting)
             self.assertNotIn("ranking context:", decayed_meeting)
             decayed_now = run("now", "--meeting-hours", "7")
-            self.assertIn("[label=daily_nudge_owner command=\"myos now\"]", decayed_now)
+            self.assertIn('[label=daily_nudge_owner command="myos now"]', decayed_now)
             self.assertNotIn("ranking context:", decayed_now)
             decayed_summary = run("autonomy", "recommendations", "--limit", "5")
             self.assertIn("score=3 useful=3 not_useful=0 recent_score_30d=0", decayed_summary)
@@ -1999,7 +2106,7 @@ class CliFlowTest(unittest.TestCase):
                     "Owner nudges were not useful for this daily surface.",
                 )
             negative_signal = run("next-action", "--meeting-hours", "7")
-            self.assertIn("[label=daily_reduce_risk command=\"myos next-action\"]", negative_signal)
+            self.assertIn('[label=daily_reduce_risk command="myos next-action"]', negative_signal)
             self.assertIn(
                 "ranking context: feedback adjusted selection from daily_nudge_owner to daily_reduce_risk (selected_score=+0 baseline_score=-3)",
                 negative_signal,
@@ -2448,7 +2555,15 @@ class CliFlowTest(unittest.TestCase):
             env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
             output_html = Path(tmp) / "dashboard.html"
             out = subprocess.run(
-                [sys.executable, "-m", "personal_assistant.cli", "dashboard", "--once", "--output-html", str(output_html)],
+                [
+                    sys.executable,
+                    "-m",
+                    "personal_assistant.cli",
+                    "dashboard",
+                    "--once",
+                    "--output-html",
+                    str(output_html),
+                ],
                 cwd=Path.cwd(),
                 env=env,
                 check=True,
@@ -2615,8 +2730,8 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("Snapshot written", out)
             self.assertTrue(output_json.exists())
             text = output_json.read_text()
-            self.assertIn("\"counts\"", text)
-            self.assertIn("\"connectors\"", text)
+            self.assertIn('"counts"', text)
+            self.assertIn('"connectors"', text)
 
     def test_orchestrate_and_workflow_runs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2625,7 +2740,16 @@ class CliFlowTest(unittest.TestCase):
             env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
 
             out1 = subprocess.run(
-                [sys.executable, "-m", "personal_assistant.cli", "orchestrate", "--workflow", "daily", "--connector", "all"],
+                [
+                    sys.executable,
+                    "-m",
+                    "personal_assistant.cli",
+                    "orchestrate",
+                    "--workflow",
+                    "daily",
+                    "--connector",
+                    "all",
+                ],
                 cwd=Path.cwd(),
                 env=env,
                 check=True,
@@ -2693,9 +2817,7 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("Policy updated", run("policy", "--set", "redact_emails=1"))
             run("transcribe", "/tmp/fake.m4a", "--text", "email me at test@example.com and call +1 415-555-1212")
             conn = sqlite3.connect(db_path)
-            row = conn.execute(
-                "SELECT transcript_text FROM media_assets ORDER BY id DESC LIMIT 1"
-            ).fetchone()
+            row = conn.execute("SELECT transcript_text FROM media_assets ORDER BY id DESC LIMIT 1").fetchone()
             conn.close()
             assert row is not None
             self.assertIn("[REDACTED_EMAIL]", row[0])
@@ -2709,7 +2831,16 @@ class CliFlowTest(unittest.TestCase):
             db_path = Path(tmp) / "alt_assistant.db"
             cfg.write_text(f"MYOS_DB_PATH={db_path}\n")
             out = subprocess.run(
-                [sys.executable, "-m", "personal_assistant.cli", "run-day", "--env-file", str(cfg), "--connector", "all"],
+                [
+                    sys.executable,
+                    "-m",
+                    "personal_assistant.cli",
+                    "run-day",
+                    "--env-file",
+                    str(cfg),
+                    "--connector",
+                    "all",
+                ],
                 cwd=Path.cwd(),
                 env=env,
                 check=True,
@@ -2904,10 +3035,7 @@ class CliFlowTest(unittest.TestCase):
             digest_dir = Path(tmp) / "digests"
             notify_path = Path(tmp) / "notify.json"
             notify_script = Path(tmp) / "notify.py"
-            notify_script.write_text(
-                "import sys\n"
-                f"open({str(notify_path)!r}, 'w').write(sys.stdin.read())\n"
-            )
+            notify_script.write_text(f"import sys\nopen({str(notify_path)!r}, 'w').write(sys.stdin.read())\n")
             env["MYOS_NOTIFY_COMMAND"] = f"{sys.executable} {notify_script}"
 
             def run(*args: str) -> str:
@@ -2939,7 +3067,11 @@ class CliFlowTest(unittest.TestCase):
             # process needs (open agent tasks, approvals pending).
             autopilot_json_out = subprocess.run(
                 [sys.executable, "-m", "personal_assistant.cli", "autopilot-status", "--json"],
-                cwd=Path.cwd(), env=env, check=True, capture_output=True, text=True,
+                cwd=Path.cwd(),
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
             ).stdout.strip()
             autopilot_payload = json.loads(autopilot_json_out)
             self.assertEqual(autopilot_payload["schema"], "myos.autopilot_status.v1")
@@ -3325,9 +3457,7 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("watched_files=1", out)
             conn = sqlite3.connect(db_path)
             work_count = conn.execute("SELECT COUNT(*) FROM work_items").fetchone()[0]
-            processing_count = conn.execute(
-                "SELECT COUNT(*) FROM file_ingests WHERE status='processing'"
-            ).fetchone()[0]
+            processing_count = conn.execute("SELECT COUNT(*) FROM file_ingests WHERE status='processing'").fetchone()[0]
             conn.close()
             self.assertEqual(work_count, 3)
             self.assertEqual(processing_count, 0)
@@ -3442,14 +3572,21 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("Pending approvals remain gated", run_goal_help.stdout)
             no_goals = run("loop", "goals")
             self.assertIn("No eligible assistant goals are due.", no_goals.stdout)
-            self.assertIn("Recommendation: review assistant goals -> myos goal list [label=review_goals]", no_goals.stdout)
+            self.assertIn(
+                "Recommendation: review assistant goals -> myos goal list [label=review_goals]", no_goals.stdout
+            )
             no_goal_cycle = run("loop", "run-goal")
             self.assertIn("Goal scheduler: action=noop", no_goal_cycle.stdout)
-            self.assertIn("Recommendation: review assistant goals -> myos goal list [label=review_goals]", no_goal_cycle.stdout)
+            self.assertIn(
+                "Recommendation: review assistant goals -> myos goal list [label=review_goals]", no_goal_cycle.stdout
+            )
             no_goal_autopilot = run("autopilot", "--once", "--loop-goal")
             self.assertIn("Autopilot goal wrapper complete", no_goal_autopilot.stdout)
             self.assertIn("Goal scheduler: action=noop", no_goal_autopilot.stdout)
-            self.assertIn("Recommendation: review assistant goals -> myos goal list [label=review_goals]", no_goal_autopilot.stdout)
+            self.assertIn(
+                "Recommendation: review assistant goals -> myos goal list [label=review_goals]",
+                no_goal_autopilot.stdout,
+            )
             self.assertIn("Ledger: myos loop ledger --limit 1", no_goal_autopilot.stdout)
 
             added = run(
@@ -3490,7 +3627,9 @@ class CliFlowTest(unittest.TestCase):
             skipped = conn.execute(
                 "SELECT COUNT(*) FROM autonomy_run_ledger WHERE decision_type='goal_skipped'"
             ).fetchone()[0]
-            event_count = conn.execute("SELECT COUNT(*) FROM event_log WHERE event_type='autopilot_loop_goal'").fetchone()[0]
+            event_count = conn.execute(
+                "SELECT COUNT(*) FROM event_log WHERE event_type='autopilot_loop_goal'"
+            ).fetchone()[0]
             conn.close()
             self.assertEqual(pending, 2)
             self.assertEqual(autopilot_runs, 3)

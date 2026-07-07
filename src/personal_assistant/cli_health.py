@@ -197,19 +197,14 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                 "external": int(counts["external_count"]),
                 "events": int(counts["event_count"]),
             },
-            "core_checks": [
-                {"name": name, "ok": bool(ok), "detail": detail}
-                for name, ok, detail in core_checks
-            ],
+            "core_checks": [{"name": name, "ok": bool(ok), "detail": detail} for name, ok, detail in core_checks],
             "optional_checks": [
-                {"name": name, "ok": bool(ok), "detail": detail}
-                for name, ok, detail in optional_checks
+                {"name": name, "ok": bool(ok), "detail": detail} for name, ok, detail in optional_checks
             ],
             "autonomy_level": autonomy_level,
             "active_backend": active_backend,
             "backends": [
-                {"name": b["name"], "available": bool(b["available"]), "detail": b["detail"]}
-                for b in backends
+                {"name": b["name"], "available": bool(b["available"]), "detail": b["detail"]} for b in backends
             ],
             "connectors": [
                 {
@@ -251,10 +246,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     print("Connector status:")
     for row in connector_rows:
         err = f" err={row['last_error']}" if row["last_error"] else ""
-        print(
-            f"- {row['connector']}: status={row['last_status']} "
-            f"last_success={row['last_success_at']}{err}"
-        )
+        print(f"- {row['connector']}: status={row['last_status']} last_success={row['last_success_at']}{err}")
     if args.strict and not core_ok:
         print("Doctor strict: core checks failed.")
         raise SystemExit(1)
@@ -294,7 +286,9 @@ def cmd_sanity(args: argparse.Namespace) -> None:
 
     report_dir = Path(args.report_dir) if args.report_dir else Path(__file__).resolve().parents[2] / "data" / "reports"
     latest_reports = sorted(report_dir.glob("daily-brief-*.md"), reverse=True)[:1] if report_dir.exists() else []
-    checks.append(("daily_report", len(latest_reports) > 0, f"latest={latest_reports[0].name if latest_reports else 'none'}"))
+    checks.append(
+        ("daily_report", len(latest_reports) > 0, f"latest={latest_reports[0].name if latest_reports else 'none'}")
+    )
 
     all_pass = True
     print("Sanity check:")
@@ -394,17 +388,10 @@ def cmd_uat(args: argparse.Namespace) -> None:
     print(f"UAT quality snapshot ({args.days}d):")
     print(f"- throughput: work_items={total} backlog_new={backlog_new}")
     print(
-        f"- prioritization_focus: high_risk_items={hi_risk}/{total} "
-        f"({risk_focus:.1f}%) threshold={args.risk_threshold}"
+        f"- prioritization_focus: high_risk_items={hi_risk}/{total} ({risk_focus:.1f}%) threshold={args.risk_threshold}"
     )
-    print(
-        f"- commitment_reliability: on_time={on_time}/{resolved} "
-        f"({acceptance_rate:.1f}%)"
-    )
-    print(
-        f"- intervention_signal: interventions={interventions}/{activity} "
-        f"({intervention_rate:.1f}%)"
-    )
+    print(f"- commitment_reliability: on_time={on_time}/{resolved} ({acceptance_rate:.1f}%)")
+    print(f"- intervention_signal: interventions={interventions}/{activity} ({intervention_rate:.1f}%)")
     if backlog_new > args.backlog_warn:
         print("- ALERT: inbox backlog too high; run `myos triage`.")
     if acceptance_rate < args.acceptance_warn and resolved >= args.min_sample:
@@ -625,7 +612,8 @@ def _release_scan_files(root: Path) -> list[Path]:
             files.append(path)
         elif path.exists():
             files.extend(
-                p for p in path.rglob("*")
+                p
+                for p in path.rglob("*")
                 if p.is_file()
                 and "__pycache__" not in p.parts
                 and not any(part.endswith(".egg-info") for part in p.parts)
@@ -703,6 +691,7 @@ def _packaging_entrypoint_check(root: Path) -> tuple[bool, str]:
         return False, "personal_assistant.cli not importable"
     # Lazy import to avoid a circular import (`cli.py` imports `cli_health`).
     from . import cli as _cli
+
     if not callable(getattr(_cli, "main", None)):
         return False, "personal_assistant.cli:main not callable"
     return True, "myos -> personal_assistant.cli:main"
@@ -743,7 +732,9 @@ def _factory_release_smoke(conn: sqlite3.Connection) -> tuple[bool, str]:
             context="Local release-check smoke test.",
             success_criteria="Safe local action executes with receipt.",
         )
-        factory.set_policy(smoke_conn, allowed_mode="semi_autonomous", scope_type="intent", scope_id=str(semi_intent_id))
+        factory.set_policy(
+            smoke_conn, allowed_mode="semi_autonomous", scope_type="intent", scope_id=str(semi_intent_id)
+        )
         semi = factory.start_review_first_run(smoke_conn, intent_id=semi_intent_id, mode="semi_autonomous")
         receipt_count = smoke_conn.execute(
             """
@@ -774,7 +765,9 @@ def _factory_release_smoke(conn: sqlite3.Connection) -> tuple[bool, str]:
             summary="confluence page: Connector smoke page",
             confidence=0.8,
         )
-        factory.set_policy(smoke_conn, allowed_mode="full_autonomous", scope_type="intent", scope_id=str(connector_intent_id))
+        factory.set_policy(
+            smoke_conn, allowed_mode="full_autonomous", scope_type="intent", scope_id=str(connector_intent_id)
+        )
         factory.set_policy(
             smoke_conn,
             allowed_mode="full_autonomous",
@@ -816,6 +809,7 @@ def _factory_release_smoke(conn: sqlite3.Connection) -> tuple[bool, str]:
 def _top_level_parser_commands() -> list[str]:
     # Lazy import to avoid a circular import (`cli.py` imports `cli_health`).
     from .cli import build_parser
+
     parser = build_parser()
     subparser_action = next(action for action in parser._actions if getattr(action, "dest", "") == "command")
     return sorted(str(command) for command in subparser_action.choices)
@@ -823,11 +817,7 @@ def _top_level_parser_commands() -> list[str]:
 
 def _command_contract_check() -> tuple[bool, str]:
     report = command_registry.command_contract_report(_top_level_parser_commands())
-    issues = {
-        name: values
-        for name, values in report["issues"].items()
-        if values
-    }
+    issues = {name: values for name, values in report["issues"].items() if values}
     if issues:
         first_name, first_values = next(iter(issues.items()))
         return False, f"{first_name}={','.join(first_values[:5])}"
@@ -857,7 +847,11 @@ def cmd_release_check(args: argparse.Namespace) -> None:
         ]
         dependency_ok = "Apache-2.0" in (root / "pyproject.toml").read_text(errors="ignore")
         checks = [
-            ("schema", bool(schema["ok"]), f"current={schema['current_version']} expected={schema['expected_version']}"),
+            (
+                "schema",
+                bool(schema["ok"]),
+                f"current={schema['current_version']} expected={schema['expected_version']}",
+            ),
             ("dependency_license", dependency_ok, "Apache-2.0 metadata"),
             ("required_files", all(path.exists() for path in required_files), "docs, changelog, license, workflows"),
             ("package_entrypoint", packaging_ok, packaging_detail),
@@ -872,10 +866,7 @@ def cmd_release_check(args: argparse.Namespace) -> None:
                 "schema": "myos.release_check.v1",
                 "ok": ok,
                 "strict": bool(args.strict),
-                "checks": [
-                    {"name": name, "ok": bool(passed), "detail": detail}
-                    for name, passed, detail in checks
-                ],
+                "checks": [{"name": name, "ok": bool(passed), "detail": detail} for name, passed, detail in checks],
             }
             if args.verbose:
                 payload["hygiene_findings"] = list(hygiene[:20])

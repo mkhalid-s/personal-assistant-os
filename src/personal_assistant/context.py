@@ -43,9 +43,21 @@ _KIND_IMPORTANCE = {
 
 # Cues that a user utterance expresses a durable preference about how MYOS should behave.
 _PREFERENCE_CUES = (
-    "i prefer", "i'd prefer", "i like", "i don't like", "i dislike", "i hate",
-    "always ", "never ", "from now on", "please always", "please never",
-    "don't ask", "stop asking", "remember that", "going forward",
+    "i prefer",
+    "i'd prefer",
+    "i like",
+    "i don't like",
+    "i dislike",
+    "i hate",
+    "always ",
+    "never ",
+    "from now on",
+    "please always",
+    "please never",
+    "don't ask",
+    "stop asking",
+    "remember that",
+    "going forward",
 )
 
 
@@ -235,9 +247,7 @@ def _derive_comention_edges(conn, names: list[str]) -> int:
                 (a, b),
             ).fetchone()
             if existing:
-                conn.execute(
-                    "UPDATE knowledge_edges SET weight = weight + 1.0 WHERE id = ?", (existing["id"],)
-                )
+                conn.execute("UPDATE knowledge_edges SET weight = weight + 1.0 WHERE id = ?", (existing["id"],))
             else:
                 conn.execute(
                     "INSERT INTO knowledge_edges (from_node_id, to_node_id, relation, weight, source) "
@@ -376,9 +386,7 @@ def propose_suggestion(
     # Dedup across ALL statuses, not just open ones (review L2): once the user has
     # decided a suggestion (e.g. dismissed it), re-proposing the same title every reflect
     # cycle would re-nag them. A decided title stays suppressed.
-    dup = conn.execute(
-        "SELECT id FROM context_suggestions WHERE title = ? LIMIT 1", (title[:500],)
-    ).fetchone()
+    dup = conn.execute("SELECT id FROM context_suggestions WHERE title = ? LIMIT 1", (title[:500],)).fetchone()
     if dup:
         return None
     conn.execute(
@@ -427,15 +435,22 @@ def decide_suggestion(conn, suggestion_id: int, decision: str, *, feedback: str 
         (decision, feedback[:2000], suggestion_id),
     )
     _insert_observation(
-        conn, None, "feedback", None, f"User {decision} suggestion: {row['title']}"
-        + (f" — {feedback}" if feedback else "")
+        conn,
+        None,
+        "feedback",
+        None,
+        f"User {decision} suggestion: {row['title']}" + (f" — {feedback}" if feedback else ""),
     )
-    append_event(conn, f"suggestion_{decision}", "context_suggestion", suggestion_id, json.dumps({"feedback": feedback[:200]}))
+    append_event(
+        conn, f"suggestion_{decision}", "context_suggestion", suggestion_id, json.dumps({"feedback": feedback[:200]})
+    )
     conn.commit()
     return {"id": suggestion_id, "status": decision}
 
 
-def scored_retrieve(conn, query: str, *, limit: int = 5, half_life_days: float = 14.0, candidates: int = 400) -> list[dict]:
+def scored_retrieve(
+    conn, query: str, *, limit: int = 5, half_life_days: float = 14.0, candidates: int = 400
+) -> list[dict]:
     """Rank observations by the Generative-Agents memory score:
     ``relevance + recency + importance`` (each in [0,1]).
 
@@ -552,6 +567,7 @@ def relationships(conn, *, limit: int = 20) -> list[dict]:
 
 def summary(conn) -> dict:
     """One-glance health of the loop for `myos context`."""
+
     def _count(sql, params=()):
         return int(conn.execute(sql, params).fetchone()[0])
 

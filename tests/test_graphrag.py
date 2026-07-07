@@ -42,8 +42,7 @@ class GraphRAGDesignTest(unittest.TestCase):
             self.assertIn("direct hybrid retrieval", hits[0]["reason"])
 
             tables = {
-                row["name"]
-                for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+                row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
             }
             self.assertIn("knowledge_nodes", tables)
             self.assertIn("knowledge_edges", tables)
@@ -252,8 +251,7 @@ class GraphRAGDesignTest(unittest.TestCase):
             self.assertIn("multi-hop graph expansion", target["reason"])
             self.assertTrue(
                 any(
-                    "multi-hop graph expansion" in hit["reason"]
-                    and f"work_item#{source_id}" in hit["graph_path"]
+                    "multi-hop graph expansion" in hit["reason"] and f"work_item#{source_id}" in hit["graph_path"]
                     for hit in hits
                 )
             )
@@ -265,7 +263,9 @@ class GraphRAGDesignTest(unittest.TestCase):
                 source_id=middle_id,
             )
             conn.commit()
-            claim_hits = graphrag.retrieve(conn, "Gateway integration requires dependency review", limit=3, graph_hops=1)
+            claim_hits = graphrag.retrieve(
+                conn, "Gateway integration requires dependency review", limit=3, graph_hops=1
+            )
             self.assertTrue(any("claim-backed retrieval" in hit["reason"] for hit in claim_hits))
         finally:
             conn.close()

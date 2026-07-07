@@ -33,7 +33,9 @@ class ObservabilityTest(unittest.TestCase):
             self.assertEqual(rows[0]["intent"], "capture")
             self.assertNotIn("private request text", str(rows[0]))
 
-            conn.execute("UPDATE execution_traces SET started_at = '2000-01-01T00:00:00Z' WHERE correlation_id = ?", (corr,))
+            conn.execute(
+                "UPDATE execution_traces SET started_at = '2000-01-01T00:00:00Z' WHERE correlation_id = ?", (corr,)
+            )
             conn.commit()
             result = observability.cleanup_traces(conn, retention_days=1, max_rows=100)
             self.assertEqual(result["deleted"], 1)

@@ -160,8 +160,12 @@ class ApplyPatchGuardTest(unittest.TestCase):
     def setUp(self):
         self.conn, self.db_path = _fresh_db_conn()
         self.repo = tempfile.mkdtemp()
-        for args in (("init", "-q", "-b", "main"), ("config", "user.email", "t@t"),
-                     ("config", "user.name", "t"), ("config", "commit.gpgsign", "false")):
+        for args in (
+            ("init", "-q", "-b", "main"),
+            ("config", "user.email", "t@t"),
+            ("config", "user.name", "t"),
+            ("config", "commit.gpgsign", "false"),
+        ):
             subprocess.run(["git", "-C", self.repo, *args], capture_output=True, check=True)
         Path(self.repo, "seed.txt").write_text("seed\n")
         subprocess.run(["git", "-C", self.repo, "add", "-A"], capture_output=True, check=True)
@@ -230,7 +234,9 @@ class ClearBugTests(unittest.TestCase):
 
         from personal_assistant import cli
 
-        self.conn.execute("INSERT INTO workflow_queue (workflow_name, payload_json, status) VALUES ('daily','{}','queued')")
+        self.conn.execute(
+            "INSERT INTO workflow_queue (workflow_name, payload_json, status) VALUES ('daily','{}','queued')"
+        )
         self.conn.commit()
         calls = []
         orig = cli.cmd_orchestrate
@@ -248,8 +254,12 @@ class ClearBugTests(unittest.TestCase):
         from personal_assistant import cli
 
         # Two jobs: both returned by the worker's initial SELECT as 'queued'.
-        self.conn.execute("INSERT INTO workflow_queue (workflow_name, payload_json, status) VALUES ('daily','{}','queued')")
-        self.conn.execute("INSERT INTO workflow_queue (workflow_name, payload_json, status) VALUES ('daily','{}','queued')")
+        self.conn.execute(
+            "INSERT INTO workflow_queue (workflow_name, payload_json, status) VALUES ('daily','{}','queued')"
+        )
+        self.conn.execute(
+            "INSERT INTO workflow_queue (workflow_name, payload_json, status) VALUES ('daily','{}','queued')"
+        )
         self.conn.commit()
         ids = [int(r["id"]) for r in self.conn.execute("SELECT id FROM workflow_queue ORDER BY id ASC").fetchall()]
         second = ids[1]
@@ -260,9 +270,7 @@ class ClearBugTests(unittest.TestCase):
             # Simulate a *competing* worker claiming the second job mid-loop — after the
             # initial SELECT already handed it to us as 'queued'. Our claim must then lose.
             seen.append(1)
-            self.conn.execute(
-                "UPDATE workflow_queue SET status='running' WHERE id = ? AND status='queued'", (second,)
-            )
+            self.conn.execute("UPDATE workflow_queue SET status='running' WHERE id = ? AND status='queued'", (second,))
             self.conn.commit()
 
         cli.cmd_orchestrate = fake_orchestrate
@@ -272,7 +280,9 @@ class ClearBugTests(unittest.TestCase):
             cli.cmd_orchestrate = orig
         # Only the first job ran; the second's compare-and-claim UPDATE matched 0 rows.
         self.assertEqual(len(seen), 1)
-        statuses = {int(r["id"]): r["status"] for r in self.conn.execute("SELECT id, status FROM workflow_queue").fetchall()}
+        statuses = {
+            int(r["id"]): r["status"] for r in self.conn.execute("SELECT id, status FROM workflow_queue").fetchall()
+        }
         self.assertEqual(statuses[second], "running")  # held by the simulated competitor, never re-claimed by us
 
     def test_json_extract_prefers_contract_over_leading_decoy(self):  # A9: decoy BEFORE the contract

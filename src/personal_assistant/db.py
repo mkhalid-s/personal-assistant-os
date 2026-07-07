@@ -38,9 +38,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         """
     )
 
-    current = conn.execute(
-        "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations"
-    ).fetchone()["version"]
+    current = conn.execute("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations").fetchone()["version"]
 
     conn.executescript(
         """
@@ -262,9 +260,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             )
             """
         )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_commitment_outcome ON commitment_log(outcome, due_on)"
-        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_commitment_outcome ON commitment_log(outcome, due_on)")
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
             (5, "add_review_evidence_and_commitment_log"),
@@ -295,9 +291,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
                 conn.execute("UPDATE external_imports SET inbox_id = ? WHERE inbox_id = ?", (keep_id, dup_id))
                 conn.execute("DELETE FROM inbox_items WHERE id = ?", (dup_id,))
 
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_dedupe ON inbox_items(text, kind, source)"
-        )
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_dedupe ON inbox_items(text, kind, source)")
         work_dupes = conn.execute(
             """
             SELECT inbox_id, MIN(id) AS keep_id
@@ -329,9 +323,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
                 )
                 conn.execute("DELETE FROM work_items WHERE id = ?", (dup_id,))
 
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_inbox_unique ON work_items(inbox_id)"
-        )
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_inbox_unique ON work_items(inbox_id)")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS pipeline_locks (
@@ -375,9 +367,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_workflow_runs_name_time ON workflow_runs(workflow_name, started_at)"
         )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_workflow_steps_run ON workflow_steps(workflow_run_id, status)"
-        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_workflow_steps_run ON workflow_steps(workflow_run_id, status)")
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
             (7, "add_workflow_orchestration_tables"),
@@ -639,8 +629,12 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             )
             """
         )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_assistant_goals_status ON assistant_goals(status, last_evaluated_at)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_action_provider_executions_action ON action_provider_executions(agent_action_id, created_at)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_assistant_goals_status ON assistant_goals(status, last_evaluated_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_action_provider_executions_action ON action_provider_executions(agent_action_id, created_at)"
+        )
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
             (14, "add_goals_action_provider_self_review"),
@@ -823,9 +817,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         # B2 fix: only DROP/CREATE the trigger when text_chunks_fts actually exists —
         # otherwise we'd install a trigger that crashes on fire AND record version 19
         # while 17 was skipped, stranding 17 forever (search permanently disabled).
-        has_fts = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='text_chunks_fts'"
-        ).fetchone()
+        has_fts = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='text_chunks_fts'").fetchone()
         if has_fts:
             conn.execute("DROP TRIGGER IF EXISTS text_chunks_fts_au")
             conn.execute(
@@ -1592,9 +1584,7 @@ def _ensure_fts5(conn: sqlite3.Connection) -> None:
     so a DB first opened on a no-FTS5 build self-heals once opened on an FTS5 build
     (B2). No-op when FTS5 is unavailable."""
     try:
-        if conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='text_chunks_fts'"
-        ).fetchone():
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='text_chunks_fts'").fetchone():
             return
         conn.execute(
             "CREATE VIRTUAL TABLE text_chunks_fts USING fts5(content, source_type UNINDEXED, source_id UNINDEXED)"

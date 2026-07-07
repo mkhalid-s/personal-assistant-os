@@ -25,7 +25,10 @@ class ClaudeCodeBackend(AgentCliBackend):
         exe = argv[0] if argv else "claude"
         found = shutil.which(exe)
         if not found:
-            return False, f"Claude Code CLI executable not found on PATH: {exe} (install `claude` or set MYOS_AGENT_CMD_CLAUDE_CODE)"
+            return (
+                False,
+                f"Claude Code CLI executable not found on PATH: {exe} (install `claude` or set MYOS_AGENT_CMD_CLAUDE_CODE)",
+            )
         return True, found
 
     def executor_argv(self, task_text: str) -> list[str] | None:

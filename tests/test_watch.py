@@ -78,8 +78,8 @@ class RiskScanTest(unittest.TestCase):
         ).fetchall()
         for r in rows:
             self.assertEqual(r["action_type"], "draft_external_update")
-            self.assertEqual(r["requires_approval"], 1)   # gated
-            self.assertEqual(r["status"], "proposed")      # not executed / sent
+            self.assertEqual(r["requires_approval"], 1)  # gated
+            self.assertEqual(r["status"], "proposed")  # not executed / sent
         # nothing was sent to the outbox
         sent = self.conn.execute("SELECT COUNT(*) AS c FROM action_outbox").fetchone()["c"]
         self.assertEqual(sent, 0)
