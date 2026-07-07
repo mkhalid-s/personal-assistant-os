@@ -30,3 +30,30 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 personal_assistant = ["route_eval_fixtures.json"]
+
+# Ruff configuration. The CI static-checks job runs `ruff check` fatally
+# on a narrow set of safety-critical modules (command_registry, privacy,
+# execution, db, zero_executor) and advisorily on the rest of the tree.
+# Format-on-save is fine but is not enforced fatally yet — future slices
+# will format the tree progressively and flip the format check to fatal.
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+extend-exclude = ["build", "dist", ".venv", "data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = [
+    # Line-too-long is enforced by format; leave the check off so long docstrings
+    # and inline SQL do not trip it.
+    "E501",
+    # `sqlite3` uses `Row` objects heavily; `SIM118` prefers .keys() calls we do not want.
+    "SIM118",
+]
+
+[tool.mypy]
+python_version = "3.10"
+strict = false
+warn_unused_ignores = true
+warn_redundant_casts = true
+show_error_codes = true

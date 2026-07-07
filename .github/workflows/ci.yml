@@ -37,6 +37,63 @@ jobs:
           PYTHONPATH: src
         run: python -W error::ResourceWarning -m unittest discover -s tests
 
+  static-checks:
+    name: Static Checks (ruff + mypy + pip-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package and static tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install ruff==0.15.20 mypy==2.1.0 pip-audit==2.10.1
+
+      # Fatal: safety-critical modules must stay lint-clean.
+      - name: Ruff check (narrow safety-critical scope)
+        run: |
+          ruff check \
+            src/personal_assistant/command_registry.py \
+            src/personal_assistant/privacy.py \
+            src/personal_assistant/execution.py \
+            src/personal_assistant/db.py \
+            src/personal_assistant/zero_executor.py
+
+      # Fatal: command_registry is the single source of truth for the CLI
+      # command contract; it must stay strict-typed to catch registry drift.
+      - name: Mypy strict (command_registry)
+        run: mypy --strict src/personal_assistant/command_registry.py
+
+      # Advisory: the rest of the tree will be brought up to the fatal bar in
+      # follow-up slices. Kept green so contributors see the noise without
+      # blocking the build.
+      - name: Ruff check (whole tree, advisory)
+        continue-on-error: true
+        run: ruff check src/personal_assistant tests
+
+      - name: Ruff format --check (whole tree, advisory)
+        continue-on-error: true
+        run: ruff format --check src/personal_assistant tests
+
+      - name: Mypy strict (safety-critical modules, advisory)
+        continue-on-error: true
+        run: |
+          mypy --strict \
+            src/personal_assistant/privacy.py \
+            src/personal_assistant/execution.py \
+            src/personal_assistant/db.py \
+            src/personal_assistant/zero_executor.py
+
+      - name: pip-audit (advisory)
+        continue-on-error: true
+        run: pip-audit --strict --progress-spinner off
+
   hygiene:
     name: Public Hygiene
     runs-on: ubuntu-latest

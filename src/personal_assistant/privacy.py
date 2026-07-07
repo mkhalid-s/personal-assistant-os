@@ -173,9 +173,9 @@ def _cleanup_policy_retention(conn) -> dict[str, int]:
     conn.execute(
         "DELETE FROM provenance WHERE source_type='file' "
         "AND source_ref IN "
-        f"(SELECT file_path FROM media_assets WHERE created_at < datetime('now', ?)) "
+        "(SELECT file_path FROM media_assets WHERE created_at < datetime('now', ?)) "
         "AND source_ref NOT IN "
-        f"(SELECT file_path FROM media_assets WHERE created_at >= datetime('now', ?))",
+        "(SELECT file_path FROM media_assets WHERE created_at >= datetime('now', ?))",
         (media_cutoff, media_cutoff),
     )
     media_deleted = conn.execute(
