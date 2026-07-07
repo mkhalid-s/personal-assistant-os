@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import stat
 import subprocess
 import sys
 import tempfile
@@ -41,7 +40,7 @@ HAS_FTS5 = _detect_fts5()
 
 
 def _fresh_db_conn():
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)  # noqa: SIM115
     tmp.close()
     os.environ["MYOS_DB_PATH"] = tmp.name
     from personal_assistant.db import get_connection

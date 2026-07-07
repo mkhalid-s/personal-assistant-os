@@ -14,7 +14,6 @@ from typing import Any
 from . import agentcore, autonomy, command_registry, factory, graphrag, intents, observability, plans
 from .db import append_event, verify_schema
 
-
 COMMAND_TIERS: dict[str, list[str]] = command_registry.command_inventory()
 DEFAULT_EVAL_FIXTURE_PATH = Path(__file__).with_name("route_eval_fixtures.json")
 ROUTABLE_INTENTS = (

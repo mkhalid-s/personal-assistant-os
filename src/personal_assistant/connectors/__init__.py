@@ -1,8 +1,8 @@
-from .base import ConnectorResult, BaseConnector
-from .jira import JiraConnector
-from .github import GitHubConnector
-from .confluence import ConfluenceConnector
 from .aha import AhaConnector
+from .base import BaseConnector, ConnectorResult
+from .confluence import ConfluenceConnector
+from .github import GitHubConnector
+from .jira import JiraConnector
 
 __all__ = [
     "ConnectorResult",

@@ -33,7 +33,7 @@ def embed_text(text: str, dims: int = 64) -> list[float]:
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
-    return sum(x * y for x, y in zip(a, b))
+    return sum(x * y for x, y in zip(a, b, strict=True))
 
 
 def hybrid_score(query: str, text: str) -> float:

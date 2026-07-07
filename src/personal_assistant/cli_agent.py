@@ -955,4 +955,4 @@ def cmd_action_provider(args: argparse.Namespace) -> None:
     except Exception as exc:
         conn.rollback()
         print(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=True))
-        raise SystemExit(1)
+        raise SystemExit(1) from exc

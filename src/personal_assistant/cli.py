@@ -1,33 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
-import shlex
-import shutil
 import sqlite3
 import sys
 import time
-import uuid
-from xml.sax.saxutils import escape as xml_escape
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
-import subprocess
 
-from .connectors import AhaConnector, ConfluenceConnector, GitHubConnector, JiraConnector
-from .dashboard import render_dashboard_html, serve_dashboard
-from .db import append_event, get_connection, initialize_schema, resolve_db_path, verify_schema
-from .extraction import extract_suggestions
-from .graph import connect_work_items
-from .ingest.audio import transcribe_audio
-from .ingest.image import extract_image_text
-from .pulse import detect_mode, run_cycle
-from .retrieval import hybrid_score
 from . import (
     assistant,
     autonomy,
     autonomy_loop,
-    claims,
     cli_agent,
     cli_autonomy,
     cli_autopilot,
@@ -44,66 +30,43 @@ from . import (
     cli_setup_live,
     cli_workflow,
     command_registry,
-    context as ctx,
     em,
-    entities,
     factory,
     graphrag,
-    intents,
     model_setup,
     observability,
-    plans,
     providers,
     queries,
-    relationships,
     router,
     watch,
 )
+from . import (
+    context as ctx,
+)
+from .connectors import AhaConnector, ConfluenceConnector, GitHubConnector, JiraConnector
+from .db import append_event, get_connection
+from .execution import (
+    _execute_agent_action,  # noqa: F401  # re-exported for tests
+    _handle_proposals,
+)
+from .extraction import extract_suggestions
 
 # Helpers extracted out of this module (refactor #12); re-imported so existing
 # call sites (and tests importing them from cli) keep working unchanged.
 from .inbox import (
-    index_chunk,
     ensure_work_item_node,
-    infer_kind,
-    infer_priority,
-    infer_risk,
-    infer_from_external,
+    index_chunk,
     insert_inbox_item_dedup,
 )
+from .ingest.audio import transcribe_audio
+from .ingest.image import extract_image_text
 from .locks import acquire_lock, release_lock
 from .privacy import (
-    get_policy_map,
-    _policy_bool,
-    apply_privacy_filters,
-    redact_obj,
     _file_sha256,
-    _cleanup_policy_retention,
+    apply_privacy_filters,
+    get_policy_map,
 )
-from .planner import (
-    _agent_analogies,
-    _agent_plan,
-    _agent_action_specs,
-    _normalize_ai_plan,
-    _normalize_ai_actions,
-    _ai_reason_artifacts,
-)
-from .execution import (
-    _PROTECTED_PATCH_PATTERNS,
-    _patch_target_paths,
-    _status_from_result,
-    _execute_agent_action,
-    _execute_action_provider,
-    _read_provider_stdin,
-    _outbox_write,
-    _provider_body,
-    _provider_target_summary,
-    _post_jira_comment,
-    _post_github_comment,
-    _handle_proposals,
-    approve_and_execute,
-    execute_connector_mutation,
-)
+from .pulse import run_cycle
 
 
 def load_env_file(path: str) -> int:
@@ -204,8 +167,8 @@ def _scan_watch_dirs(conn, *, limit: int = 20, min_confidence: float = 0.65) -> 
     files_ingested = 0
     suggestions_created = 0
     candidates_seen = 0
-    for watch in watch_dirs:
-        root = Path(watch["path"]).expanduser()
+    for watch_row in watch_dirs:
+        root = Path(watch_row["path"]).expanduser()
         if not root.exists() or not root.is_dir():
             continue
         root_resolved = root.resolve()
@@ -231,7 +194,7 @@ def _scan_watch_dirs(conn, *, limit: int = 20, min_confidence: float = 0.65) -> 
                 INSERT OR IGNORE INTO file_ingests (watch_dir_id, file_path, file_hash, status)
                 VALUES (?, ?, ?, 'processing')
                 """,
-                (watch["id"], str(path), file_hash),
+                (watch_row["id"], str(path), file_hash),
             )
             if reserve.rowcount == 0:
                 continue
@@ -513,12 +476,11 @@ def cmd_reindex(_: argparse.Namespace) -> None:
             "SELECT id FROM text_chunks WHERE source_type = 'work_item' AND source_id = ? LIMIT 1",
             (item["id"],),
         ).fetchone()
-        if not has_chunk:
-            # Only increment if a chunk was actually written (index_chunk skips
-            # whitespace-only titles; counting them causes a never-ending re-attempt
-            # on every future reindex) (review R4-6).
-            if index_chunk(conn, "work_item", int(item["id"]), item["title"]):
-                chunks_added += 1
+        # Only increment if a chunk was actually written (index_chunk skips
+        # whitespace-only titles; counting them causes a never-ending re-attempt
+        # on every future reindex) (review R4-6).
+        if not has_chunk and index_chunk(conn, "work_item", int(item["id"]), item["title"]):
+            chunks_added += 1
 
     conn.commit()
     print(f"Reindex complete. Added {nodes_added} nodes and {chunks_added} chunks for existing work items.")
@@ -1016,10 +978,7 @@ def cmd_autonomy(args: argparse.Namespace) -> None:
 def cmd_smart_help(args: argparse.Namespace) -> None:
     inventory = router.command_inventory()
     tier = "workflow" if args.tier == "workflows" else args.tier
-    if tier == "all":
-        tiers = ["daily", "workflow", "expert", "diagnostic"]
-    else:
-        tiers = [tier]
+    tiers = ["daily", "workflow", "expert", "diagnostic"] if tier == "all" else [tier]
     print("MYOS smart command surface")
     print('Primary: myos chat | myos voice | myos autopilot --factory | myos do "..." | myos approve --list')
     for name in tiers:
@@ -1429,10 +1388,8 @@ def cmd_voice(args: argparse.Namespace) -> None:
             print("Voice capture unavailable; exiting voice mode.")
             break
         text = voice.transcribe(wav)
-        try:
+        with contextlib.suppress(OSError):
             os.remove(wav)
-        except OSError:
-            pass
         if not text:
             print("(heard nothing — try again)")
             continue

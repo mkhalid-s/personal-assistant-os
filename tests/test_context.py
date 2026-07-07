@@ -18,7 +18,7 @@ if SRC not in sys.path:
 
 
 def _fresh_db_conn():
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)  # noqa: SIM115
     tmp.close()
     os.environ["MYOS_DB_PATH"] = tmp.name
     from personal_assistant.db import get_connection
@@ -315,7 +315,7 @@ class ContextLoopTest(unittest.TestCase):
         from personal_assistant import context
         from personal_assistant.privacy import _cleanup_policy_retention
 
-        out = context.log_turn(self.conn, user_text="something old", assistant_text="ok", backend="fake")
+        context.log_turn(self.conn, user_text="something old", assistant_text="ok", backend="fake")
         # Age the turn past the retention window and enable a finite policy.
         self.conn.execute("UPDATE conversation_turns SET created_at = datetime('now','-400 days')")
         self.conn.execute("INSERT INTO assistant_policies (key, value) VALUES ('retention_conversation_days','365')")
@@ -751,7 +751,7 @@ class RoundFourRemediationTest(unittest.TestCase):
         self.assertNotIn("sk-abc123xyz456def789", row["payload_json"])
 
     def test_decide_suggestion_feedback_is_redacted(self):  # R4-4
-        from personal_assistant.context import propose_suggestion, decide_suggestion
+        from personal_assistant.context import decide_suggestion
 
         # seed an observation so reflect can work, then propose manually
         self.conn.execute(

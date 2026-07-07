@@ -6,6 +6,7 @@ and run_day/go_live to prevent overlapping cycles.
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 
 
@@ -29,10 +30,8 @@ def acquire_lock(conn, name: str, owner: str) -> bool:
         # it as contention AND silently rolling back the caller's buffered work (B4).
         msg = str(exc).lower()
         if "lock" in msg or "busy" in msg:
-            try:
+            with contextlib.suppress(sqlite3.Error):
                 conn.rollback()
-            except sqlite3.Error:
-                pass
             return False
         raise
 

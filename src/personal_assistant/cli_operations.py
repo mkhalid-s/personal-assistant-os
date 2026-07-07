@@ -12,11 +12,11 @@ from .db import get_connection
 from .extraction import extract_suggestions
 from .inbox import (
     ensure_work_item_node,
+    index_chunk,
     infer_from_external,
     infer_kind,
     infer_priority,
     infer_risk,
-    index_chunk,
     insert_inbox_item_dedup,
 )
 from .locks import acquire_lock, release_lock
@@ -408,7 +408,7 @@ def cmd_orchestrate(args: argparse.Namespace, deps: OperationsDependencies) -> N
         print(f"Workflow complete: {args.workflow} (run_id={run_id}) {summary}")
     except Exception as exc:
         print(f"Workflow failed: {args.workflow} (run_id={run_id}) error={exc}")
-        raise SystemExit(1)
+        raise SystemExit(1) from exc
 
 
 def cmd_workflow_runs(args: argparse.Namespace) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 
 from personal_assistant.models import ExternalItem
+
 from .base import BaseConnector
 
 

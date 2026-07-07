@@ -11,7 +11,6 @@ from personal_assistant.db import initialize_schema
 from personal_assistant.graph import connect_work_items
 from personal_assistant.inbox import ensure_work_item_node, index_chunk
 
-
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "graphrag_eval_cases.json"
 
 
