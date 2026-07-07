@@ -1395,6 +1395,25 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("zero_diff_stats: files=1 additions=1 deletions=0 binary=0", approvals)
             self.assertIn("zero_verify: python -m pytest", approvals)
 
+            # Assert approve --list --json exposes the same queue as the text
+            # output on the same DB state, so automation consumers see the
+            # exact set of pending approvals the human reviewer would.
+            approve_json_out = subprocess.run(
+                [sys.executable, "-m", "personal_assistant.cli", "approve", "--list", "--json"],
+                cwd=Path.cwd(), env=env, check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            approve_payload = json.loads(approve_json_out)
+            self.assertEqual(approve_payload["schema"], "myos.approve.list.v1")
+            self.assertGreaterEqual(approve_payload["count"], 1)
+            self.assertTrue(
+                any(a["id"] == 1 for a in approve_payload["actions"]),
+                f"expected action id=1 in JSON queue, got {approve_payload['actions']}",
+            )
+            action_entry = next(a for a in approve_payload["actions"] if a["id"] == 1)
+            self.assertIn("action_type", action_entry)
+            self.assertIn("review_context", action_entry)
+            self.assertIn("target", action_entry)
+
             executed = run("approve", "--action", "1", "--execute")
             self.assertIn("Executed action #1: patch applied", executed)
             receipts = run("execution-receipt", "list")
@@ -1404,6 +1423,36 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("Verification: not_run", receipt)
             self.assertIn("Verification Command: python -m pytest", receipt)
             self.assertIn("Verification Reason: Suggested verification is recorded for the operator", receipt)
+
+            # Same-data assertion for execution-receipt list --json + show --json.
+            # The JSON output must expose the approval integrity envelope and
+            # verification block downstream automation and audit consumers need.
+            list_json_out = subprocess.run(
+                [sys.executable, "-m", "personal_assistant.cli", "execution-receipt", "list", "--json"],
+                cwd=Path.cwd(), env=env, check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            list_payload = json.loads(list_json_out)
+            self.assertEqual(list_payload["schema"], "myos.execution_receipt.list.v1")
+            self.assertGreaterEqual(list_payload["count"], 1)
+            receipt_entry = list_payload["receipts"][0]
+            self.assertIn("approval_integrity", receipt_entry)
+            self.assertIsNotNone(receipt_entry["approval_integrity"])
+            self.assertTrue(receipt_entry["approval_integrity"]["ok"])
+            self.assertTrue(receipt_entry["approval_integrity"]["payload_hash_verified"])
+            self.assertIn("verification", receipt_entry)
+            self.assertIsNotNone(receipt_entry["verification"])
+            self.assertEqual(receipt_entry["verification"]["status"], "not_run")
+
+            show_json_out = subprocess.run(
+                [sys.executable, "-m", "personal_assistant.cli", "execution-receipt", "show", "--id", "1", "--json"],
+                cwd=Path.cwd(), env=env, check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            show_payload = json.loads(show_json_out)
+            self.assertEqual(show_payload["schema"], "myos.execution_receipt.show.v1")
+            self.assertEqual(show_payload["receipt"]["id"], 1)
+            self.assertIn("title", show_payload["receipt"])
+            self.assertIn("result", show_payload["receipt"])
+            self.assertIn("outbox", show_payload["receipt"])
 
     def test_deep_factory_autonomous_execution_and_proactive_loop(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
