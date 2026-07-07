@@ -1449,6 +1449,13 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("action_type", action_entry)
             self.assertIn("review_context", action_entry)
             self.assertIn("target", action_entry)
+            # Integrity block must be present so supervisors can spot near-
+            # expiry, expired, or tampered approvals before execution refuses
+            # them. Action 1 is still `proposed` at this point (never
+            # approved yet), so state must be `not_yet_approved`.
+            self.assertIn("integrity", action_entry)
+            self.assertEqual(action_entry["integrity"]["state"], "not_yet_approved")
+            self.assertEqual(action_entry["integrity"]["schema"], "myos.approval_integrity_view.v1")
 
             executed = run("approve", "--action", "1", "--execute")
             self.assertIn("Executed action #1: patch applied", executed)

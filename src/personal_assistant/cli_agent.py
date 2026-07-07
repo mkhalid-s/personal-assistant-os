@@ -395,7 +395,7 @@ def _approval_queue_rows(conn, limit: int) -> list:
     return conn.execute(
         """
         SELECT id, agent_task_id, action_type, title, status, payload_json,
-               requires_approval, created_at
+               requires_approval, created_at, payload_hash, approved_at
         FROM agent_actions
         WHERE requires_approval=1 AND status IN ('proposed', 'approved')
         ORDER BY created_at ASC
@@ -405,10 +405,66 @@ def _approval_queue_rows(conn, limit: int) -> list:
     ).fetchall()
 
 
+def _approval_integrity_summary(row) -> dict:
+    """Classify the integrity state of a queued action row for supervisor
+    visibility. Rows with `status='proposed'` (never approved yet) map to
+    `not_yet_approved` — nothing to verify. Rows with `status='approved'`
+    map to one of `fresh`, `nearing_expiry`, `expired`, or `tampered`
+    based on `verify_approval_integrity`. The threshold for
+    `nearing_expiry` is the last 10 percent of the TTL window; a
+    supervisor process can use this to trigger re-approval prompts
+    before execution refuses the action outright.
+
+    The returned dict always carries `state` and `schema` so downstream
+    consumers can rely on the shape. Optional fields (`payload_hash`,
+    `approved_at`, `approved_age_seconds`, `approval_ttl_seconds`,
+    `ttl_remaining_seconds`) are included only when populated.
+    """
+    from .execution import verify_approval_integrity
+
+    summary: dict = {"schema": "myos.approval_integrity_view.v1"}
+    status = str(row["status"] or "")
+    if status != "approved":
+        summary["state"] = "not_yet_approved"
+        return summary
+
+    integrity = verify_approval_integrity(row)
+    reason = str(integrity.get("reason") or "")
+    if not integrity.get("ok"):
+        if reason == "payload_hash_mismatch":
+            summary["state"] = "tampered"
+        elif reason == "approval_ttl_exceeded":
+            summary["state"] = "expired"
+        else:
+            summary["state"] = "invalid"
+        summary["reason"] = reason
+    else:
+        ttl = integrity.get("approval_ttl_seconds")
+        remaining = integrity.get("ttl_remaining_seconds")
+        if isinstance(ttl, int) and ttl > 0 and isinstance(remaining, int):
+            near_expiry_threshold = max(1, ttl // 10)
+            summary["state"] = "nearing_expiry" if remaining <= near_expiry_threshold else "fresh"
+        else:
+            summary["state"] = "fresh"
+
+    stored_hash = row["payload_hash"] if "payload_hash" in row.keys() else None
+    if stored_hash:
+        summary["payload_hash"] = str(stored_hash)
+    approved_at = row["approved_at"] if "approved_at" in row.keys() else None
+    if approved_at:
+        summary["approved_at"] = str(approved_at)
+    for key in ("approved_age_seconds", "approval_ttl_seconds", "ttl_remaining_seconds"):
+        if key in integrity and integrity[key] is not None:
+            summary[key] = integrity[key]
+    return summary
+
+
 def _approval_queue_json_entry(row) -> dict:
     """Machine-readable snapshot of one queued approval. Preview is bounded to
     a short redaction-safe snippet so downstream consumers never receive
-    unbounded payload bodies."""
+    unbounded payload bodies. Every entry carries an `integrity` block so
+    supervisors can spot near-expiry, expired, or tampered approvals
+    before they hit the execution-time refusal path."""
     payload = json.loads(row["payload_json"] or "{}")
     preview = payload.get("draft") or payload.get("text") or ""
     if not isinstance(preview, str):
@@ -429,7 +485,28 @@ def _approval_queue_json_entry(row) -> dict:
         "rollback": str(rollback) if rollback else "",
         "preview": snippet,
         "review_context": review_context,
+        "integrity": _approval_integrity_summary(row),
     }
+
+
+def _format_integrity_text_line(integrity: dict) -> str | None:
+    """Compact operator-facing summary of the integrity block. Returns None
+    for `not_yet_approved` rows since there is nothing to display until
+    someone actually approves the action."""
+    state = str(integrity.get("state") or "")
+    if state in ("", "not_yet_approved"):
+        return None
+    parts = [f"integrity: {state}"]
+    for key in ("approved_age_seconds", "ttl_remaining_seconds"):
+        if key in integrity and integrity[key] is not None:
+            parts.append(f"{key}={integrity[key]}")
+    if state == "tampered":
+        parts.append("re-approve required (payload changed after approval)")
+    elif state == "expired":
+        parts.append("re-approve required (past TTL)")
+    elif state == "nearing_expiry":
+        parts.append("re-approve soon before TTL runs out")
+    return " ".join(parts)
 
 
 def cmd_approve(args: argparse.Namespace) -> None:
@@ -457,6 +534,9 @@ def cmd_approve(args: argparse.Namespace) -> None:
             for line in format_action_review_context(str(row["action_type"]), payload, requires_approval=True):
                 print(f"  {line}")
             _print_zero_approval_context(payload)
+            integrity_line = _format_integrity_text_line(_approval_integrity_summary(row))
+            if integrity_line:
+                print(f"  {integrity_line}")
             rollback = payload.get("rollback_note") or payload.get("rollback")
             if rollback:
                 print(f"  rollback: {rollback}")
