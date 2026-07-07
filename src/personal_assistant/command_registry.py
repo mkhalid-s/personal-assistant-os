@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from typing import Any
 
 TIERS = ("daily", "workflow", "expert", "diagnostic")

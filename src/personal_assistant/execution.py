@@ -623,7 +623,7 @@ def _post_jira_comment(issue_key: str, body: str) -> str:
     token = os.getenv("JIRA_API_TOKEN", "")
     if not (base_url and email and token and issue_key):
         raise ValueError("missing Jira target or credentials")
-    auth = base64.b64encode(f"{email}:{token}".encode("utf-8")).decode("ascii")
+    auth = base64.b64encode(f"{email}:{token}".encode()).decode("ascii")
     payload = {
         "body": {
             "type": "doc",

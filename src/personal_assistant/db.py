@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import sqlite3
+import contextlib
 import os
+import sqlite3
 from pathlib import Path
 
 EXPECTED_SCHEMA_VERSION = 37
@@ -807,10 +808,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             )
             """
         )
-        try:
+        with contextlib.suppress(sqlite3.OperationalError):  # column already added on a prior run
             conn.execute("ALTER TABLE review_evidence ADD COLUMN person_id INTEGER")
-        except sqlite3.OperationalError:
-            pass  # column already added on a prior run
         conn.execute("CREATE INDEX IF NOT EXISTS idx_one_on_ones_person ON one_on_ones(person_id, created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_competency_person ON competency_snapshots(person_id, assessed_on)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_meeting_items_meeting ON meeting_items(meeting_id, status)")
