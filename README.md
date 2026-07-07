@@ -35,6 +35,8 @@ The design is inspired by AI-native software-factory ideas: intent-first workflo
 - `ROADMAP.md`: surgical roadmap from MVP to stable app, intent layer, GraphRAG, and product hardening.
 - `docs/BOUNDED_AUTONOMY.md`: bounded autonomy direction, router feedback application, command registry, and lightweight observability plans.
 - `CHANGELOG.md`: release notes for the current checkpoint and future tagged releases.
+- `CONTRIBUTING.md`: contribution flow, PR expectations, commit hygiene, and the local dev loop.
+- `DEVELOPING.md`: internals guide — module map, layering, bounded-autonomy invariants, and how to add a new CLI command, schema migration, or executor backend.
 
 ## Open Source Stack
 
