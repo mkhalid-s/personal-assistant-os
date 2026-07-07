@@ -311,6 +311,76 @@ class ProposeAndApproveTest(unittest.TestCase):
         self.assertEqual(summary["state"], "tampered")
         self.assertEqual(summary["reason"], "payload_hash_mismatch")
 
+    def test_intent_list_json_and_plan_show_json_expose_stable_schemas(self):
+        """`intent list --json` and `plan show --json` are the input side of
+        the loop: a supervising process reads them to decide which plans to
+        drive next. Assert the schemas are what consumers expect."""
+        import argparse
+        import contextlib
+        import io
+        from personal_assistant import intents, plans
+        from personal_assistant.cli_planning import cmd_intent, cmd_plan
+
+        intent_id = intents.create_intent(
+            self.conn,
+            objective="Draft weekly review deck",
+            success_criteria="Draft ready by Friday",
+            priority=1,
+        )
+        plan_id = plans.create_plan(
+            self.conn,
+            intent_id=intent_id,
+            title="Weekly review draft",
+            assumptions=["Slides template unchanged"],
+        )
+        self.conn.commit()
+
+        # intent list --json
+        buf = io.StringIO()
+        args = argparse.Namespace(
+            intent_action="list", status="all", limit=20, json=True,
+        )
+        with contextlib.redirect_stdout(buf):
+            cmd_intent(args)
+        listing = json.loads(buf.getvalue())
+        self.assertEqual(listing["schema"], "myos.intent.list.v1")
+        self.assertEqual(listing["status_filter"], "all")
+        self.assertGreaterEqual(listing["count"], 1)
+        entry = next(e for e in listing["intents"] if e["id"] == intent_id)
+        self.assertEqual(entry["objective"], "Draft weekly review deck")
+        self.assertEqual(entry["priority"], 1)
+        self.assertEqual(entry["success_criteria"], "Draft ready by Friday")
+
+        # plan show --json (success)
+        buf = io.StringIO()
+        args = argparse.Namespace(plan_action="show", id=plan_id, json=True)
+        with contextlib.redirect_stdout(buf):
+            cmd_plan(args)
+        plan_payload = json.loads(buf.getvalue())
+        self.assertEqual(plan_payload["schema"], "myos.plan.show.v1")
+        self.assertEqual(plan_payload["plan"]["id"], plan_id)
+        self.assertEqual(plan_payload["plan"]["intent_id"], intent_id)
+        self.assertEqual(plan_payload["plan"]["title"], "Weekly review draft")
+        self.assertIn("assumptions", plan_payload["plan"])
+        self.assertIn("Slides template unchanged", plan_payload["plan"]["assumptions"])
+        # `plans.create_plan` seeds default steps/risks/validations; the JSON
+        # projection must expose all three collections keyed by name.
+        self.assertGreater(len(plan_payload["steps"]), 0)
+        self.assertGreater(len(plan_payload["risks"]), 0)
+        self.assertGreater(len(plan_payload["validations"]), 0)
+
+        # plan show --json (not found -> error envelope, exit 1)
+        buf = io.StringIO()
+        args = argparse.Namespace(plan_action="show", id=999999, json=True)
+        with contextlib.redirect_stdout(buf):
+            with self.assertRaises(SystemExit) as cm:
+                cmd_plan(args)
+        self.assertEqual(cm.exception.code, 1)
+        err_payload = json.loads(buf.getvalue())
+        self.assertEqual(err_payload["schema"], "myos.plan.show.v1")
+        self.assertEqual(err_payload["error"], "not_found")
+        self.assertEqual(err_payload["id"], 999999)
+
     def test_approve_list_stale_only_filters_by_integrity_state(self):
         """--stale-only must show only rows in {nearing_expiry, expired,
         tampered, invalid} and exclude fresh and not-yet-approved rows.

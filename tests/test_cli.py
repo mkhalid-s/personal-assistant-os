@@ -1141,6 +1141,21 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("#1 status=open priority=1", listed.stdout)
             self.assertIn("Ship public assistant baseline", listed.stdout)
 
+            listed_json = subprocess.run(
+                base_cmd + ["intent", "list", "--status", "open", "--json"],
+                cwd=Path.cwd(),
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            intent_payload = json.loads(listed_json.stdout)
+            self.assertEqual(intent_payload["schema"], "myos.intent.list.v1")
+            self.assertEqual(intent_payload["count"], 1)
+            self.assertEqual(intent_payload["status_filter"], "open")
+            self.assertEqual(intent_payload["intents"][0]["id"], 1)
+            self.assertEqual(intent_payload["intents"][0]["objective"], "Ship public assistant baseline")
+
             evidence = subprocess.run(
                 base_cmd
                 + [
@@ -1217,6 +1232,15 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("Steps:", show_out)
             self.assertIn("Risks:", show_out)
             self.assertIn("Validations:", show_out)
+
+            show_json = json.loads(run("plan", "show", "--id", "1", "--json"))
+            self.assertEqual(show_json["schema"], "myos.plan.show.v1")
+            self.assertEqual(show_json["plan"]["id"], 1)
+            self.assertEqual(show_json["plan"]["intent_id"], 1)
+            self.assertEqual(show_json["plan"]["status"], "draft")
+            self.assertTrue(show_json["steps"])
+            self.assertTrue(show_json["risks"])
+            self.assertTrue(show_json["validations"])
 
             packet_out = run("review-packet", "--plan", "1", "--retrieval-run", run_id)
             self.assertIn("Review packet #1 for plan #1", packet_out)

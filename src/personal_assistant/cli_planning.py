@@ -7,136 +7,218 @@ from . import intents, plans
 from .db import append_event, get_connection
 
 
+def _intent_list_json_entry(row: dict) -> dict:
+    """Structured, schema-stable projection of a single intent row for the
+    `intent list --json` envelope. Kept intentionally narrow — just the fields
+    a supervising process needs to route or prioritize — so richer show-mode
+    fields don't leak here and cause consumers to conflate the two schemas."""
+    return {
+        "id": int(row["id"]),
+        "status": str(row["status"] or ""),
+        "priority": int(row["priority"]) if row["priority"] is not None else None,
+        "objective": str(row["objective"] or ""),
+        "success_criteria": str(row["success_criteria"] or ""),
+    }
+
+
 def cmd_intent(args: argparse.Namespace) -> None:
     conn = get_connection()
-    action = getattr(args, "intent_action", "")
-    if action == "create":
-        intent_id = intents.create_intent(
-            conn,
-            objective=args.objective,
-            context=args.context,
-            constraints=args.constraint,
-            success_criteria=args.success,
-            priority=args.priority,
-        )
-        conn.commit()
-        intent = intents.get_intent(conn, intent_id)
-        objective = intent["objective"] if intent else args.objective
-        print(f"Created intent #{intent_id}: {objective}")
-        return
-
-    if action == "list":
-        rows = intents.list_intents(conn, status=args.status, limit=args.limit)
-        if not rows:
-            print("No intents found.")
-            return
-        print("Intents:")
-        for row in rows:
-            success = f" success={row['success_criteria']}" if row["success_criteria"] else ""
-            print(
-                f"- #{row['id']} status={row['status']} priority={row['priority']}"
-                f" objective={row['objective']}{success}"
-            )
-        return
-
-    if action == "show":
-        intent = intents.get_intent(conn, args.id)
-        if intent is None:
-            print(f"Intent #{args.id} not found.")
-            raise SystemExit(1)
-        print(f"Intent #{intent['id']}")
-        print(f"Status: {intent['status']}")
-        print(f"Priority: {intent['priority']}")
-        print(f"Objective: {intent['objective']}")
-        if intent.get("context"):
-            print(f"Context: {intent['context']}")
-        if intent.get("success_criteria"):
-            print(f"Success: {intent['success_criteria']}")
-        if intent.get("constraints"):
-            print("Constraints:")
-            for constraint in intent["constraints"]:
-                print(f"- {constraint}")
-        print("Evidence:")
-        for evidence in intent["evidence"]:
-            source_id = f":{evidence['source_id']}" if evidence["source_id"] is not None else ""
-            summary = f" summary={evidence['summary']}" if evidence["summary"] else ""
-            print(
-                f"- #{evidence['id']} source={evidence['source_type']}{source_id}"
-                f" confidence={evidence['confidence']:.2f}{summary}"
-            )
-            print(f"  {evidence['content']}")
-        if not intent["evidence"]:
-            print("- none")
-        return
-
-    if action == "evidence" and getattr(args, "evidence_action", "") == "add":
-        try:
-            evidence_id = intents.add_evidence(
+    try:
+        action = getattr(args, "intent_action", "")
+        json_mode = bool(getattr(args, "json", False))
+        if action == "create":
+            intent_id = intents.create_intent(
                 conn,
-                intent_id=args.id,
-                content=args.text,
-                source_type=args.source_type,
-                source_id=args.source_id,
-                summary=args.summary,
-                confidence=args.confidence,
+                objective=args.objective,
+                context=args.context,
+                constraints=args.constraint,
+                success_criteria=args.success,
+                priority=args.priority,
             )
-        except ValueError as exc:
-            print(str(exc))
-            raise SystemExit(1) from exc
-        conn.commit()
-        print(f"Added evidence #{evidence_id} to intent #{args.id}.")
-        return
+            conn.commit()
+            intent = intents.get_intent(conn, intent_id)
+            objective = intent["objective"] if intent else args.objective
+            print(f"Created intent #{intent_id}: {objective}")
+            return
 
-    raise SystemExit("Unknown intent command.")
+        if action == "list":
+            rows = intents.list_intents(conn, status=args.status, limit=args.limit)
+            if json_mode:
+                payload = {
+                    "schema": "myos.intent.list.v1",
+                    "count": len(rows),
+                    "limit": int(args.limit),
+                    "status_filter": str(args.status),
+                    "intents": [_intent_list_json_entry(row) for row in rows],
+                }
+                print(json.dumps(payload, ensure_ascii=True))
+                return
+            if not rows:
+                print("No intents found.")
+                return
+            print("Intents:")
+            for row in rows:
+                success = f" success={row['success_criteria']}" if row["success_criteria"] else ""
+                print(
+                    f"- #{row['id']} status={row['status']} priority={row['priority']}"
+                    f" objective={row['objective']}{success}"
+                )
+            return
+
+        if action == "show":
+            intent = intents.get_intent(conn, args.id)
+            if intent is None:
+                print(f"Intent #{args.id} not found.")
+                raise SystemExit(1)
+            print(f"Intent #{intent['id']}")
+            print(f"Status: {intent['status']}")
+            print(f"Priority: {intent['priority']}")
+            print(f"Objective: {intent['objective']}")
+            if intent.get("context"):
+                print(f"Context: {intent['context']}")
+            if intent.get("success_criteria"):
+                print(f"Success: {intent['success_criteria']}")
+            if intent.get("constraints"):
+                print("Constraints:")
+                for constraint in intent["constraints"]:
+                    print(f"- {constraint}")
+            print("Evidence:")
+            for evidence in intent["evidence"]:
+                source_id = f":{evidence['source_id']}" if evidence["source_id"] is not None else ""
+                summary = f" summary={evidence['summary']}" if evidence["summary"] else ""
+                print(
+                    f"- #{evidence['id']} source={evidence['source_type']}{source_id}"
+                    f" confidence={evidence['confidence']:.2f}{summary}"
+                )
+                print(f"  {evidence['content']}")
+            if not intent["evidence"]:
+                print("- none")
+            return
+
+        if action == "evidence" and getattr(args, "evidence_action", "") == "add":
+            try:
+                evidence_id = intents.add_evidence(
+                    conn,
+                    intent_id=args.id,
+                    content=args.text,
+                    source_type=args.source_type,
+                    source_id=args.source_id,
+                    summary=args.summary,
+                    confidence=args.confidence,
+                )
+            except ValueError as exc:
+                print(str(exc))
+                raise SystemExit(1) from exc
+            conn.commit()
+            print(f"Added evidence #{evidence_id} to intent #{args.id}.")
+            return
+
+        raise SystemExit("Unknown intent command.")
+    finally:
+        conn.close()
+
+
+def _plan_show_json_payload(plan: dict) -> dict:
+    """Full projection of a plan for `plan show --json`. Consumers use this to
+    reason about steps/risks/validations without regex-parsing the human view."""
+    return {
+        "schema": "myos.plan.show.v1",
+        "plan": {
+            "id": int(plan["id"]),
+            "intent_id": int(plan["intent_id"]) if plan.get("intent_id") is not None else None,
+            "status": str(plan.get("status") or ""),
+            "title": str(plan.get("title") or ""),
+            "summary": str(plan.get("summary") or ""),
+            "assumptions": [str(a) for a in (plan.get("assumptions") or [])],
+        },
+        "steps": [
+            {
+                "step_index": int(step["step_index"]) if step.get("step_index") is not None else None,
+                "description": str(step.get("description") or ""),
+                "status": str(step.get("status") or ""),
+                "validation": str(step.get("validation") or ""),
+            }
+            for step in (plan.get("steps") or [])
+        ],
+        "risks": [
+            {
+                "severity": str(risk.get("severity") or ""),
+                "risk": str(risk.get("risk") or ""),
+                "mitigation": str(risk.get("mitigation") or ""),
+            }
+            for risk in (plan.get("risks") or [])
+        ],
+        "validations": [
+            {
+                "check_name": str(validation.get("check_name") or ""),
+                "status": str(validation.get("status") or ""),
+                "command": str(validation.get("command") or ""),
+            }
+            for validation in (plan.get("validations") or [])
+        ],
+    }
 
 
 def cmd_plan(args: argparse.Namespace) -> None:
     conn = get_connection()
-    action = getattr(args, "plan_action", "")
-    if action == "create":
-        try:
-            plan_id = plans.create_plan(
-                conn,
-                intent_id=args.intent,
-                title=args.title,
-                assumptions=args.assumption,
-            )
-        except ValueError as exc:
-            print(str(exc))
-            raise SystemExit(1) from exc
-        conn.commit()
-        plan = plans.get_plan(conn, plan_id)
-        print(f"Created plan #{plan_id} for intent #{args.intent}: {plan['title'] if plan else args.title}")
-        return
+    try:
+        action = getattr(args, "plan_action", "")
+        json_mode = bool(getattr(args, "json", False))
+        if action == "create":
+            try:
+                plan_id = plans.create_plan(
+                    conn,
+                    intent_id=args.intent,
+                    title=args.title,
+                    assumptions=args.assumption,
+                )
+            except ValueError as exc:
+                print(str(exc))
+                raise SystemExit(1) from exc
+            conn.commit()
+            plan = plans.get_plan(conn, plan_id)
+            print(f"Created plan #{plan_id} for intent #{args.intent}: {plan['title'] if plan else args.title}")
+            return
 
-    if action == "show":
-        plan = plans.get_plan(conn, args.id)
-        if plan is None:
-            print(f"Plan #{args.id} not found.")
-            raise SystemExit(1)
-        print(f"Plan #{plan['id']} intent={plan['intent_id']} status={plan['status']}")
-        print(f"Title: {plan['title']}")
-        if plan.get("summary"):
-            print(f"Summary: {plan['summary']}")
-        if plan.get("assumptions"):
-            print("Assumptions:")
-            for assumption in plan["assumptions"]:
-                print(f"- {assumption}")
-        print("Steps:")
-        for step in plan["steps"]:
-            print(f"{step['step_index']}. {step['description']} [{step['status']}]")
-            if step["validation"]:
-                print(f"   validation: {step['validation']}")
-        print("Risks:")
-        for risk in plan["risks"]:
-            print(f"- [{risk['severity']}] {risk['risk']} -> {risk['mitigation']}")
-        print("Validations:")
-        for validation in plan["validations"]:
-            command = f" command={validation['command']}" if validation["command"] else ""
-            print(f"- {validation['check_name']} [{validation['status']}]{command}")
-        return
+        if action == "show":
+            plan = plans.get_plan(conn, args.id)
+            if plan is None:
+                if json_mode:
+                    print(json.dumps(
+                        {"schema": "myos.plan.show.v1", "error": "not_found", "id": int(args.id)},
+                        ensure_ascii=True,
+                    ))
+                else:
+                    print(f"Plan #{args.id} not found.")
+                raise SystemExit(1)
+            if json_mode:
+                print(json.dumps(_plan_show_json_payload(plan), ensure_ascii=True))
+                return
+            print(f"Plan #{plan['id']} intent={plan['intent_id']} status={plan['status']}")
+            print(f"Title: {plan['title']}")
+            if plan.get("summary"):
+                print(f"Summary: {plan['summary']}")
+            if plan.get("assumptions"):
+                print("Assumptions:")
+                for assumption in plan["assumptions"]:
+                    print(f"- {assumption}")
+            print("Steps:")
+            for step in plan["steps"]:
+                print(f"{step['step_index']}. {step['description']} [{step['status']}]")
+                if step["validation"]:
+                    print(f"   validation: {step['validation']}")
+            print("Risks:")
+            for risk in plan["risks"]:
+                print(f"- [{risk['severity']}] {risk['risk']} -> {risk['mitigation']}")
+            print("Validations:")
+            for validation in plan["validations"]:
+                command = f" command={validation['command']}" if validation["command"] else ""
+                print(f"- {validation['check_name']} [{validation['status']}]{command}")
+            return
 
-    raise SystemExit("Unknown plan command.")
+        raise SystemExit("Unknown plan command.")
+    finally:
+        conn.close()
 
 
 def cmd_evidence(args: argparse.Namespace) -> None:

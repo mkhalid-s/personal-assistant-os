@@ -2325,6 +2325,7 @@ def build_parser() -> argparse.ArgumentParser:
     intent_list = intent_sub.add_parser("list", help="List intents.")
     intent_list.add_argument("--status", default="open", help="Status filter, or 'all'.")
     intent_list.add_argument("--limit", type=int, default=20)
+    intent_list.add_argument("--json", action="store_true", help="Emit a single JSON object instead of formatted text.")
     intent_list.set_defaults(func=cmd_intent)
     intent_show = intent_sub.add_parser("show", help="Show one intent with evidence.")
     intent_show.add_argument("--id", type=int, required=True)
@@ -2349,6 +2350,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan_create.set_defaults(func=cmd_plan)
     plan_show = plan_sub.add_parser("show", help="Show a draft plan with steps, risks, and validations.")
     plan_show.add_argument("--id", type=int, required=True)
+    plan_show.add_argument("--json", action="store_true", help="Emit a single JSON object instead of formatted text.")
     plan_show.set_defaults(func=cmd_plan)
 
     evidence = sub.add_parser("evidence", help="Attach evidence artifacts to intents.")
