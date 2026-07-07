@@ -829,10 +829,26 @@ def cmd_release_check(args: argparse.Namespace) -> None:
         ("local_artifacts", not artifacts, f"{len(artifacts)} tracked local artifact(s)"),
         ("factory_smoke", factory_smoke_ok, factory_smoke_detail),
     ]
+    ok = all(passed for _, passed, _ in checks)
+    if getattr(args, "json", False):
+        payload: dict = {
+            "schema": "myos.release_check.v1",
+            "ok": ok,
+            "strict": bool(args.strict),
+            "checks": [
+                {"name": name, "ok": bool(passed), "detail": detail}
+                for name, passed, detail in checks
+            ],
+        }
+        if args.verbose:
+            payload["hygiene_findings"] = list(hygiene[:20])
+            payload["local_artifacts"] = list(artifacts[:20])
+        print(json.dumps(payload, ensure_ascii=True))
+        if args.strict and not ok:
+            raise SystemExit(1)
+        return
     print("Release readiness check:")
-    ok = True
     for name, passed, detail in checks:
-        ok = ok and passed
         print(f"- {'PASS' if passed else 'FAIL'} {name}: {detail}")
     if hygiene and args.verbose:
         print("Hygiene findings:")
@@ -2063,6 +2079,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = sub.add_parser("doctor", help="Show local system and connector health.")
     doctor.add_argument("--strict", action="store_true", help="Exit non-zero if core local checks fail.")
+    doctor.add_argument("--json", action="store_true", help="Emit a single JSON object instead of formatted text.")
     doctor.set_defaults(func=cmd_doctor)
 
     backup = sub.add_parser("backup", help="Create a verified SQLite database backup.")
@@ -2090,6 +2107,7 @@ def build_parser() -> argparse.ArgumentParser:
     release_check = sub.add_parser("release-check", help="Run local release readiness checks.")
     release_check.add_argument("--strict", action="store_true")
     release_check.add_argument("--verbose", action="store_true")
+    release_check.add_argument("--json", action="store_true", help="Emit a single JSON object instead of formatted text.")
     release_check.set_defaults(func=cmd_release_check)
 
     ingest_external = sub.add_parser("ingest-external", help="Ingest synced external items into inbox.")

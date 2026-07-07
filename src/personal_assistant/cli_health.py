@@ -83,7 +83,9 @@ def _zero_stream_preflight() -> tuple[bool, str]:
 
 def cmd_doctor(args: argparse.Namespace) -> None:
     conn = get_connection()
-    print("System health:")
+    json_mode = bool(getattr(args, "json", False))
+    if not json_mode:
+        print("System health:")
     counts = conn.execute(
         """
         SELECT
@@ -93,10 +95,11 @@ def cmd_doctor(args: argparse.Namespace) -> None:
           (SELECT COUNT(*) FROM event_log) AS event_count
         """
     ).fetchone()
-    print(
-        f"- inbox={counts['inbox_count']} open_work={counts['open_work']} "
-        f"external={counts['external_count']} events={counts['event_count']}"
-    )
+    if not json_mode:
+        print(
+            f"- inbox={counts['inbox_count']} open_work={counts['open_work']} "
+            f"external={counts['external_count']} events={counts['event_count']}"
+        )
 
     core_checks: list[tuple[str, bool, str]] = []
     optional_checks: list[tuple[str, bool, str]] = []
@@ -171,6 +174,58 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         )
     )
 
+    autonomy_level = autonomy.level_from_policy(conn)
+    active_backend = providers.resolve_backend_name()
+    backends = providers.available_backends()
+    connector_rows = conn.execute(
+        """
+        SELECT connector, last_status, last_success_at, last_error
+        FROM sync_state
+        ORDER BY connector ASC
+        """
+    ).fetchall()
+    core_ok = all(ok for _, ok, _ in core_checks)
+
+    if json_mode:
+        payload = {
+            "schema": "myos.doctor.v1",
+            "ok": core_ok,
+            "strict": bool(args.strict),
+            "counts": {
+                "inbox": int(counts["inbox_count"]),
+                "open_work": int(counts["open_work"]),
+                "external": int(counts["external_count"]),
+                "events": int(counts["event_count"]),
+            },
+            "core_checks": [
+                {"name": name, "ok": bool(ok), "detail": detail}
+                for name, ok, detail in core_checks
+            ],
+            "optional_checks": [
+                {"name": name, "ok": bool(ok), "detail": detail}
+                for name, ok, detail in optional_checks
+            ],
+            "autonomy_level": autonomy_level,
+            "active_backend": active_backend,
+            "backends": [
+                {"name": b["name"], "available": bool(b["available"]), "detail": b["detail"]}
+                for b in backends
+            ],
+            "connectors": [
+                {
+                    "connector": row["connector"],
+                    "last_status": row["last_status"],
+                    "last_success_at": row["last_success_at"],
+                    "last_error": row["last_error"] or "",
+                }
+                for row in connector_rows
+            ],
+        }
+        print(json.dumps(payload, ensure_ascii=True))
+        if args.strict and not core_ok:
+            raise SystemExit(1)
+        return
+
     print("Core checks:")
     for name, ok, detail in core_checks:
         print(f"- {'PASS' if ok else 'FAIL'} {name}: {detail}")
@@ -179,36 +234,28 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     for name, ok, detail in optional_checks:
         print(f"- {'PASS' if ok else 'INFO'} {name}: {detail}")
 
-    print(f"Autonomy level: {autonomy.level_from_policy(conn)} (auto-run safe / one-tap non-destructive / block destructive)")
-    active = providers.resolve_backend_name()
-    print(f"Agent backends (active: {active}):")
-    for b in providers.available_backends():
+    print(f"Autonomy level: {autonomy_level} (auto-run safe / one-tap non-destructive / block destructive)")
+    print(f"Agent backends (active: {active_backend}):")
+    for b in backends:
         mark = "PASS" if b["available"] else "INFO"
         print(f"- {mark} {b['name']}: {b['detail']}")
 
-    rows = conn.execute(
-        """
-        SELECT connector, last_status, last_success_at, last_error
-        FROM sync_state
-        ORDER BY connector ASC
-        """
-    ).fetchall()
-    if not rows:
+    if not connector_rows:
         print("- sync_state: no connector runs yet")
-        if args.strict and any(not ok for _, ok, _ in core_checks):
+        if args.strict and not core_ok:
             print("Doctor strict: core checks failed.")
             raise SystemExit(1)
         if args.strict:
             print("Doctor strict: core checks passed.")
         return
     print("Connector status:")
-    for row in rows:
+    for row in connector_rows:
         err = f" err={row['last_error']}" if row["last_error"] else ""
         print(
             f"- {row['connector']}: status={row['last_status']} "
             f"last_success={row['last_success_at']}{err}"
         )
-    if args.strict and any(not ok for _, ok, _ in core_checks):
+    if args.strict and not core_ok:
         print("Doctor strict: core checks failed.")
         raise SystemExit(1)
     if args.strict:

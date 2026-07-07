@@ -131,6 +131,56 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("PASS command_contract:", out)
             self.assertIn("commands covered", out)
 
+    def test_release_check_json_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
+            out = subprocess.run(
+                [sys.executable, "-m", "personal_assistant.cli", "release-check", "--strict", "--json"],
+                cwd=Path.cwd(),
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            # The command must emit exactly one JSON object.
+            payload = json.loads(out)
+            self.assertEqual(payload["schema"], "myos.release_check.v1")
+            self.assertTrue(payload["ok"])
+            self.assertTrue(payload["strict"])
+            names = {check["name"] for check in payload["checks"]}
+            self.assertIn("schema", names)
+            self.assertIn("command_contract", names)
+            self.assertIn("factory_smoke", names)
+            self.assertTrue(all(check["ok"] for check in payload["checks"]))
+
+    def test_doctor_json_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
+            out = subprocess.run(
+                [sys.executable, "-m", "personal_assistant.cli", "doctor", "--json"],
+                cwd=Path.cwd(),
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            payload = json.loads(out)
+            self.assertEqual(payload["schema"], "myos.doctor.v1")
+            self.assertIn("ok", payload)
+            self.assertIn("counts", payload)
+            self.assertIn("core_checks", payload)
+            self.assertIn("optional_checks", payload)
+            self.assertIn("autonomy_level", payload)
+            core_names = {check["name"] for check in payload["core_checks"]}
+            self.assertIn("db_connection", core_names)
+            self.assertIn("schema_migrations", core_names)
+            optional_names = {check["name"] for check in payload["optional_checks"]}
+            self.assertIn("zero_stream_executor", optional_names)
+
     def test_capture_triage_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
