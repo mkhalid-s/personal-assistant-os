@@ -503,10 +503,46 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("task #1 status=waiting_approval", status)
             self.assertIn("Recommendation: myos approve --list [label=review_approvals]", status)
 
+            # Same-data assertion for loop status --json: the JSON envelope
+            # exposes the same task state a supervising process would need to
+            # act on (task id, status, pending approvals, cycles).
+            status_json_out = subprocess.run(
+                [sys.executable, "-m", "personal_assistant.cli", "loop", "status", "--task", "1", "--json"],
+                cwd=Path.cwd(), env=env, check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            status_payload = json.loads(status_json_out)
+            self.assertEqual(status_payload["schema"], "myos.loop.status.v1")
+            self.assertEqual(status_payload["task_filter"], 1)
+            self.assertEqual(status_payload["count"], 1)
+            task_entry = status_payload["tasks"][0]
+            self.assertEqual(task_entry["task_id"], 1)
+            self.assertEqual(task_entry["status"], "waiting_approval")
+            self.assertGreaterEqual(task_entry["pending_approvals"], 1)
+            self.assertIn("cycles", task_entry)
+            self.assertIn("mode", task_entry)
+
             resumed = run("loop", "resume", "--task", "1", "--max-actions", "2")
             self.assertIn("Autonomy loop task #1", resumed)
             self.assertIn("run #1", resumed)
             self.assertIn("safe_executed=0", resumed)
+
+            # Same-data assertion for loop ledger --json: after start+resume
+            # the ledger has at least one entry per bounded cycle. Automation
+            # consumers can filter by task and consume parsed metadata.
+            ledger_json_out = subprocess.run(
+                [sys.executable, "-m", "personal_assistant.cli", "loop", "ledger", "--task", "1", "--json"],
+                cwd=Path.cwd(), env=env, check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            ledger_payload = json.loads(ledger_json_out)
+            self.assertEqual(ledger_payload["schema"], "myos.loop.ledger.v1")
+            self.assertEqual(ledger_payload["filters"]["task_id"], 1)
+            self.assertGreaterEqual(ledger_payload["count"], 1)
+            for entry in ledger_payload["entries"]:
+                self.assertEqual(entry["agent_task_id"], 1)
+                self.assertIn("decision_type", entry)
+                self.assertIn("status", entry)
+                self.assertIn("actions_proposed", entry)
+                self.assertIn("pending_approvals", entry)
 
             conn = sqlite3.connect(db_path)
             trace_link = conn.execute(
