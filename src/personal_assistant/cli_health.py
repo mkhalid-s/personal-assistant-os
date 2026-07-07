@@ -64,6 +64,20 @@ def _zero_stream_preflight() -> tuple[bool, str]:
     detail = "stream-json support detected"
     if formats:
         detail += f" ({'/'.join(formats)} format flags)"
+    # Surface the effective wall-clock cap so operators can see whether an
+    # env override is in place before starting a long Zero factory run.
+    from . import zero_executor
+
+    env_timeout = os.getenv("MYOS_ZERO_TIMEOUT_SECONDS", "").strip()
+    effective_timeout = zero_executor.DEFAULT_TIMEOUT
+    timeout_source = "default"
+    if env_timeout:
+        try:
+            effective_timeout = max(1, int(env_timeout))
+            timeout_source = "env"
+        except ValueError:
+            timeout_source = f"invalid env value {env_timeout!r}, using default"
+    detail += f"; wall_clock_timeout={effective_timeout}s ({timeout_source})"
     return True, f"{found}: {detail}"
 
 
