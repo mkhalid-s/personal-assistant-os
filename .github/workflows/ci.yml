@@ -73,12 +73,17 @@ jobs:
       # db.py is the single mutation/schema boundary — 1.7 kloc of connection,
       # migration, and event-append logic; a strict regression here can silently
       # corrupt local state, so it stays in the fatal tier.
-      - name: Mypy strict (command_registry + privacy + db)
+      # zero_executor.py is the external coding-executor bridge: it subprocesses
+      # `zero exec`, parses schema-versioned stream JSON, and persists agent
+      # runs. A strict regression here can silently drop tool events, mis-
+      # attribute exit codes, or corrupt the redacted result payload.
+      - name: Mypy strict (command_registry + privacy + db + zero_executor)
         run: |
           mypy --strict \
             src/personal_assistant/command_registry.py \
             src/personal_assistant/privacy.py \
-            src/personal_assistant/db.py
+            src/personal_assistant/db.py \
+            src/personal_assistant/zero_executor.py
 
       # Advisory: the rest of the tree will be brought up to the fatal bar in
       # follow-up slices. Kept green so contributors see the noise without
@@ -95,8 +100,7 @@ jobs:
         continue-on-error: true
         run: |
           mypy --strict \
-            src/personal_assistant/execution.py \
-            src/personal_assistant/zero_executor.py
+            src/personal_assistant/execution.py
 
       - name: pip-audit (advisory)
         continue-on-error: true
