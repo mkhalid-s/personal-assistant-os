@@ -167,6 +167,7 @@ All notable changes to this project will be documented in this file.
 - Final validation soak passed full tests, strict readiness gates, whitespace, wheel build, isolated install smoke, and explicit hygiene scans.
 - Sanitized launchd plist templates referenced by README were ported into `deploy/launchd/` and included in release hygiene scans.
 - CI public hygiene now scans commit-message trailers only across the pushed or PR commit range, avoiding failures from pre-existing history.
+- Continue the `cli.py` decomposition (slice P0.7): move `cmd_chat` / `cmd_voice` / `cmd_do` into a new `cli_chat.py`, `cmd_policy` / `cmd_pulse` / the previously in-line watch and transcription helpers into `cli_workflow.py`, `cmd_autopilot_status` / `cmd_digest` / `cmd_goal` / `cmd_self_review` into `cli_autonomy.py`, and `cmd_team` / `cmd_note` / `cmd_one_on_one` / `cmd_meeting` / `cmd_review_draft` / `cmd_risk_scan` into a new `cli_em.py` executive-management module. The 75 remaining thin per-command wrappers in `cli.py` collapsed into single-line `cmd_X = cli_module.cmd_X` re-exports so test identity assertions (`self.assertIs(*.func, cli.cmd_X)`) and argparse dispatch stay stable. `cli.py` shrank from 2441 → 1933 lines (~21%) with no behavior change; all 91 CLI tests plus the command-registry contract tests continue to pass, and the parser tree, help strings, JSON envelopes, and connection lifetime are unchanged.
 
 ### Validation
 
