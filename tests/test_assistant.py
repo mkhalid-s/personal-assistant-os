@@ -211,6 +211,106 @@ class ProposeAndApproveTest(unittest.TestCase):
         self.assertFalse(integrity["ok"])
         self.assertEqual(integrity["reason"], "approval_ttl_exceeded")
 
+    def _approval_row_for(self, aid: int):
+        # Load a row with the same column shape cmd_approve --list would see,
+        # so the integrity summary picks up payload_hash and approved_at.
+        return self.conn.execute(
+            """
+            SELECT id, agent_task_id, action_type, title, status, payload_json,
+                   requires_approval, created_at, payload_hash, approved_at
+            FROM agent_actions WHERE id = ?
+            """,
+            (aid,),
+        ).fetchone()
+
+    def test_approval_integrity_summary_proposed_shows_not_yet_approved(self):
+        from personal_assistant import agentcore
+        from personal_assistant.cli_agent import _approval_integrity_summary
+
+        task_id = agentcore.ensure_turn_task(self.conn, "queue-vis")
+        aid = agentcore.enqueue_proposal(
+            self.conn, task_id=task_id, action_type="create_inbox_item",
+            title="proposed only", payload={"text": "queued", "kind": "task"},
+            requires_approval=1,
+        )
+        self.conn.commit()
+        summary = _approval_integrity_summary(self._approval_row_for(aid))
+        self.assertEqual(summary["state"], "not_yet_approved")
+        # Not-yet-approved rows must not carry TTL or age fields — nothing to
+        # verify until an approval hash is pinned.
+        self.assertNotIn("approved_age_seconds", summary)
+        self.assertNotIn("approval_ttl_seconds", summary)
+
+    def test_approval_integrity_summary_approved_shows_fresh(self):
+        from personal_assistant import agentcore
+        from personal_assistant.cli_agent import _approval_integrity_summary
+        from personal_assistant.execution import approve_and_execute
+
+        task_id = agentcore.ensure_turn_task(self.conn, "queue-vis-fresh")
+        aid = agentcore.enqueue_proposal(
+            self.conn, task_id=task_id, action_type="create_inbox_item",
+            title="fresh approved", payload={"text": "will exec", "kind": "task"},
+            requires_approval=1,
+        )
+        self.conn.commit()
+        approved = approve_and_execute(self.conn, aid, do_approve=True, execute=False)
+        self.assertEqual(approved["code"], "approved_only")
+        summary = _approval_integrity_summary(self._approval_row_for(aid))
+        self.assertEqual(summary["state"], "fresh")
+        self.assertIn("payload_hash", summary)
+        self.assertIn("approved_at", summary)
+        self.assertGreaterEqual(int(summary["ttl_remaining_seconds"]), 0)
+        # Approval hash must be a 64-char hex sha256; anything shorter means
+        # we accidentally exposed a partial/mangled value to consumers.
+        self.assertEqual(len(summary["payload_hash"]), 64)
+
+    def test_approval_integrity_summary_expired_shows_expired(self):
+        from personal_assistant import agentcore
+        from personal_assistant.cli_agent import _approval_integrity_summary
+        from personal_assistant.execution import approve_and_execute
+
+        task_id = agentcore.ensure_turn_task(self.conn, "queue-vis-expired")
+        aid = agentcore.enqueue_proposal(
+            self.conn, task_id=task_id, action_type="create_inbox_item",
+            title="expired approved", payload={"text": "stale", "kind": "task"},
+            requires_approval=1,
+        )
+        self.conn.commit()
+        approve_and_execute(self.conn, aid, do_approve=True, execute=False)
+        self.conn.execute(
+            "UPDATE agent_actions SET approved_at = '2020-01-01 00:00:00' WHERE id = ?",
+            (aid,),
+        )
+        self.conn.commit()
+        summary = _approval_integrity_summary(self._approval_row_for(aid))
+        self.assertEqual(summary["state"], "expired")
+        self.assertEqual(summary["reason"], "approval_ttl_exceeded")
+
+    def test_approval_integrity_summary_tampered_shows_tampered(self):
+        from personal_assistant import agentcore
+        from personal_assistant.cli_agent import _approval_integrity_summary
+        from personal_assistant.execution import approve_and_execute
+
+        task_id = agentcore.ensure_turn_task(self.conn, "queue-vis-tampered")
+        aid = agentcore.enqueue_proposal(
+            self.conn, task_id=task_id, action_type="create_inbox_item",
+            title="tampered approved", payload={"text": "original body", "kind": "task"},
+            requires_approval=1,
+        )
+        self.conn.commit()
+        approve_and_execute(self.conn, aid, do_approve=True, execute=False)
+        # Mutate the payload after approval — hash mismatch must surface as
+        # `tampered` in the queue view so a supervisor sees it before the
+        # execution refusal path kicks in.
+        self.conn.execute(
+            "UPDATE agent_actions SET payload_json = ? WHERE id = ?",
+            (json.dumps({"text": "TAMPERED body", "kind": "task"}), aid),
+        )
+        self.conn.commit()
+        summary = _approval_integrity_summary(self._approval_row_for(aid))
+        self.assertEqual(summary["state"], "tampered")
+        self.assertEqual(summary["reason"], "payload_hash_mismatch")
+
     def test_run_turn_persists_retrieval_trace_ids(self):
         from personal_assistant import assistant
         from personal_assistant.inbox import ensure_work_item_node, index_chunk
