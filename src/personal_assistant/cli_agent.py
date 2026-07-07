@@ -63,6 +63,32 @@ def _receipt_verification_lines(request: dict) -> list[str]:
     return lines
 
 
+def _receipt_integrity_lines(request: dict) -> list[str]:
+    integrity = request.get("approval_integrity") if isinstance(request, dict) else None
+    if not isinstance(integrity, dict):
+        return []
+    ok = bool(integrity.get("ok", False))
+    verified = bool(integrity.get("payload_hash_verified", False))
+    lines = [f"approval_integrity: {'ok' if ok else 'blocked'} payload_hash_verified={str(verified).lower()}"]
+    reason = str(integrity.get("reason") or "").strip()
+    if reason:
+        lines.append(f"approval_integrity_reason: {reason}")
+    age = integrity.get("approved_age_seconds")
+    ttl = integrity.get("approval_ttl_seconds")
+    remaining = integrity.get("ttl_remaining_seconds")
+    if age is not None or ttl is not None or remaining is not None:
+        parts = []
+        if age is not None:
+            parts.append(f"approved_age_s={int(age)}")
+        if ttl is not None:
+            parts.append(f"ttl_s={int(ttl)}")
+        if remaining is not None:
+            parts.append(f"ttl_remaining_s={int(remaining)}")
+        if parts:
+            lines.append("approval_integrity_ttl: " + " ".join(parts))
+    return lines
+
+
 def cmd_delegate(args: argparse.Namespace) -> None:
     conn = get_connection()
     target = getattr(args, "to", "").strip().lower()
@@ -445,6 +471,12 @@ def cmd_execution_receipt(args: argparse.Namespace) -> None:
                 print(f"{label.replace('_', ' ').title()}: {detail}")
             else:
                 print(line)
+        for line in _receipt_integrity_lines(request):
+            if ": " in line:
+                label, detail = line.split(": ", 1)
+                print(f"{label.replace('_', ' ').title()}: {detail}")
+            else:
+                print(line)
         outbox = conn.execute(
             """
             SELECT id, provider, target_type, target_ref, status
@@ -497,6 +529,8 @@ def cmd_execution_receipt(args: argparse.Namespace) -> None:
         for line in context_lines:
             print(f"  {line}")
         for line in _receipt_verification_lines(request):
+            print(f"  {line}")
+        for line in _receipt_integrity_lines(request):
             print(f"  {line}")
 
 

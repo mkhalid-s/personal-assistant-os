@@ -13,6 +13,7 @@ destructive guard (autonomy.BLOCKED) and the apply_patch protected-path guard.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -21,12 +22,124 @@ import subprocess
 import sys
 import time
 import urllib.request
+from datetime import datetime, timezone
 
 from . import autonomy, observability
 from .approval_context import compact_action_review_context
 from .db import append_event, resolve_db_path
 from .inbox import insert_inbox_item_dedup
 from .privacy import apply_privacy_filters, get_policy_map, redact_obj
+
+# Default TTL between approval and execution. Long-stale approvals are refused
+# at execute time so an operator who approved something days ago can't have it
+# quietly executed today (review finding: approval replay/expiry). Overridable
+# via env for automation that intentionally executes days-old approvals.
+_APPROVAL_TTL_DEFAULT_SECONDS = 24 * 60 * 60
+
+
+def _approval_ttl_seconds() -> int:
+    raw = os.getenv("MYOS_APPROVAL_TTL_SECONDS", "").strip()
+    if not raw:
+        return _APPROVAL_TTL_DEFAULT_SECONDS
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return _APPROVAL_TTL_DEFAULT_SECONDS
+    return max(0, value)
+
+
+def _canonical_payload_json(payload_text: str) -> str:
+    """Canonical JSON form of an action payload for hashing. Uses sorted keys
+    and compact separators so semantically-equivalent payloads always produce
+    the same hash regardless of key order or whitespace."""
+    try:
+        payload = json.loads(payload_text or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        # Non-JSON payloads are hashed as-is so tampering is still detected.
+        return payload_text or ""
+    try:
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    except TypeError:
+        return payload_text or ""
+
+
+def _compute_payload_hash(payload_text: str) -> str:
+    canonical = _canonical_payload_json(payload_text)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _parse_approved_at(raw: object) -> datetime | None:
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    # SQLite CURRENT_TIMESTAMP writes UTC in "YYYY-MM-DD HH:MM:SS"; also accept
+    # ISO 8601 with a trailing "Z" for callers that pre-normalize.
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%SZ"):
+        try:
+            return datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def _row_column_names(row) -> set[str]:
+    try:
+        return set(row.keys())
+    except Exception:
+        try:
+            return {desc[0] for desc in row.cursor.description}
+        except Exception:
+            return set()
+
+
+def verify_approval_integrity(row, *, ttl_seconds: int | None = None) -> dict[str, object]:
+    """Verify that a row's payload_json still matches the hash pinned at
+    approval time and that the approval has not exceeded its TTL. Returns a
+    dict with `ok`, `reason`, `payload_hash_verified`, and optional
+    `approved_age_seconds` / `ttl_remaining_seconds`. Rows with no pinned
+    hash or no approved_at (e.g., pre-migration rows or test setups that
+    insert `status='approved'` directly) skip the corresponding check by
+    design — the guard exists to catch tampering between approval and
+    execution, not to gate low-level test insertions."""
+    columns = _row_column_names(row)
+    ctx: dict[str, object] = {
+        "schema": "myos.approval_integrity.v1",
+        "ok": True,
+        "reason": "",
+        "payload_hash_verified": False,
+    }
+    if "payload_hash" in columns:
+        stored_hash = row["payload_hash"]
+        if stored_hash:
+            computed = _compute_payload_hash(row["payload_json"] or "{}")
+            if computed != stored_hash:
+                ctx["ok"] = False
+                ctx["reason"] = "payload_hash_mismatch"
+                ctx["payload_hash_verified"] = False
+                return ctx
+            ctx["payload_hash_verified"] = True
+    if "approved_at" in columns:
+        approved_at = _parse_approved_at(row["approved_at"])
+        if approved_at is not None:
+            now = datetime.now(timezone.utc)
+            age = int((now - approved_at).total_seconds())
+            if age < 0:
+                age = 0
+            ctx["approved_age_seconds"] = age
+            ttl = _approval_ttl_seconds() if ttl_seconds is None else max(0, int(ttl_seconds))
+            ctx["approval_ttl_seconds"] = ttl
+            if ttl and age > ttl:
+                ctx["ok"] = False
+                ctx["reason"] = "approval_ttl_exceeded"
+                ctx["ttl_remaining_seconds"] = 0
+                return ctx
+            ctx["ttl_remaining_seconds"] = max(0, ttl - age) if ttl else None
+    return ctx
 
 # Path *segments* a harnessed-agent patch may NEVER touch. We protect the whole
 # MYOS package directory (not drifting individual filenames — review A-1/C-4) so
@@ -191,7 +304,15 @@ def _verification_receipt_context(conn, payload: dict[str, object]) -> dict[str,
     }
 
 
-def _record_execution_receipt(conn, row, *, approved: bool, final_status: str, result: str) -> None:
+def _record_execution_receipt(
+    conn,
+    row,
+    *,
+    approved: bool,
+    final_status: str,
+    result: str,
+    integrity: dict[str, object] | None = None,
+) -> None:
     payload = json.loads(row["payload_json"] or "{}")
     rollback_note = str(payload.get("rollback_note") or payload.get("rollback") or "").strip()
     if not rollback_note:
@@ -209,6 +330,13 @@ def _record_execution_receipt(conn, row, *, approved: bool, final_status: str, r
             requires_approval=bool(row["requires_approval"]),
         ),
     }
+    if integrity is None:
+        try:
+            integrity = verify_approval_integrity(row)
+        except Exception:
+            integrity = None
+    if integrity:
+        request["approval_integrity"] = integrity
     verification = _verification_receipt_context(conn, payload)
     if verification:
         request["verification"] = verification
@@ -621,7 +749,17 @@ def approve_and_execute(conn, action_id: int, *, do_approve: bool = True, execut
         return {"code": "not_found", "approved": False, "result": "", "status": ""}
     approved = False
     if do_approve and row["status"] in ("proposed", "failed"):
-        conn.execute("UPDATE agent_actions SET status='approved' WHERE id = ?", (action_id,))
+        # Pin an integrity hash and the approval timestamp at the *moment* of
+        # approval so any later mutation of payload_json (accidental or
+        # otherwise) or an approval that sits unused past its TTL is refused
+        # at execute time (review finding: approval integrity/expiry).
+        pinned_hash = _compute_payload_hash(row["payload_json"] or "{}")
+        conn.execute(
+            "UPDATE agent_actions "
+            "SET status='approved', approved_at=CURRENT_TIMESTAMP, payload_hash=? "
+            "WHERE id = ?",
+            (pinned_hash, action_id),
+        )
         conn.commit()
         approved = True
         row = conn.execute("SELECT * FROM agent_actions WHERE id = ?", (action_id,)).fetchone()
@@ -631,6 +769,37 @@ def approve_and_execute(conn, action_id: int, *, do_approve: bool = True, execut
         return {"code": "needs_approval", "approved": approved, "result": "", "status": row["status"]}
     if row["status"] == "executed":
         return {"code": "already_executed", "approved": approved, "result": "", "status": "executed"}
+    integrity = verify_approval_integrity(row)
+    if not integrity["ok"]:
+        reason = str(integrity.get("reason") or "approval_integrity_failed")
+        detail = {
+            "payload_hash_mismatch": (
+                "payload changed between approval and execution — refusing to execute "
+                "a modified payload (approval integrity binding)."
+            ),
+            "approval_ttl_exceeded": (
+                "approval is older than MYOS_APPROVAL_TTL_SECONDS — refusing to execute "
+                "a long-stale approval; re-approve to run."
+            ),
+        }.get(reason, "approval integrity check failed — refusing to execute.")
+        result = f"blocked: {reason} — {detail}"
+        conn.execute(
+            "UPDATE agent_actions SET status='failed', result=? WHERE id = ?",
+            (result, action_id),
+        )
+        append_event(
+            conn,
+            "approval_integrity_block",
+            "agent_action",
+            action_id,
+            json.dumps({"reason": reason, "context": integrity}, ensure_ascii=True),
+        )
+        _record_execution_receipt(
+            conn, row, approved=approved, final_status="failed", result=result,
+            integrity=integrity,
+        )
+        conn.commit()
+        return {"code": "failed", "approved": approved, "result": result, "status": "failed"}
     claim = conn.execute(
         "UPDATE agent_actions SET status='executing' WHERE id=? AND status=?",
         (action_id, row["status"]),

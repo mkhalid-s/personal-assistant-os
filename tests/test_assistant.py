@@ -103,6 +103,114 @@ class ProposeAndApproveTest(unittest.TestCase):
         row = self.conn.execute("SELECT requires_approval FROM agent_actions WHERE id = ?", (aid,)).fetchone()
         self.assertEqual(row["requires_approval"], 1)
 
+    def test_approval_integrity_binds_hash_and_timestamp(self):
+        from personal_assistant import agentcore
+        from personal_assistant.execution import approve_and_execute, _compute_payload_hash
+
+        task_id = agentcore.ensure_turn_task(self.conn, "integrity")
+        aid = agentcore.enqueue_proposal(
+            self.conn, task_id=task_id, action_type="create_inbox_item",
+            title="capture note", payload={"text": "note body", "kind": "task"},
+            requires_approval=1,
+        )
+        self.conn.commit()
+        pre = self.conn.execute(
+            "SELECT payload_hash, approved_at, payload_json FROM agent_actions WHERE id = ?",
+            (aid,),
+        ).fetchone()
+        self.assertIsNone(pre["payload_hash"])
+        self.assertIsNone(pre["approved_at"])
+        expected_hash = _compute_payload_hash(pre["payload_json"])
+
+        result = approve_and_execute(self.conn, aid, do_approve=True, execute=True)
+        self.assertEqual(result["code"], "executed")
+
+        post = self.conn.execute(
+            "SELECT payload_hash, approved_at FROM agent_actions WHERE id = ?",
+            (aid,),
+        ).fetchone()
+        self.assertEqual(post["payload_hash"], expected_hash)
+        self.assertIsNotNone(post["approved_at"])
+
+        receipt = self.conn.execute(
+            "SELECT request_json FROM action_execution_receipts WHERE agent_action_id = ?",
+            (aid,),
+        ).fetchone()
+        request = json.loads(receipt["request_json"])
+        integrity = request["approval_integrity"]
+        self.assertEqual(integrity["schema"], "myos.approval_integrity.v1")
+        self.assertTrue(integrity["ok"])
+        self.assertTrue(integrity["payload_hash_verified"])
+        self.assertIn("approved_age_seconds", integrity)
+        self.assertIn("approval_ttl_seconds", integrity)
+
+    def test_approval_integrity_refuses_tampered_payload(self):
+        from personal_assistant import agentcore
+        from personal_assistant.execution import approve_and_execute
+
+        task_id = agentcore.ensure_turn_task(self.conn, "tamper")
+        aid = agentcore.enqueue_proposal(
+            self.conn, task_id=task_id, action_type="create_inbox_item",
+            title="original", payload={"text": "original body", "kind": "task"},
+            requires_approval=1,
+        )
+        self.conn.commit()
+        # Approve first, then simulate tampering between approval and execution.
+        approved_only = approve_and_execute(self.conn, aid, do_approve=True, execute=False)
+        self.assertEqual(approved_only["code"], "approved_only")
+        self.conn.execute(
+            "UPDATE agent_actions SET payload_json = ? WHERE id = ?",
+            (json.dumps({"text": "tampered body", "kind": "task"}), aid),
+        )
+        self.conn.commit()
+
+        result = approve_and_execute(self.conn, aid, do_approve=False, execute=True)
+        self.assertEqual(result["code"], "failed")
+        self.assertIn("payload_hash_mismatch", result["result"])
+        # No inbox item created — execution never ran.
+        inbox_count = self.conn.execute(
+            "SELECT COUNT(*) AS c FROM inbox_items WHERE text = 'tampered body'"
+        ).fetchone()["c"]
+        self.assertEqual(inbox_count, 0)
+        receipt = self.conn.execute(
+            "SELECT request_json FROM action_execution_receipts WHERE agent_action_id = ?",
+            (aid,),
+        ).fetchone()
+        integrity = json.loads(receipt["request_json"])["approval_integrity"]
+        self.assertFalse(integrity["ok"])
+        self.assertEqual(integrity["reason"], "payload_hash_mismatch")
+
+    def test_approval_integrity_refuses_stale_approval(self):
+        from personal_assistant import agentcore
+        from personal_assistant.execution import approve_and_execute
+
+        task_id = agentcore.ensure_turn_task(self.conn, "stale")
+        aid = agentcore.enqueue_proposal(
+            self.conn, task_id=task_id, action_type="create_inbox_item",
+            title="ttl gated", payload={"text": "stale body", "kind": "task"},
+            requires_approval=1,
+        )
+        self.conn.commit()
+        approved_only = approve_and_execute(self.conn, aid, do_approve=True, execute=False)
+        self.assertEqual(approved_only["code"], "approved_only")
+        # Backdate the approval well beyond the default 24h TTL.
+        self.conn.execute(
+            "UPDATE agent_actions SET approved_at = '2020-01-01 00:00:00' WHERE id = ?",
+            (aid,),
+        )
+        self.conn.commit()
+
+        result = approve_and_execute(self.conn, aid, do_approve=False, execute=True)
+        self.assertEqual(result["code"], "failed")
+        self.assertIn("approval_ttl_exceeded", result["result"])
+        receipt = self.conn.execute(
+            "SELECT request_json FROM action_execution_receipts WHERE agent_action_id = ?",
+            (aid,),
+        ).fetchone()
+        integrity = json.loads(receipt["request_json"])["approval_integrity"]
+        self.assertFalse(integrity["ok"])
+        self.assertEqual(integrity["reason"], "approval_ttl_exceeded")
+
     def test_run_turn_persists_retrieval_trace_ids(self):
         from personal_assistant import assistant
         from personal_assistant.inbox import ensure_work_item_node, index_chunk
@@ -590,6 +698,9 @@ class FactoryZeroExecutorTest(unittest.TestCase):
         self.assertEqual(receipt_request["verification"]["status"], "not_run")
         self.assertEqual(receipt_request["verification"]["commands"], ["python -m pytest"])
         self.assertIn("does not auto-run", receipt_request["verification"]["reason"])
+        self.assertEqual(receipt_request["approval_integrity"]["schema"], "myos.approval_integrity.v1")
+        self.assertTrue(receipt_request["approval_integrity"]["ok"])
+        self.assertTrue(receipt_request["approval_integrity"]["payload_hash_verified"])
         learning_id = factory.learn(self.conn, factory_run_id=result["id"], outcome="success", notes="Fake Zero patch applied.")
         retro = factory.latest_retrospective(self.conn, result["id"])
         self.assertGreaterEqual(learning_id, 1)
