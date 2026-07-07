@@ -44,7 +44,7 @@ from . import (
     context as ctx,
 )
 from .connectors import AhaConnector, ConfluenceConnector, GitHubConnector, JiraConnector
-from .db import append_event, get_connection
+from .db import append_event, connection
 from .execution import (
     _execute_agent_action,  # noqa: F401  # re-exported for tests
     _handle_proposals,
@@ -280,33 +280,33 @@ def cmd_transcribe(args: argparse.Namespace) -> None:
         print("No transcript produced. Install 'faster-whisper' or provide --text.")
         return
 
-    conn = get_connection()
-    filtered = apply_privacy_filters(conn, transcript)
-    conn.execute(
-        """
-        INSERT INTO media_assets (media_type, file_path, transcript_text, source)
-        VALUES (?, ?, ?, ?)
-        """,
-        ("audio", audio_path, filtered, "local"),
-    )
-    media_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
-    conn.execute(
-        """
-        INSERT INTO provenance (source_type, source_ref, extractor, extractor_version, confidence, snippet)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        ("audio", audio_path, "whisper_or_manual", "1", 0.7 if args.text else 0.82, filtered[:400]),
-    )
-    provenance_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
-    index_chunk(conn, "media_asset", media_id, filtered, provenance_id=provenance_id)
-    append_event(
-        conn,
-        "ingest_audio",
-        "media_asset",
-        media_id,
-        json.dumps({"path": audio_path}, ensure_ascii=True),
-    )
-    conn.commit()
+    with connection() as conn:
+        filtered = apply_privacy_filters(conn, transcript)
+        conn.execute(
+            """
+            INSERT INTO media_assets (media_type, file_path, transcript_text, source)
+            VALUES (?, ?, ?, ?)
+            """,
+            ("audio", audio_path, filtered, "local"),
+        )
+        media_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+        conn.execute(
+            """
+            INSERT INTO provenance (source_type, source_ref, extractor, extractor_version, confidence, snippet)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("audio", audio_path, "whisper_or_manual", "1", 0.7 if args.text else 0.82, filtered[:400]),
+        )
+        provenance_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+        index_chunk(conn, "media_asset", media_id, filtered, provenance_id=provenance_id)
+        append_event(
+            conn,
+            "ingest_audio",
+            "media_asset",
+            media_id,
+            json.dumps({"path": audio_path}, ensure_ascii=True),
+        )
+        conn.commit()
     print(f"Transcript stored as media asset #{media_id}.")
     print("Run: myos inbox-process to generate suggested tasks.")
 
@@ -318,33 +318,33 @@ def cmd_ingest_image(args: argparse.Namespace) -> None:
         print("Could not extract OCR text. Install tesseract or pass --text manually.")
         return
 
-    conn = get_connection()
-    filtered = apply_privacy_filters(conn, extracted)
-    conn.execute(
-        """
-        INSERT INTO media_assets (media_type, file_path, extracted_text, source)
-        VALUES (?, ?, ?, ?)
-        """,
-        ("image", image_path, filtered, "local"),
-    )
-    media_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
-    conn.execute(
-        """
-        INSERT INTO provenance (source_type, source_ref, extractor, extractor_version, confidence, snippet)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        ("image", image_path, "ocr_or_manual", "1", 0.68 if args.text else 0.8, filtered[:400]),
-    )
-    provenance_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
-    index_chunk(conn, "media_asset", media_id, filtered, provenance_id=provenance_id)
-    append_event(
-        conn,
-        "ingest_image",
-        "media_asset",
-        media_id,
-        json.dumps({"path": image_path}, ensure_ascii=True),
-    )
-    conn.commit()
+    with connection() as conn:
+        filtered = apply_privacy_filters(conn, extracted)
+        conn.execute(
+            """
+            INSERT INTO media_assets (media_type, file_path, extracted_text, source)
+            VALUES (?, ?, ?, ?)
+            """,
+            ("image", image_path, filtered, "local"),
+        )
+        media_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+        conn.execute(
+            """
+            INSERT INTO provenance (source_type, source_ref, extractor, extractor_version, confidence, snippet)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("image", image_path, "ocr_or_manual", "1", 0.68 if args.text else 0.8, filtered[:400]),
+        )
+        provenance_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+        index_chunk(conn, "media_asset", media_id, filtered, provenance_id=provenance_id)
+        append_event(
+            conn,
+            "ingest_image",
+            "media_asset",
+            media_id,
+            json.dumps({"path": image_path}, ensure_ascii=True),
+        )
+        conn.commit()
 
     print(f"Image text stored as media asset #{media_id}.")
     print('Tip: run `myos context "<topic>"` to retrieve relevant chunks.')
@@ -368,17 +368,17 @@ def cmd_retrieval_run(args: argparse.Namespace) -> None:
 
 def cmd_recall(args: argparse.Namespace) -> None:
     """Scored recall over the conversation memory: relevance + recency + importance."""
-    conn = get_connection()
-    hits = ctx.scored_retrieve(conn, args.query, limit=args.limit)
-    if hits:
-        print(f"Recall for: {args.query}  (score = relevance + recency + importance)")
-        for h in hits:
-            subj = f" [{h['subject']}]" if h.get("subject") else ""
-            print(f"- ({h['score']}) {h['kind']}{subj}: {h['detail']}")
-            print(f"    rel={h['relevance']} rec={h['recency']} imp={h['importance']}")
-        return
-    # No scored observation hit yet — fall back to raw indexed-chunk recall.
-    chunks = queries.context_search(conn, args.query, limit=args.limit)
+    with connection() as conn:
+        hits = ctx.scored_retrieve(conn, args.query, limit=args.limit)
+        if hits:
+            print(f"Recall for: {args.query}  (score = relevance + recency + importance)")
+            for h in hits:
+                subj = f" [{h['subject']}]" if h.get("subject") else ""
+                print(f"- ({h['score']}) {h['kind']}{subj}: {h['detail']}")
+                print(f"    rel={h['relevance']} rec={h['recency']} imp={h['importance']}")
+            return
+        # No scored observation hit yet — fall back to raw indexed-chunk recall.
+        chunks = queries.context_search(conn, args.query, limit=args.limit)
     if not chunks:
         print("No relevant context found.")
         return
@@ -390,24 +390,24 @@ def cmd_recall(args: argparse.Namespace) -> None:
 
 def cmd_reflect(_: argparse.Namespace) -> None:
     """Distill recent observations into insights + relationship edges, then run hygiene."""
-    conn = get_connection()
-    r = ctx.reflect(conn)
-    h = ctx.hygiene(conn)
-    print(
-        f"Reflection: {r['insights']} insight(s) across {r['subjects']} subject(s); "
-        f"{r.get('suggestions', 0)} new suggestion(s)."
-    )
-    print(f"Hygiene: merged {h['merged']} duplicate(s), decayed {h['decayed']} stale observation(s).")
-    if r.get("suggestions"):
-        print("Review them: myos suggestions list")
-    rels = ctx.relationships(conn, limit=8)
-    if rels:
-        print("Top relationships:")
-        for rel in rels:
-            print(f"- {rel['a']} ↔ {rel['b']} (weight {rel['weight']:.0f})")
-    insights = conn.execute(
-        "SELECT summary FROM context_insights WHERE superseded_by IS NULL ORDER BY created_at DESC LIMIT 8"
-    ).fetchall()
+    with connection() as conn:
+        r = ctx.reflect(conn)
+        h = ctx.hygiene(conn)
+        print(
+            f"Reflection: {r['insights']} insight(s) across {r['subjects']} subject(s); "
+            f"{r.get('suggestions', 0)} new suggestion(s)."
+        )
+        print(f"Hygiene: merged {h['merged']} duplicate(s), decayed {h['decayed']} stale observation(s).")
+        if r.get("suggestions"):
+            print("Review them: myos suggestions list")
+        rels = ctx.relationships(conn, limit=8)
+        if rels:
+            print("Top relationships:")
+            for rel in rels:
+                print(f"- {rel['a']} ↔ {rel['b']} (weight {rel['weight']:.0f})")
+        insights = conn.execute(
+            "SELECT summary FROM context_insights WHERE superseded_by IS NULL ORDER BY created_at DESC LIMIT 8"
+        ).fetchall()
     if insights:
         print("Recent insights:")
         for ins in insights:
@@ -417,20 +417,20 @@ def cmd_reflect(_: argparse.Namespace) -> None:
 def cmd_suggestions(args: argparse.Namespace) -> None:
     """List / accept / dismiss / apply tracked improvement suggestions (gated — nothing
     executes from here; accepting only records the decision)."""
-    conn = get_connection()
-    action = getattr(args, "suggestions_action", "list") or "list"
-    if action in ("accept", "dismiss", "apply"):
-        if args.id is None:
-            print(f"Usage: myos suggestions {action} <id>")
-            raise SystemExit(1)
-        decision = {"accept": "accepted", "dismiss": "dismissed", "apply": "applied"}[action]
-        res = ctx.decide_suggestion(conn, args.id, decision, feedback=getattr(args, "feedback", "") or "")
-        if res.get("error"):
-            print(res["error"])
-            raise SystemExit(1)
-        print(f"Suggestion #{res['id']} → {res['status']}.")
-        return
-    rows = ctx.list_suggestions(conn, status=getattr(args, "status", "proposed") or "proposed")
+    with connection() as conn:
+        action = getattr(args, "suggestions_action", "list") or "list"
+        if action in ("accept", "dismiss", "apply"):
+            if args.id is None:
+                print(f"Usage: myos suggestions {action} <id>")
+                raise SystemExit(1)
+            decision = {"accept": "accepted", "dismiss": "dismissed", "apply": "applied"}[action]
+            res = ctx.decide_suggestion(conn, args.id, decision, feedback=getattr(args, "feedback", "") or "")
+            if res.get("error"):
+                print(res["error"])
+                raise SystemExit(1)
+            print(f"Suggestion #{res['id']} → {res['status']}.")
+            return
+        rows = ctx.list_suggestions(conn, status=getattr(args, "status", "proposed") or "proposed")
     if not rows:
         print("No open suggestions.")
         return
@@ -444,13 +444,13 @@ def cmd_suggestions(args: argparse.Namespace) -> None:
 
 def cmd_memory(_: argparse.Namespace) -> None:
     """One-glance view of what the Context Intelligence Loop has learned."""
-    conn = get_connection()
-    s = ctx.summary(conn)
-    print("MYOS memory & context intelligence")
-    print(f"- conversations: {s['conversations']}  turns logged: {s['turns']}")
-    print(f"- active observations: {s['observations_active']}  insights: {s['insights']}")
-    print(f"- open suggestions: {s['suggestions_open']}  derived relationships: {s['relationships']}")
-    rels = ctx.relationships(conn, limit=5)
+    with connection() as conn:
+        s = ctx.summary(conn)
+        print("MYOS memory & context intelligence")
+        print(f"- conversations: {s['conversations']}  turns logged: {s['turns']}")
+        print(f"- active observations: {s['observations_active']}  insights: {s['insights']}")
+        print(f"- open suggestions: {s['suggestions_open']}  derived relationships: {s['relationships']}")
+        rels = ctx.relationships(conn, limit=5)
     if rels:
         print("Strongest relationships:")
         for rel in rels:
@@ -458,31 +458,31 @@ def cmd_memory(_: argparse.Namespace) -> None:
 
 
 def cmd_reindex(_: argparse.Namespace) -> None:
-    conn = get_connection()
-    items = conn.execute("SELECT id, title FROM work_items ORDER BY id ASC").fetchall()
+    with connection() as conn:
+        items = conn.execute("SELECT id, title FROM work_items ORDER BY id ASC").fetchall()
 
-    chunks_added = 0
-    nodes_added = 0
-    for item in items:
-        before = conn.execute(
-            "SELECT id FROM knowledge_nodes WHERE node_type = 'work_item' AND ref_id = ?",
-            (item["id"],),
-        ).fetchone()
-        ensure_work_item_node(conn, int(item["id"]), item["title"])
-        if not before:
-            nodes_added += 1
+        chunks_added = 0
+        nodes_added = 0
+        for item in items:
+            before = conn.execute(
+                "SELECT id FROM knowledge_nodes WHERE node_type = 'work_item' AND ref_id = ?",
+                (item["id"],),
+            ).fetchone()
+            ensure_work_item_node(conn, int(item["id"]), item["title"])
+            if not before:
+                nodes_added += 1
 
-        has_chunk = conn.execute(
-            "SELECT id FROM text_chunks WHERE source_type = 'work_item' AND source_id = ? LIMIT 1",
-            (item["id"],),
-        ).fetchone()
-        # Only increment if a chunk was actually written (index_chunk skips
-        # whitespace-only titles; counting them causes a never-ending re-attempt
-        # on every future reindex) (review R4-6).
-        if not has_chunk and index_chunk(conn, "work_item", int(item["id"]), item["title"]):
-            chunks_added += 1
+            has_chunk = conn.execute(
+                "SELECT id FROM text_chunks WHERE source_type = 'work_item' AND source_id = ? LIMIT 1",
+                (item["id"],),
+            ).fetchone()
+            # Only increment if a chunk was actually written (index_chunk skips
+            # whitespace-only titles; counting them causes a never-ending re-attempt
+            # on every future reindex) (review R4-6).
+            if not has_chunk and index_chunk(conn, "work_item", int(item["id"]), item["title"]):
+                chunks_added += 1
 
-    conn.commit()
+        conn.commit()
     print(f"Reindex complete. Added {nodes_added} nodes and {chunks_added} chunks for existing work items.")
 
 
@@ -571,22 +571,22 @@ def cmd_dependency_check(args: argparse.Namespace) -> None:
 
 
 def cmd_performance_baseline(args: argparse.Namespace) -> None:
-    conn = get_connection()
-    start = time.monotonic()
-    hits = graphrag.retrieve(conn, args.query, limit=args.limit)
-    retrieval_ms = int((time.monotonic() - start) * 1000)
+    with connection() as conn:
+        start = time.monotonic()
+        hits = graphrag.retrieve(conn, args.query, limit=args.limit)
+        retrieval_ms = int((time.monotonic() - start) * 1000)
 
-    start = time.monotonic()
-    counts = conn.execute(
-        """
-        SELECT
-          (SELECT COUNT(*) FROM intents WHERE status='open') AS open_intents,
-          (SELECT COUNT(*) FROM work_items WHERE status='open') AS open_work,
-          (SELECT COUNT(*) FROM agent_actions WHERE status='proposed') AS pending_approvals,
-          (SELECT COUNT(*) FROM retrieval_runs) AS retrieval_runs
-        """
-    ).fetchone()
-    summary_ms = int((time.monotonic() - start) * 1000)
+        start = time.monotonic()
+        counts = conn.execute(
+            """
+            SELECT
+              (SELECT COUNT(*) FROM intents WHERE status='open') AS open_intents,
+              (SELECT COUNT(*) FROM work_items WHERE status='open') AS open_work,
+              (SELECT COUNT(*) FROM agent_actions WHERE status='proposed') AS pending_approvals,
+              (SELECT COUNT(*) FROM retrieval_runs) AS retrieval_runs
+            """
+        ).fetchone()
+        summary_ms = int((time.monotonic() - start) * 1000)
 
     print("Performance baseline:")
     print(f"- retrieval_ms={retrieval_ms} query={args.query!r} hits={len(hits)}")
@@ -849,31 +849,31 @@ def cmd_workflow_runs(args: argparse.Namespace) -> None:
 
 
 def cmd_policy(args: argparse.Namespace) -> None:
-    conn = get_connection()
-    if args.set:
-        if "=" not in args.set:
-            print("Invalid --set format. Use KEY=VALUE.")
-            raise SystemExit(1)
-        key, value = args.set.split("=", 1)
-        key = key.strip()
-        value = value.strip()
-        if not key:
-            print("Policy key cannot be empty.")
-            raise SystemExit(1)
-        conn.execute(
-            """
-            INSERT INTO assistant_policies (key, value, updated_at)
-            VALUES (?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP
-            """,
-            (key, value),
-        )
-        conn.commit()
-        print(f"Policy updated: {key}={value}")
-        return
-    print("Policy settings:")
-    for key, value in sorted(get_policy_map(conn).items()):
-        print(f"- {key}={value}")
+    with connection() as conn:
+        if args.set:
+            if "=" not in args.set:
+                print("Invalid --set format. Use KEY=VALUE.")
+                raise SystemExit(1)
+            key, value = args.set.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if not key:
+                print("Policy key cannot be empty.")
+                raise SystemExit(1)
+            conn.execute(
+                """
+                INSERT INTO assistant_policies (key, value, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP
+                """,
+                (key, value),
+            )
+            conn.commit()
+            print(f"Policy updated: {key}={value}")
+            return
+        print("Policy settings:")
+        for key, value in sorted(get_policy_map(conn).items()):
+            print(f"- {key}={value}")
 
 
 def cmd_queue_add(args: argparse.Namespace) -> None:
@@ -931,24 +931,24 @@ def cmd_agent_status(args: argparse.Namespace) -> None:
 
 
 def cmd_do(args: argparse.Namespace) -> None:
-    conn = get_connection()
-    route_decision = router.route_with_feedback(conn, args.text, surface="do")
-    autonomy_decision = router.autonomy_decision_for_route(conn, route_decision)
-    _print_autonomy_decision(autonomy_decision)
-    _print_recommendations(
-        conn,
-        autonomy.recommend_next_steps(
-            autonomy_decision,
-            command="do",
-            intent=route_decision.intent,
-            workflow_pack=route_decision.workflow_pack,
-        ),
-    )
-    if autonomy_decision["decision"] == autonomy.BLOCKED:
-        raise SystemExit(1)
-    result = router.execute_route(conn, args.text, surface="do", decision=route_decision)
-    result["autonomy"] = autonomy_decision
-    conn.commit()
+    with connection() as conn:
+        route_decision = router.route_with_feedback(conn, args.text, surface="do")
+        autonomy_decision = router.autonomy_decision_for_route(conn, route_decision)
+        _print_autonomy_decision(autonomy_decision)
+        _print_recommendations(
+            conn,
+            autonomy.recommend_next_steps(
+                autonomy_decision,
+                command="do",
+                intent=route_decision.intent,
+                workflow_pack=route_decision.workflow_pack,
+            ),
+        )
+        if autonomy_decision["decision"] == autonomy.BLOCKED:
+            raise SystemExit(1)
+        result = router.execute_route(conn, args.text, surface="do", decision=route_decision)
+        result["autonomy"] = autonomy_decision
+        conn.commit()
     print(router.summarize_result(result))
     decision = result["decision"]
     if decision.get("requires_confirmation"):
@@ -1029,8 +1029,7 @@ def cmd_approve(args: argparse.Namespace) -> None:
 
 
 def cmd_autopilot_status(args: argparse.Namespace) -> None:
-    conn = get_connection()
-    try:
+    with connection() as conn:
         json_mode = bool(getattr(args, "json", False))
         rows = conn.execute(
             """
@@ -1077,27 +1076,25 @@ def cmd_autopilot_status(args: argparse.Namespace) -> None:
                     f"finished={row['finished_at'] or 'running'} summary={row['summary'] or ''}"
                 )
         print(f"Autopilot state: open_agent_tasks={open_tasks} approvals_pending={pending}")
-    finally:
-        conn.close()
 
 
 def cmd_digest(args: argparse.Namespace) -> None:
-    conn = get_connection()
-    row = None
-    if args.id:
-        row = conn.execute(
-            "SELECT id, title, body, created_at FROM assistant_digests WHERE id = ?",
-            (args.id,),
-        ).fetchone()
-    else:
-        row = conn.execute(
-            """
-            SELECT id, title, body, created_at
-            FROM assistant_digests
-            ORDER BY id DESC
-            LIMIT 1
-            """
-        ).fetchone()
+    with connection() as conn:
+        row = None
+        if args.id:
+            row = conn.execute(
+                "SELECT id, title, body, created_at FROM assistant_digests WHERE id = ?",
+                (args.id,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """
+                SELECT id, title, body, created_at
+                FROM assistant_digests
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
     if not row:
         print("No assistant digest found. Run `myos autopilot --once` first.")
         return
@@ -1108,96 +1105,96 @@ def cmd_digest(args: argparse.Namespace) -> None:
 
 
 def cmd_goal(args: argparse.Namespace) -> None:
-    conn = get_connection()
-    if args.goal_action == "add":
-        objective = apply_privacy_filters(conn, args.objective)
-        context = apply_privacy_filters(conn, args.context)
-        conn.execute(
+    with connection() as conn:
+        if args.goal_action == "add":
+            objective = apply_privacy_filters(conn, args.objective)
+            context = apply_privacy_filters(conn, args.context)
+            conn.execute(
+                """
+                INSERT INTO assistant_goals (objective, context, cadence_minutes, priority, status)
+                VALUES (?, ?, ?, ?, 'active')
+                """,
+                (objective, context, args.cadence_minutes, args.priority),
+            )
+            goal_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+            conn.commit()
+            print(f"Added assistant goal #{goal_id}: {objective}")
+            return
+        if args.goal_action == "pause":
+            conn.execute(
+                "UPDATE assistant_goals SET status='paused', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (args.id,),
+            )
+            conn.commit()
+            print(f"Paused assistant goal #{args.id}.")
+            return
+        if args.goal_action == "resume":
+            conn.execute(
+                "UPDATE assistant_goals SET status='active', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (args.id,),
+            )
+            conn.commit()
+            print(f"Resumed assistant goal #{args.id}.")
+            return
+        rows = conn.execute(
             """
-            INSERT INTO assistant_goals (objective, context, cadence_minutes, priority, status)
-            VALUES (?, ?, ?, ?, 'active')
+            SELECT id, objective, status, cadence_minutes, priority, last_evaluated_at
+            FROM assistant_goals
+            ORDER BY status ASC, priority ASC, id ASC
+            LIMIT ?
             """,
-            (objective, context, args.cadence_minutes, args.priority),
-        )
-        goal_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
-        conn.commit()
-        print(f"Added assistant goal #{goal_id}: {objective}")
-        return
-    if args.goal_action == "pause":
-        conn.execute(
-            "UPDATE assistant_goals SET status='paused', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (args.id,),
-        )
-        conn.commit()
-        print(f"Paused assistant goal #{args.id}.")
-        return
-    if args.goal_action == "resume":
-        conn.execute(
-            "UPDATE assistant_goals SET status='active', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (args.id,),
-        )
-        conn.commit()
-        print(f"Resumed assistant goal #{args.id}.")
-        return
-    rows = conn.execute(
-        """
-        SELECT id, objective, status, cadence_minutes, priority, last_evaluated_at
-        FROM assistant_goals
-        ORDER BY status ASC, priority ASC, id ASC
-        LIMIT ?
-        """,
-        (args.limit,),
-    ).fetchall()
-    if not rows:
-        print("No assistant goals found.")
-        return
-    print("Assistant goals:")
-    for row in rows:
-        print(
-            f"- goal #{row['id']} status={row['status']} priority={row['priority']} "
-            f"cadence={row['cadence_minutes']}m last={row['last_evaluated_at'] or 'never'} objective={row['objective']}"
-        )
+            (args.limit,),
+        ).fetchall()
+        if not rows:
+            print("No assistant goals found.")
+            return
+        print("Assistant goals:")
+        for row in rows:
+            print(
+                f"- goal #{row['id']} status={row['status']} priority={row['priority']} "
+                f"cadence={row['cadence_minutes']}m last={row['last_evaluated_at'] or 'never'} objective={row['objective']}"
+            )
 
 
 def cmd_self_review(_: argparse.Namespace) -> None:
-    conn = get_connection()
-    policy = get_policy_map(conn)
-    checks: list[tuple[str, bool, str]] = []
-    active_goals = conn.execute("SELECT COUNT(*) AS c FROM assistant_goals WHERE status='active'").fetchone()["c"]
-    recent_runs = conn.execute(
-        "SELECT COUNT(*) AS c FROM autopilot_runs WHERE started_at >= datetime('now', '-1 day')"
-    ).fetchone()["c"]
-    pending = conn.execute(
-        "SELECT COUNT(*) AS c FROM agent_actions WHERE requires_approval=1 AND status='proposed'"
-    ).fetchone()["c"]
-    action_provider = bool(os.getenv("MYOS_ACTION_COMMAND", "").strip())
-    ai_provider = bool(os.getenv("MYOS_AI_COMMAND", "").strip())
-    connectors_ready = conn.execute("SELECT COUNT(*) AS c FROM sync_state WHERE last_status='ok'").fetchone()["c"]
+    with connection() as conn:
+        policy = get_policy_map(conn)
+        checks: list[tuple[str, bool, str]] = []
+        active_goals = conn.execute("SELECT COUNT(*) AS c FROM assistant_goals WHERE status='active'").fetchone()["c"]
+        recent_runs = conn.execute(
+            "SELECT COUNT(*) AS c FROM autopilot_runs WHERE started_at >= datetime('now', '-1 day')"
+        ).fetchone()["c"]
+        pending = conn.execute(
+            "SELECT COUNT(*) AS c FROM agent_actions WHERE requires_approval=1 AND status='proposed'"
+        ).fetchone()["c"]
+        action_provider = bool(os.getenv("MYOS_ACTION_COMMAND", "").strip())
+        ai_provider = bool(os.getenv("MYOS_AI_COMMAND", "").strip())
+        connectors_ready = conn.execute("SELECT COUNT(*) AS c FROM sync_state WHERE last_status='ok'").fetchone()["c"]
 
-    checks.append(("standing_goals", active_goals > 0, f"active_goals={active_goals}"))
-    checks.append(("autopilot_recent", recent_runs > 0, f"runs_24h={recent_runs}"))
-    checks.append(("approval_queue", pending < 20, f"pending_approvals={pending}"))
-    checks.append(
-        (
-            "ai_reasoning",
-            ai_provider or policy.get("ai_provider") == "local",
-            f"ai_command={'yes' if ai_provider else 'no'}",
+        checks.append(("standing_goals", active_goals > 0, f"active_goals={active_goals}"))
+        checks.append(("autopilot_recent", recent_runs > 0, f"runs_24h={recent_runs}"))
+        checks.append(("approval_queue", pending < 20, f"pending_approvals={pending}"))
+        checks.append(
+            (
+                "ai_reasoning",
+                ai_provider or policy.get("ai_provider") == "local",
+                f"ai_command={'yes' if ai_provider else 'no'}",
+            )
         )
-    )
-    checks.append(("action_provider", action_provider, f"action_command={'yes' if action_provider else 'no'}"))
-    checks.append(("live_connectors", connectors_ready > 0, f"connectors_ok={connectors_ready}"))
+        checks.append(("action_provider", action_provider, f"action_command={'yes' if action_provider else 'no'}"))
+        checks.append(("live_connectors", connectors_ready > 0, f"connectors_ok={connectors_ready}"))
 
-    missing = [name for name, ok, _ in checks if not ok]
-    status = "ready" if not missing else "needs_setup"
-    summary = ", ".join(f"{name}={'ok' if ok else 'missing'}" for name, ok, _ in checks)
-    conn.execute(
-        """
-        INSERT INTO assistant_self_reviews (status, summary, missing_capabilities_json)
-        VALUES (?, ?, ?)
-        """,
-        (status, summary, json.dumps(missing, ensure_ascii=True)),
-    )
-    conn.commit()
+        missing = [name for name, ok, _ in checks if not ok]
+        status = "ready" if not missing else "needs_setup"
+        summary = ", ".join(f"{name}={'ok' if ok else 'missing'}" for name, ok, _ in checks)
+        conn.execute(
+            """
+            INSERT INTO assistant_self_reviews (status, summary, missing_capabilities_json)
+            VALUES (?, ?, ?)
+            """,
+            (status, summary, json.dumps(missing, ensure_ascii=True)),
+        )
+        conn.commit()
     print(f"Autonomy self-review: {status}")
     for name, ok, detail in checks:
         print(f"- {'PASS' if ok else 'GAP'} {name}: {detail}")
@@ -1208,58 +1205,58 @@ def cmd_self_review(_: argparse.Namespace) -> None:
 
 
 def cmd_watch_dir(args: argparse.Namespace) -> None:
-    conn = get_connection()
-    if args.watch_action == "add":
-        path = str(Path(args.path).expanduser())
-        conn.execute(
+    with connection() as conn:
+        if args.watch_action == "add":
+            path = str(Path(args.path).expanduser())
+            conn.execute(
+                """
+                INSERT INTO assistant_watch_dirs (path, label, status, updated_at)
+                VALUES (?, ?, 'active', CURRENT_TIMESTAMP)
+                ON CONFLICT(path) DO UPDATE SET label=excluded.label, status='active', updated_at=CURRENT_TIMESTAMP
+                """,
+                (path, args.label),
+            )
+            conn.commit()
+            print(f"Watching directory: {path}")
+            return
+        if args.watch_action == "pause":
+            conn.execute(
+                "UPDATE assistant_watch_dirs SET status='paused', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (args.id,),
+            )
+            conn.commit()
+            print(f"Paused watch directory #{args.id}.")
+            return
+        if args.watch_action == "resume":
+            conn.execute(
+                "UPDATE assistant_watch_dirs SET status='active', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (args.id,),
+            )
+            conn.commit()
+            print(f"Resumed watch directory #{args.id}.")
+            return
+        rows = conn.execute(
             """
-            INSERT INTO assistant_watch_dirs (path, label, status, updated_at)
-            VALUES (?, ?, 'active', CURRENT_TIMESTAMP)
-            ON CONFLICT(path) DO UPDATE SET label=excluded.label, status='active', updated_at=CURRENT_TIMESTAMP
+            SELECT id, path, label, status
+            FROM assistant_watch_dirs
+            ORDER BY id ASC
+            LIMIT ?
             """,
-            (path, args.label),
-        )
-        conn.commit()
-        print(f"Watching directory: {path}")
-        return
-    if args.watch_action == "pause":
-        conn.execute(
-            "UPDATE assistant_watch_dirs SET status='paused', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (args.id,),
-        )
-        conn.commit()
-        print(f"Paused watch directory #{args.id}.")
-        return
-    if args.watch_action == "resume":
-        conn.execute(
-            "UPDATE assistant_watch_dirs SET status='active', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (args.id,),
-        )
-        conn.commit()
-        print(f"Resumed watch directory #{args.id}.")
-        return
-    rows = conn.execute(
-        """
-        SELECT id, path, label, status
-        FROM assistant_watch_dirs
-        ORDER BY id ASC
-        LIMIT ?
-        """,
-        (args.limit,),
-    ).fetchall()
-    if not rows:
-        print("No watch directories configured.")
-        return
-    print("Watch directories:")
-    for row in rows:
-        label = f" label={row['label']}" if row["label"] else ""
-        print(f"- #{row['id']} status={row['status']}{label} path={row['path']}")
+            (args.limit,),
+        ).fetchall()
+        if not rows:
+            print("No watch directories configured.")
+            return
+        print("Watch directories:")
+        for row in rows:
+            label = f" label={row['label']}" if row["label"] else ""
+            print(f"- #{row['id']} status={row['status']}{label} path={row['path']}")
 
 
 def cmd_watch_scan(args: argparse.Namespace) -> None:
-    conn = get_connection()
-    files, suggestions = _scan_watch_dirs(conn, limit=args.limit, min_confidence=args.min_confidence)
-    conn.commit()
+    with connection() as conn:
+        files, suggestions = _scan_watch_dirs(conn, limit=args.limit, min_confidence=args.min_confidence)
+        conn.commit()
     print(f"Watch scan complete: files_ingested={files}, suggestions_created={suggestions}")
 
 
@@ -1310,58 +1307,58 @@ def cmd_pulse(args: argparse.Namespace) -> None:
         outputs = run_cycle(meeting_hours=args.meeting_hours)
         print("Pulse cycle done:", ", ".join(outputs))
         return
-    lock_conn = get_connection()
-    owner = f"pulse-{os.getpid()}"
-    while True:
-        if acquire_lock(lock_conn, "pulse", owner):
-            try:
-                outputs = run_cycle(meeting_hours=args.meeting_hours)
-                print(f"[{datetime.now().isoformat(timespec='seconds')}] cycle -> {', '.join(outputs)}")
-            finally:
-                release_lock(lock_conn, "pulse", owner)
-                lock_conn.commit()
-        else:
-            print("pulse: another instance is mid-cycle; skipping this tick.")
-        time.sleep(args.interval_sec)
+    with connection() as lock_conn:
+        owner = f"pulse-{os.getpid()}"
+        while True:
+            if acquire_lock(lock_conn, "pulse", owner):
+                try:
+                    outputs = run_cycle(meeting_hours=args.meeting_hours)
+                    print(f"[{datetime.now().isoformat(timespec='seconds')}] cycle -> {', '.join(outputs)}")
+                finally:
+                    release_lock(lock_conn, "pulse", owner)
+                    lock_conn.commit()
+            else:
+                print("pulse: another instance is mid-cycle; skipping this tick.")
+            time.sleep(args.interval_sec)
 
 
 def cmd_chat(args: argparse.Namespace) -> None:
     if getattr(args, "env_file", ""):
         load_env_file(args.env_file)
-    conn = get_connection()
-    backend = providers.get_backend(args.backend or None)
-    ok, detail = backend.available()
-    if not ok:
-        print(f"Backend '{backend.name}' is not available: {detail}")
-        raise SystemExit(1)
-    print(f"MYOS chat [{backend.name}] — ask anything; external changes are proposed for your approval.")
-    print("Type 'exit' to quit.")
-    history: list[dict] = []
-    conversation_id: int | None = None
-    while True:
-        try:
-            user = input("\nyou> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            break
-        if not user:
-            continue
-        if user.lower() in ("exit", "quit", ":q"):
-            break
-        result = assistant.run_turn(
-            conn,
-            user,
-            history,
-            backend_name=args.backend or None,
-            surface="chat",
-            conversation_id=conversation_id,
-        )
-        conversation_id = result.get("conversation_id", conversation_id)
-        history = result.get("history", history)
-        reply = (result.get("reply") or "").strip()
-        if reply:
-            print(f"\nmyos> {reply}")
-        _handle_proposals(conn, result.get("proposed_action_ids", []))
+    with connection() as conn:
+        backend = providers.get_backend(args.backend or None)
+        ok, detail = backend.available()
+        if not ok:
+            print(f"Backend '{backend.name}' is not available: {detail}")
+            raise SystemExit(1)
+        print(f"MYOS chat [{backend.name}] — ask anything; external changes are proposed for your approval.")
+        print("Type 'exit' to quit.")
+        history: list[dict] = []
+        conversation_id: int | None = None
+        while True:
+            try:
+                user = input("\nyou> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            if not user:
+                continue
+            if user.lower() in ("exit", "quit", ":q"):
+                break
+            result = assistant.run_turn(
+                conn,
+                user,
+                history,
+                backend_name=args.backend or None,
+                surface="chat",
+                conversation_id=conversation_id,
+            )
+            conversation_id = result.get("conversation_id", conversation_id)
+            history = result.get("history", history)
+            reply = (result.get("reply") or "").strip()
+            if reply:
+                print(f"\nmyos> {reply}")
+            _handle_proposals(conn, result.get("proposed_action_ids", []))
 
 
 def cmd_voice(args: argparse.Namespace) -> None:
@@ -1369,79 +1366,81 @@ def cmd_voice(args: argparse.Namespace) -> None:
 
     if getattr(args, "env_file", ""):
         load_env_file(args.env_file)
-    conn = get_connection()
-    backend = providers.get_backend(args.backend or None)
-    ok, detail = backend.available()
-    if not ok:
-        print(f"Backend '{backend.name}' is not available: {detail}")
-        raise SystemExit(1)
-    print(f"MYOS voice [{backend.name}] — push-to-talk. Ctrl-C to quit.")
-    history: list[dict] = []
-    conversation_id: int | None = None
-    while True:
-        try:
-            wav = voice.record_push_to_talk()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            break
-        if not wav:
-            print("Voice capture unavailable; exiting voice mode.")
-            break
-        text = voice.transcribe(wav)
-        with contextlib.suppress(OSError):
-            os.remove(wav)
-        if not text:
-            print("(heard nothing — try again)")
-            continue
-        print(f"you> {text}")
-        result = assistant.run_turn(
-            conn,
-            text,
-            history,
-            backend_name=args.backend or None,
-            surface="voice",
-            conversation_id=conversation_id,
-        )
-        conversation_id = result.get("conversation_id", conversation_id)
-        history = result.get("history", history)
-        reply = (result.get("reply") or "").strip()
-        if reply:
-            print(f"myos> {reply}")
-            if not args.text_reply:
-                voice.speak(reply)
-        _handle_proposals(conn, result.get("proposed_action_ids", []))
+    with connection() as conn:
+        backend = providers.get_backend(args.backend or None)
+        ok, detail = backend.available()
+        if not ok:
+            print(f"Backend '{backend.name}' is not available: {detail}")
+            raise SystemExit(1)
+        print(f"MYOS voice [{backend.name}] — push-to-talk. Ctrl-C to quit.")
+        history: list[dict] = []
+        conversation_id: int | None = None
+        while True:
+            try:
+                wav = voice.record_push_to_talk()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            if not wav:
+                print("Voice capture unavailable; exiting voice mode.")
+                break
+            text = voice.transcribe(wav)
+            with contextlib.suppress(OSError):
+                os.remove(wav)
+            if not text:
+                print("(heard nothing — try again)")
+                continue
+            print(f"you> {text}")
+            result = assistant.run_turn(
+                conn,
+                text,
+                history,
+                backend_name=args.backend or None,
+                surface="voice",
+                conversation_id=conversation_id,
+            )
+            conversation_id = result.get("conversation_id", conversation_id)
+            history = result.get("history", history)
+            reply = (result.get("reply") or "").strip()
+            if reply:
+                print(f"myos> {reply}")
+                if not args.text_reply:
+                    voice.speak(reply)
+            _handle_proposals(conn, result.get("proposed_action_ids", []))
 
 
 def cmd_team(args: argparse.Namespace) -> None:
-    conn = get_connection()
-    if getattr(args, "team_action", None) == "add":
-        pid = em.upsert_person(conn, args.name, role=args.role, team=args.team, relation=args.relation)
-        conn.commit()
-        print(f"Saved person #{pid}: {args.name}")
-        return
-    rows = em.list_team(conn)
-    if not rows:
-        print('No people tracked yet. Add one: myos team add "<name>" --role ... --relation report')
-        return
-    print("Team & stakeholders:")
-    for r in rows:
-        extra = "".join(filter(None, [f" — {r['role']}" if r["role"] else "", f" @{r['team']}" if r["team"] else ""]))
-        print(f"- {r['name']} ({r['relation']}){extra}")
+    with connection() as conn:
+        if getattr(args, "team_action", None) == "add":
+            pid = em.upsert_person(conn, args.name, role=args.role, team=args.team, relation=args.relation)
+            conn.commit()
+            print(f"Saved person #{pid}: {args.name}")
+            return
+        rows = em.list_team(conn)
+        if not rows:
+            print('No people tracked yet. Add one: myos team add "<name>" --role ... --relation report')
+            return
+        print("Team & stakeholders:")
+        for r in rows:
+            extra = "".join(
+                filter(None, [f" — {r['role']}" if r["role"] else "", f" @{r['team']}" if r["team"] else ""])
+            )
+            print(f"- {r['name']} ({r['relation']}){extra}")
 
 
 def cmd_note(args: argparse.Namespace) -> None:
-    conn = get_connection()
-    res = em.route_note(conn, args.text)
-    conn.commit()
+    with connection() as conn:
+        res = em.route_note(conn, args.text)
+        conn.commit()
     routed = res.pop("routed", "inbox")
     detail = ", ".join(f"{k}={v}" for k, v in res.items() if k not in ("created",))
     print(f"Inferred and routed → {routed}" + (f" ({detail})" if detail else ""))
 
 
 def cmd_one_on_one(args: argparse.Namespace) -> None:
-    conn = get_connection()
-    res = em.log_one_on_one(conn, args.person, args.notes)
-    conn.commit()
+    with connection() as conn:
+        res = em.log_one_on_one(conn, args.person, args.notes)
+        conn.commit()
     print(
         f"Logged 1:1 #{res['one_on_one_id']} with {args.person}; "
         f"{len(res['action_item_ids'])} action item(s) captured to your inbox."
@@ -1449,20 +1448,20 @@ def cmd_one_on_one(args: argparse.Namespace) -> None:
 
 
 def cmd_meeting(args: argparse.Namespace) -> None:
-    conn = get_connection()
-    text = args.text or ""
-    source = "manual"
-    if args.audio:
-        from . import voice
+    with connection() as conn:
+        text = args.text or ""
+        source = "manual"
+        if args.audio:
+            from . import voice
 
-        text = voice.transcribe(args.audio) or text
-        source = "audio"
-        if not text:
-            print("No transcript produced (install faster-whisper, or pass notes as text).")
-            return
-    title = args.title or em._first_sentence(text, 60) or "Meeting"
-    res = em.capture_meeting(conn, title, text, source=source)
-    conn.commit()
+            text = voice.transcribe(args.audio) or text
+            source = "audio"
+            if not text:
+                print("No transcript produced (install faster-whisper, or pass notes as text).")
+                return
+        title = args.title or em._first_sentence(text, 60) or "Meeting"
+        res = em.capture_meeting(conn, title, text, source=source)
+        conn.commit()
     print(
         f"Captured meeting #{res['meeting_id']} '{title}': "
         f"{res['action_items']} action item(s), {len(res['item_ids'])} item(s) total."
@@ -1470,24 +1469,24 @@ def cmd_meeting(args: argparse.Namespace) -> None:
 
 
 def cmd_review_draft(args: argparse.Namespace) -> None:
-    conn = get_connection()
-    print(em.build_review_packet(conn, args.person))
+    with connection() as conn:
+        print(em.build_review_packet(conn, args.person))
 
 
 def cmd_risk_scan(args: argparse.Namespace) -> None:
-    conn = get_connection()
-    findings = watch.scan_project_risks(conn, risk_threshold=args.risk_threshold, limit=args.limit)
-    if not findings:
-        print("No project risks detected. (Sync connectors first: myos sync --connector all)")
-        return
-    print(f"Project risks ({len(findings)}):")
-    for f in findings:
-        owner = f" — {f['owner']}" if f["owner"] else ""
-        print(f"- [{f['severity']}] {f['kind']}: {f['title']} ({f['reason']}){owner}")
-    if args.draft_nudges:
-        ids = watch.draft_nudges(conn, findings, limit=args.nudge_limit)
-        print(f"\nDrafted {len(ids)} nudge(s) for approval: {', '.join('#' + str(i) for i in ids)}")
-        print("Review and send (graded autonomy gates external posts): myos approve --list")
+    with connection() as conn:
+        findings = watch.scan_project_risks(conn, risk_threshold=args.risk_threshold, limit=args.limit)
+        if not findings:
+            print("No project risks detected. (Sync connectors first: myos sync --connector all)")
+            return
+        print(f"Project risks ({len(findings)}):")
+        for f in findings:
+            owner = f" — {f['owner']}" if f["owner"] else ""
+            print(f"- [{f['severity']}] {f['kind']}: {f['title']} ({f['reason']}){owner}")
+        if args.draft_nudges:
+            ids = watch.draft_nudges(conn, findings, limit=args.nudge_limit)
+            print(f"\nDrafted {len(ids)} nudge(s) for approval: {', '.join('#' + str(i) for i in ids)}")
+            print("Review and send (graded autonomy gates external posts): myos approve --list")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2555,51 +2554,50 @@ def main() -> None:
     command = str(getattr(args, "command", "") or "unknown")
     command_path = _command_path(args)
     spec = command_registry.find_command(command)
-    conn = get_connection()
-    correlation_id = observability.start_trace(
-        conn,
-        command=command,
-        command_path=command_path,
-        parent_correlation_id=observability.current_correlation_id(),
-        argv_hash=_argv_hash(sys.argv[1:]),
-    )
-    if spec:
-        observability.link_trace(
+    with connection() as conn:
+        correlation_id = observability.start_trace(
             conn,
-            correlation_id,
-            intent=spec.intent,
-            command_tier=spec.tier,
-            safety_level=spec.safety,
+            command=command,
+            command_path=command_path,
+            parent_correlation_id=observability.current_correlation_id(),
+            argv_hash=_argv_hash(sys.argv[1:]),
         )
-        conn.commit()
-    previous_trace = os.environ.get(observability.TRACE_ENV)
-    os.environ[observability.TRACE_ENV] = correlation_id
-    started = time.monotonic()
-    status = "completed"
-    try:
-        args.func(args)
-    except SystemExit as exc:
-        code = exc.code
-        status = "completed" if code in (None, 0) else "failed"
-        raise
-    except Exception:
-        status = "failed"
-        raise
-    finally:
-        duration_ms = int((time.monotonic() - started) * 1000)
-        observability.finish_trace(
-            conn,
-            correlation_id,
-            status=status,
-            duration_ms=duration_ms,
-            summary=f"{command_path} {status}",
-            metadata={"command_path": command_path},
-        )
-        if previous_trace is None:
-            os.environ.pop(observability.TRACE_ENV, None)
-        else:
-            os.environ[observability.TRACE_ENV] = previous_trace
-        conn.close()
+        if spec:
+            observability.link_trace(
+                conn,
+                correlation_id,
+                intent=spec.intent,
+                command_tier=spec.tier,
+                safety_level=spec.safety,
+            )
+            conn.commit()
+        previous_trace = os.environ.get(observability.TRACE_ENV)
+        os.environ[observability.TRACE_ENV] = correlation_id
+        started = time.monotonic()
+        status = "completed"
+        try:
+            args.func(args)
+        except SystemExit as exc:
+            code = exc.code
+            status = "completed" if code in (None, 0) else "failed"
+            raise
+        except Exception:
+            status = "failed"
+            raise
+        finally:
+            duration_ms = int((time.monotonic() - started) * 1000)
+            observability.finish_trace(
+                conn,
+                correlation_id,
+                status=status,
+                duration_ms=duration_ms,
+                summary=f"{command_path} {status}",
+                metadata={"command_path": command_path},
+            )
+            if previous_trace is None:
+                os.environ.pop(observability.TRACE_ENV, None)
+            else:
+                os.environ[observability.TRACE_ENV] = previous_trace
 
 
 if __name__ == "__main__":
