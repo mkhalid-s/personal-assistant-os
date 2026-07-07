@@ -811,6 +811,8 @@ def cmd_release_check(args: argparse.Namespace) -> None:
         root / "LICENSE",
         root / "README.md",
         root / "CHANGELOG.md",
+        root / "CONTRIBUTING.md",
+        root / "DEVELOPING.md",
         root / "docs" / "MIGRATIONS.md",
         root / "docs" / "RECOVERY.md",
         root / ".github" / "workflows" / "ci.yml",
