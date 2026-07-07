@@ -977,7 +977,8 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("34 add_autonomy_run_ledger", list_out)
             self.assertIn("35 add_recommendation_feedback", list_out)
             self.assertIn("36 add_factory_executor_backend", list_out)
-            self.assertIn("Current version: 36 / expected 36", list_out)
+            self.assertIn("37 add_approval_integrity_binding", list_out)
+            self.assertIn("Current version: 37 / expected 37", list_out)
 
             backup_out = run("backup", "--output", str(backup_path))
             self.assertIn("Backup created", backup_out)
@@ -3206,7 +3207,7 @@ class CliFlowTest(unittest.TestCase):
             schema_version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
             conn.close()
             self.assertEqual(ledger_count, 3)
-            self.assertEqual(schema_version, 36)
+            self.assertEqual(schema_version, 37)
 
     def test_autopilot_loop_goal_wrapper(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3378,7 +3379,7 @@ class CliFlowTest(unittest.TestCase):
             self.assertTrue(row[0])
             self.assertEqual(row[1], len("Helpful next step"))
             self.assertNotIn("Helpful next step", raw)
-            self.assertEqual(schema_version, 36)
+            self.assertEqual(schema_version, 37)
 
 
 if __name__ == "__main__":

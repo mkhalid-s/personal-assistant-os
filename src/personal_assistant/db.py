@@ -4,7 +4,7 @@ import sqlite3
 import os
 from pathlib import Path
 
-EXPECTED_SCHEMA_VERSION = 36
+EXPECTED_SCHEMA_VERSION = 37
 
 
 def resolve_db_path() -> Path:
@@ -1564,6 +1564,23 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
             (36, "add_factory_executor_backend"),
+        )
+
+    if current < 37:
+        # Approval integrity binding: pin a content hash of the payload and the
+        # approval timestamp at the moment an action is approved, so tampering
+        # or long-stale approvals are refused at execute time. Nullable columns
+        # keep pre-existing rows executable (skip-when-null); rows approved via
+        # `approve_and_execute` after this migration are always verified.
+        columns = conn.execute("PRAGMA table_info(agent_actions)").fetchall()
+        names = {row["name"] for row in columns}
+        if "payload_hash" not in names:
+            conn.execute("ALTER TABLE agent_actions ADD COLUMN payload_hash TEXT")
+        if "approved_at" not in names:
+            conn.execute("ALTER TABLE agent_actions ADD COLUMN approved_at TEXT")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (37, "add_approval_integrity_binding"),
         )
 
     _ensure_fts5(conn)  # self-heal: build the FTS index if a no-FTS5 run stranded migration 17
