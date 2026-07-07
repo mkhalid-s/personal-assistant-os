@@ -77,13 +77,18 @@ jobs:
       # `zero exec`, parses schema-versioned stream JSON, and persists agent
       # runs. A strict regression here can silently drop tool events, mis-
       # attribute exit codes, or corrupt the redacted result payload.
-      - name: Mypy strict (command_registry + privacy + db + zero_executor)
+      # execution.py is the approve-and-execute safety-critical core: it owns
+      # the hard destructive guard, the approval integrity check, the payload
+      # hash pinning, the TTL enforcement, and every execution receipt write.
+      # A type regression here can silently mis-classify or corrupt approvals.
+      - name: Mypy strict (command_registry + privacy + db + zero_executor + execution)
         run: |
           mypy --strict \
             src/personal_assistant/command_registry.py \
             src/personal_assistant/privacy.py \
             src/personal_assistant/db.py \
-            src/personal_assistant/zero_executor.py
+            src/personal_assistant/zero_executor.py \
+            src/personal_assistant/execution.py
 
       # Advisory: the rest of the tree will be brought up to the fatal bar in
       # follow-up slices. Kept green so contributors see the noise without
@@ -95,12 +100,6 @@ jobs:
       - name: Ruff format --check (whole tree, advisory)
         continue-on-error: true
         run: ruff format --check src/personal_assistant tests
-
-      - name: Mypy strict (remaining safety-critical modules, advisory)
-        continue-on-error: true
-        run: |
-          mypy --strict \
-            src/personal_assistant/execution.py
 
       - name: pip-audit (advisory)
         continue-on-error: true
