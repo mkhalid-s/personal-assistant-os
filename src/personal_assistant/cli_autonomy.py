@@ -1,10 +1,62 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
 
 from . import autonomy, autonomy_loop, command_registry
 from .db import get_connection
+
+
+def _loop_status_json_entry(row: dict) -> dict:
+    """Machine-readable snapshot of one durable autonomy loop task."""
+    return {
+        "task_id": int(row.get("task_id") or 0),
+        "objective": str(row.get("objective") or ""),
+        "status": str(row.get("status") or ""),
+        "mode": str(row.get("mode") or ""),
+        "backend": str(row.get("backend") or ""),
+        "cycles": int(row.get("cycles") or 0),
+        "provider": str(row.get("provider") or ""),
+        "summary": str(row.get("summary") or ""),
+        "latest_run_id": int(row["latest_run_id"]) if row.get("latest_run_id") else None,
+        "total_actions": int(row.get("total_actions") or 0),
+        "executed": int(row.get("executed") or 0),
+        "pending_approvals": int(row.get("pending_approvals") or 0),
+    }
+
+
+def _loop_ledger_json_entry(row: dict) -> dict:
+    """Machine-readable snapshot of one autonomy run ledger row.
+
+    `metadata_json` is exposed as parsed `metadata` so downstream automation
+    can consume it without a second JSON parse; the raw text field is dropped
+    from the payload to keep the schema clean.
+    """
+    metadata: object = None
+    raw_metadata = row.get("metadata_json")
+    if raw_metadata:
+        try:
+            metadata = json.loads(raw_metadata)
+        except (TypeError, ValueError):
+            metadata = None
+    return {
+        "id": int(row["id"]),
+        "decision_type": str(row.get("decision_type") or ""),
+        "status": str(row.get("status") or ""),
+        "reason": str(row.get("reason") or ""),
+        "assistant_goal_id": int(row["assistant_goal_id"]) if row.get("assistant_goal_id") is not None else None,
+        "agent_task_id": int(row["agent_task_id"]) if row.get("agent_task_id") is not None else None,
+        "agent_run_id": int(row["agent_run_id"]) if row.get("agent_run_id") is not None else None,
+        "correlation_id": str(row.get("correlation_id") or ""),
+        "provider": str(row.get("provider") or ""),
+        "actions_proposed": int(row.get("actions_proposed") or 0),
+        "safe_actions_executed": int(row.get("safe_actions_executed") or 0),
+        "pending_approvals": int(row.get("pending_approvals") or 0),
+        "blocked_or_failed": int(row.get("blocked_or_failed") or 0),
+        "metadata": metadata,
+        "created_at": str(row.get("created_at") or ""),
+    }
 
 
 def command_autonomy_decision(conn: sqlite3.Connection, command: str, *, requested_mode: str = "") -> dict[str, object]:
@@ -169,6 +221,16 @@ def cmd_loop(args: argparse.Namespace) -> None:
             return
         if action == "status":
             rows = autonomy_loop.loop_status(conn, task_id=args.task, limit=args.limit)
+            if getattr(args, "json", False):
+                payload = {
+                    "schema": "myos.loop.status.v1",
+                    "count": len(rows),
+                    "limit": int(args.limit),
+                    "task_filter": int(args.task) if args.task is not None else None,
+                    "tasks": [_loop_status_json_entry(row) for row in rows],
+                }
+                print(json.dumps(payload, ensure_ascii=True))
+                return
             if not rows:
                 print("No autonomy loop tasks found.")
                 return
@@ -226,6 +288,20 @@ def cmd_loop(args: argparse.Namespace) -> None:
                 task_id=args.task,
                 status=args.status,
             )
+            if getattr(args, "json", False):
+                payload = {
+                    "schema": "myos.loop.ledger.v1",
+                    "count": len(rows),
+                    "limit": int(args.limit),
+                    "filters": {
+                        "goal_id": int(args.goal) if args.goal is not None else None,
+                        "task_id": int(args.task) if args.task is not None else None,
+                        "status": str(args.status or ""),
+                    },
+                    "entries": [_loop_ledger_json_entry(row) for row in rows],
+                }
+                print(json.dumps(payload, ensure_ascii=True))
+                return
             if not rows:
                 print("No autonomy ledger entries found.")
                 filters = []

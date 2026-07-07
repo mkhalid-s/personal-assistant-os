@@ -1825,6 +1825,7 @@ def build_parser() -> argparse.ArgumentParser:
     loop_status = loop_sub.add_parser("status", help="Show durable autonomy loop status.")
     loop_status.add_argument("--task", type=int)
     loop_status.add_argument("--limit", type=int, default=10)
+    loop_status.add_argument("--json", action="store_true", help="Emit a single JSON object instead of formatted text.")
     loop_status.set_defaults(func=cmd_loop)
     loop_goals = loop_sub.add_parser(
         "goals",
@@ -1876,6 +1877,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Filter by ledger status.",
     )
+    loop_ledger.add_argument("--json", action="store_true", help="Emit a single JSON object instead of formatted text.")
     loop_ledger.set_defaults(func=cmd_loop)
 
     capture = sub.add_parser("capture", help="Capture an inbox item.")
