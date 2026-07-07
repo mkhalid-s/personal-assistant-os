@@ -67,7 +67,7 @@ class CliFlowTest(unittest.TestCase):
         self.assertIn("myos approve --action <action_id> --execute", runbook)
         self.assertIn("Do not commit, push, open PRs, or mutate external systems", runbook)
         self.assertIn("MYOS approval is still required", runbook)
-        self.assertIn('"examples"', Path("src/personal_assistant/cli.py").read_text())
+        self.assertIn('"examples"', Path("src/personal_assistant/cli_health.py").read_text())
 
     def test_router_commands_exposes_model_safe_metadata(self) -> None:
         env = os.environ.copy()
