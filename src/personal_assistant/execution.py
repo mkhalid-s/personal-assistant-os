@@ -18,11 +18,13 @@ import json
 import os
 import re
 import shlex
+import sqlite3
 import subprocess
 import sys
 import time
 import urllib.request
 from datetime import datetime, timezone
+from typing import Any
 
 from . import autonomy, observability
 from .approval_context import compact_action_review_context
@@ -87,7 +89,7 @@ def _parse_approved_at(raw: object) -> datetime | None:
         return None
 
 
-def _row_column_names(row) -> set[str]:
+def _row_column_names(row: Any) -> set[str]:
     try:
         return set(row.keys())
     except Exception:
@@ -97,7 +99,7 @@ def _row_column_names(row) -> set[str]:
             return set()
 
 
-def verify_approval_integrity(row, *, ttl_seconds: int | None = None) -> dict[str, object]:
+def verify_approval_integrity(row: Any, *, ttl_seconds: int | None = None) -> dict[str, object]:
     """Verify that a row's payload_json still matches the hash pinned at
     approval time and that the approval has not exceeded its TTL. Returns a
     dict with `ok`, `reason`, `payload_hash_verified`, and optional
@@ -220,7 +222,7 @@ def _truthy(value: object) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _connector_live_enabled(conn, connector: str) -> bool:
+def _connector_live_enabled(conn: sqlite3.Connection, connector: str) -> bool:
     policy = get_policy_map(conn)
     key = f"{connector}_live_mutations"
     return (
@@ -288,10 +290,18 @@ def normalize_connector_mutation(payload: dict[str, object], *, title: str = "As
     }
 
 
-def _verification_receipt_context(conn, payload: dict[str, object]) -> dict[str, object] | None:
+def _verification_receipt_context(
+    conn: sqlite3.Connection, payload: dict[str, object]
+) -> dict[str, object] | None:
+    raw = payload.get("verification_commands") or []
+    # Payloads are hand-drafted JSON — a scalar (e.g. a single string) in
+    # `verification_commands` would silently iterate as characters and produce
+    # garbage receipt entries. Defensively require an iterable *container*.
+    if not isinstance(raw, (list, tuple)):
+        return None
     commands = [
         apply_privacy_filters(conn, str(command).strip())[:300]
-        for command in (payload.get("verification_commands") or [])
+        for command in raw
         if str(command).strip()
     ][:5]
     if not commands:
@@ -305,8 +315,8 @@ def _verification_receipt_context(conn, payload: dict[str, object]) -> dict[str,
 
 
 def _record_execution_receipt(
-    conn,
-    row,
+    conn: sqlite3.Connection,
+    row: Any,
     *,
     approved: bool,
     final_status: str,
@@ -360,6 +370,9 @@ def _record_execution_receipt(
             json.dumps(request, ensure_ascii=True)[:8000],
         ),
     )
+    # cur.lastrowid is Optional[int]; INSERT always sets it, but the typing
+    # stubs still allow None so we assert to keep mypy --strict happy.
+    assert cur.lastrowid is not None
     receipt_id = int(cur.lastrowid)
     observability.link_current_trace(
         conn,
@@ -407,7 +420,7 @@ def _record_execution_receipt(
             )
 
 
-def _execute_agent_action(conn, row) -> str:
+def _execute_agent_action(conn: sqlite3.Connection, row: Any) -> str:
     payload = json.loads(row["payload_json"] or "{}")
     action_type = row["action_type"]
     # Hard destructive guard — protects every execution path (cmd_act, autopilot,
@@ -487,7 +500,9 @@ def _execute_agent_action(conn, row) -> str:
     return "marked complete; external mutation adapter not configured"
 
 
-def _execute_action_provider(conn, row, payload: dict[str, object]) -> str:
+def _execute_action_provider(
+    conn: sqlite3.Connection, row: Any, payload: dict[str, object]
+) -> str:
     command = os.getenv("MYOS_ACTION_COMMAND", "").strip()
     provider = os.getenv("MYOS_ACTION_PROVIDER", "command")
     clean_payload = redact_obj(conn, payload)  # redact leaves, never the JSON envelope (C-3)
@@ -555,7 +570,7 @@ def _read_provider_stdin() -> dict[str, object]:
 
 
 def _outbox_write(
-    conn,
+    conn: sqlite3.Connection,
     *,
     agent_action_id: int | None,
     provider: str,
@@ -647,11 +662,12 @@ def _post_jira_comment(issue_key: str, body: str) -> str:
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
-        return resp.read().decode("utf-8")[:1000]
+        text: str = resp.read().decode("utf-8")
+        return text[:1000]
 
 
 def execute_connector_mutation(
-    conn,
+    conn: sqlite3.Connection,
     *,
     agent_action_id: int | None,
     action_type: str,
@@ -734,10 +750,17 @@ def _post_github_comment(payload: dict[str, object], body: str) -> str:
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
-        return resp.read().decode("utf-8")[:1000]
+        text: str = resp.read().decode("utf-8")
+        return text[:1000]
 
 
-def approve_and_execute(conn, action_id: int, *, do_approve: bool = True, execute: bool = True) -> dict:
+def approve_and_execute(
+    conn: sqlite3.Connection,
+    action_id: int,
+    *,
+    do_approve: bool = True,
+    execute: bool = True,
+) -> dict[str, Any]:
     """Approve and/or execute a single agent_action. Returns a structured outcome
     (no printing / no SystemExit) so both cmd_act and _handle_proposals can drive it.
 
@@ -836,7 +859,7 @@ def approve_and_execute(conn, action_id: int, *, do_approve: bool = True, execut
             "approved": approved, "result": result, "status": new_status}
 
 
-def _print_exec_outcome(res: dict, action_id: int) -> None:
+def _print_exec_outcome(res: dict[str, Any], action_id: int) -> None:
     code = res["code"]
     if code == "executed":
         print(f"    ✓ executed action #{action_id}: {res['result']}")
@@ -848,7 +871,7 @@ def _print_exec_outcome(res: dict, action_id: int) -> None:
         print(f"    action #{action_id}: {code}")
 
 
-def _handle_proposals(conn, action_ids: list[int]) -> None:
+def _handle_proposals(conn: sqlite3.Connection, action_ids: list[int]) -> None:
     """Apply graded autonomy to each proposed action: auto-run, one-tap confirm, or block."""
     level = autonomy.level_from_policy(conn)
     for aid in action_ids:
