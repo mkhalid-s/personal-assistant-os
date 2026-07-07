@@ -6,7 +6,16 @@ import json
 from . import assistant, intents, plans
 from .approval_context import format_action_review_context, format_compact_action_review_context
 from .db import append_event, get_connection
-from .execution import _provider_target_summary, approve_and_execute
+from .execution import (
+    _outbox_write,
+    _post_github_comment,
+    _post_jira_comment,
+    _provider_body,
+    _provider_target_summary,
+    _read_provider_stdin,
+    approve_and_execute,
+    execute_connector_mutation,
+)
 from .planner import _agent_analogies, _ai_reason_artifacts
 from .privacy import apply_privacy_filters, redact_obj
 
@@ -600,3 +609,107 @@ def cmd_agent_run(args: argparse.Namespace) -> None:
     print(f"task: #{task_id}")
     print(f"summary: {summary}")
     print(f"approval_gate: {role_packet['approval_gate']}")
+
+
+def cmd_action_provider(args: argparse.Namespace) -> None:
+    """External-action provider entrypoint.
+
+    Reads a single JSON request from stdin, applies redaction, drafts the
+    corresponding outbox row, and — when `--execute` is passed with an
+    approved action — dispatches the mutation through the connector
+    execution path. All output is a single JSON object so downstream
+    tooling (executors, tests, dashboards) can parse it directly.
+    """
+    conn = get_connection()
+    try:
+        request = _read_provider_stdin()
+        payload = request.get("payload", {})
+        if not isinstance(payload, dict):
+            payload = {}
+        safety = request.get("safety", {})
+        if not isinstance(safety, dict):
+            safety = {}
+        approved = bool(safety.get("approved"))
+        action_type = str(request.get("action_type", ""))
+        target = str(payload.get("target") or payload.get("target_type") or "outbox").lower()
+        title = apply_privacy_filters(conn, str(request.get("title") or "Assistant action"))
+        body = apply_privacy_filters(conn, _provider_body(payload))
+        if not body:
+            raise ValueError("action payload does not include draft/body/text")
+        agent_action_id = request.get("action_id")
+        agent_action_id = int(agent_action_id) if agent_action_id is not None else None
+
+        target_ref = str(payload.get("issue_key") or payload.get("issue_number") or payload.get("pr_number") or "draft")
+        if target in {"jira", "github", "confluence", "aha"} or payload.get("operation"):
+            result = execute_connector_mutation(
+                conn,
+                agent_action_id=agent_action_id,
+                action_type=action_type,
+                title=title,
+                payload=payload,
+                approved=approved,
+                execute_live=bool(args.execute),
+            )
+            conn.commit()
+            if result["status"] in {"blocked", "failed"}:
+                print(json.dumps({"status": result["status"], "error": result.get("error", "")}, ensure_ascii=True))
+                raise SystemExit(1)
+            print(json.dumps(result, ensure_ascii=True))
+            return
+
+        if not args.execute:
+            outbox_id = _outbox_write(
+                conn,
+                agent_action_id=agent_action_id,
+                provider="builtin",
+                target_type=target,
+                target_ref=target_ref,
+                title=title,
+                body=body,
+                status="drafted",
+                payload=payload,
+            )
+            conn.commit()
+            print(
+                json.dumps(
+                    {"status": "drafted", "outbox_id": outbox_id, "target": _provider_target_summary(payload)},
+                    ensure_ascii=True,
+                )
+            )
+            return
+
+        if not approved:
+            raise PermissionError("approved action required for --execute")
+        if action_type != "draft_external_update":
+            raise ValueError(f"unsupported executable action_type={action_type}")
+
+        outbox_id = _outbox_write(
+            conn,
+            agent_action_id=agent_action_id,
+            provider="builtin",
+            target_type=target,
+            target_ref=target_ref,
+            title=title,
+            body=body,
+            status="pending_execute",
+            payload=payload,
+        )
+        conn.commit()
+        if target == "jira":
+            target_ref = str(payload.get("issue_key") or "")
+            response = _post_jira_comment(target_ref, body)
+        elif target == "github":
+            target_ref = str(payload.get("issue_number") or payload.get("pr_number") or "")
+            response = _post_github_comment(payload, body)
+        else:
+            raise ValueError("execute target must be jira or github")
+        conn.execute(
+            "UPDATE action_outbox SET status='sent', sent_at=CURRENT_TIMESTAMP WHERE id=?",
+            (outbox_id,),
+        )
+        conn.commit()
+        print(json.dumps({"status": "sent", "outbox_id": outbox_id, "provider_response": response}, ensure_ascii=True))
+    except Exception as exc:
+        conn.rollback()
+        print(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=True))
+        raise SystemExit(1)
