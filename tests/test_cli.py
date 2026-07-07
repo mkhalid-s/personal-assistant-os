@@ -3724,5 +3724,156 @@ class CliFlowTest(unittest.TestCase):
             self.assertEqual(schema_version, 37)
 
 
+class DbConnectionHelperTest(unittest.TestCase):
+    """Regression tests for the ``db.connection()`` context-manager helper.
+
+    The bugs these tests would have caught: ``cmd_worker`` (commit ``b1ba35e``)
+    and ``cmd_approve`` (commit ``1274d81``) both called bare
+    ``get_connection()`` without a ``try/finally`` close, leaking a SQLite
+    handle on every early return. A resource-warning gate in CI now converts
+    these leaks into test failures — this suite locks in the helper's
+    close-on-every-exit contract and verifies the bare-get_connection
+    anti-pattern still trips the gate.
+    """
+
+    def _prepared_env(self, tmp: str) -> dict[str, str]:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(Path.cwd() / "src")
+        env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
+        return env
+
+    def test_connection_helper_closes_on_normal_return(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._prepared_env(tmp)
+            script = (
+                "from personal_assistant.db import connection\n"
+                "with connection() as conn:\n"
+                "    conn.execute('SELECT 1').fetchone()\n"
+                "    captured = conn\n"
+                "try:\n"
+                "    captured.execute('SELECT 1')\n"
+                "    print('LEAK')\n"
+                "except Exception:\n"
+                "    print('CLOSED')\n"
+            )
+            script_path = Path(tmp) / "check_close.py"
+            script_path.write_text(script)
+            out = subprocess.run(
+                [sys.executable, "-W", "error::ResourceWarning", str(script_path)],
+                cwd=Path.cwd(),
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertIn("CLOSED", out.stdout)
+            self.assertNotIn("LEAK", out.stdout)
+
+    def test_connection_helper_closes_on_exception(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._prepared_env(tmp)
+            script = (
+                "import sys\n"
+                "from personal_assistant.db import connection\n"
+                "captured = {}\n"
+                "try:\n"
+                "    with connection() as conn:\n"
+                "        captured['conn'] = conn\n"
+                "        raise RuntimeError('boom')\n"
+                "except RuntimeError:\n"
+                "    pass\n"
+                "try:\n"
+                "    captured['conn'].execute('SELECT 1')\n"
+                "    print('LEAK')\n"
+                "except Exception:\n"
+                "    print('CLOSED')\n"
+            )
+            script_path = Path(tmp) / "check_exception.py"
+            script_path.write_text(script)
+            out = subprocess.run(
+                [sys.executable, "-W", "error::ResourceWarning", str(script_path)],
+                cwd=Path.cwd(),
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertIn("CLOSED", out.stdout)
+            self.assertNotIn("LEAK", out.stdout)
+
+    def test_bare_get_connection_emits_resource_warning(self) -> None:
+        """Guard against silently re-introducing bare ``get_connection()`` calls.
+
+        The Python resource-warning message must actually appear in stderr
+        when a connection is finalized without ``close()`` — otherwise the CI
+        ``-W error::ResourceWarning`` gate provides no signal. ``gc.collect``
+        under an ``always`` filter surfaces the warning during script
+        execution (not just interpreter shutdown), which is exactly the path
+        the ``connection()`` helper eliminates for every CLI handler.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._prepared_env(tmp)
+            script = (
+                "import gc\n"
+                "import warnings\n"
+                "warnings.simplefilter('always')\n"
+                "from personal_assistant.db import get_connection\n"
+                "def leak():\n"
+                "    conn = get_connection()\n"
+                "    conn.execute('SELECT 1').fetchone()\n"
+                "leak()\n"
+                "gc.collect()\n"
+                "print('done')\n"
+            )
+            script_path = Path(tmp) / "leak.py"
+            script_path.write_text(script)
+            result = subprocess.run(
+                [sys.executable, str(script_path)],
+                cwd=Path.cwd(),
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertIn("done", result.stdout)
+            self.assertIn("ResourceWarning", result.stderr)
+            self.assertIn("unclosed database", result.stderr)
+
+    def test_connection_helper_leaves_no_resource_warning(self) -> None:
+        """The positive counterpart: ``connection()`` must not leak.
+
+        This is the behavior every ``cmd_*`` sweep should preserve. If a
+        future refactor removes the ``try/finally`` inside ``connection()``
+        (or a handler drops the ``with`` block), the assertion here fails.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._prepared_env(tmp)
+            script = (
+                "import gc\n"
+                "import warnings\n"
+                "warnings.simplefilter('always')\n"
+                "from personal_assistant.db import connection\n"
+                "def use():\n"
+                "    with connection() as conn:\n"
+                "        conn.execute('SELECT 1').fetchone()\n"
+                "use()\n"
+                "gc.collect()\n"
+                "print('done')\n"
+            )
+            script_path = Path(tmp) / "no_leak.py"
+            script_path.write_text(script)
+            result = subprocess.run(
+                [sys.executable, str(script_path)],
+                cwd=Path.cwd(),
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertIn("done", result.stdout)
+            self.assertNotIn("ResourceWarning", result.stderr)
+            self.assertNotIn("unclosed database", result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
