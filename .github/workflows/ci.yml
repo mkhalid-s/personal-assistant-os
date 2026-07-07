@@ -70,11 +70,15 @@ jobs:
       # privacy.py holds all redaction / retention logic that guards what ever
       # reaches the FTS index, digests, or notifications — a type regression
       # here can silently expose PII, so we promote it to the fatal tier.
-      - name: Mypy strict (command_registry + privacy)
+      # db.py is the single mutation/schema boundary — 1.7 kloc of connection,
+      # migration, and event-append logic; a strict regression here can silently
+      # corrupt local state, so it stays in the fatal tier.
+      - name: Mypy strict (command_registry + privacy + db)
         run: |
           mypy --strict \
             src/personal_assistant/command_registry.py \
-            src/personal_assistant/privacy.py
+            src/personal_assistant/privacy.py \
+            src/personal_assistant/db.py
 
       # Advisory: the rest of the tree will be brought up to the fatal bar in
       # follow-up slices. Kept green so contributors see the noise without
@@ -92,7 +96,6 @@ jobs:
         run: |
           mypy --strict \
             src/personal_assistant/execution.py \
-            src/personal_assistant/db.py \
             src/personal_assistant/zero_executor.py
 
       - name: pip-audit (advisory)
