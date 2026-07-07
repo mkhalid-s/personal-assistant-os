@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from . import assistant, intents, plans
+from . import assistant, intents, plans, rollback
 from .approval_context import format_action_review_context, format_compact_action_review_context
 from .db import append_event, connection
 from .execution import (
@@ -647,14 +647,20 @@ def _receipt_show_row(conn, receipt_id: int):
 
 
 def _receipt_list_rows(conn, limit: int) -> list:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(action_execution_receipts)").fetchall()}
+    extra_cols = ""
+    if "compensating_action_json" in columns:
+        extra_cols += ", compensating_action_json"
+    if "rollback_action_id" in columns:
+        extra_cols += ", rollback_action_id"
     return conn.execute(
-        """
+        f"""
         SELECT id, agent_action_id, action_type, final_status, approved,
-               follow_up_required, follow_up_inbox_id, request_json, created_at
+               follow_up_required, follow_up_inbox_id, request_json, created_at{extra_cols}
         FROM action_execution_receipts
         ORDER BY created_at DESC, id DESC
         LIMIT ?
-        """,
+        """,  # noqa: S608
         (int(limit),),
     ).fetchall()
 
@@ -676,6 +682,22 @@ def _receipt_json_entry(row, *, outbox: object = _OUTBOX_SENTINEL) -> dict:
     integrity = request.get("approval_integrity") if isinstance(request, dict) else None
     verification = request.get("verification") if isinstance(request, dict) else None
     approval_context = request.get("approval_context") if isinstance(request, dict) else None
+    row_keys: set[str] = set()
+    try:
+        row_keys = set(row.keys())
+    except Exception:
+        row_keys = set()
+    compensation: dict | None = None
+    if "compensating_action_json" in row_keys and row["compensating_action_json"]:
+        try:
+            parsed = json.loads(row["compensating_action_json"])
+            if isinstance(parsed, dict):
+                compensation = parsed
+        except (TypeError, ValueError):
+            compensation = None
+    rollback_action_id: int | None = None
+    if "rollback_action_id" in row_keys and row["rollback_action_id"]:
+        rollback_action_id = int(row["rollback_action_id"])
     entry: dict = {
         "id": int(row["id"]),
         "agent_action_id": int(row["agent_action_id"]) if row["agent_action_id"] is not None else None,
@@ -688,6 +710,8 @@ def _receipt_json_entry(row, *, outbox: object = _OUTBOX_SENTINEL) -> dict:
         "approval_integrity": integrity if isinstance(integrity, dict) else None,
         "verification": verification if isinstance(verification, dict) else None,
         "approval_context": approval_context if isinstance(approval_context, dict) else None,
+        "compensation": compensation,
+        "rollback_action_id": rollback_action_id,
     }
     if outbox is not _OUTBOX_SENTINEL:
         entry["outbox"] = outbox
@@ -1051,3 +1075,85 @@ def cmd_action_provider(args: argparse.Namespace) -> None:
             conn.rollback()
             print(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=True))
             raise SystemExit(1) from exc
+
+
+_ROLLBACK_ERROR_EXIT_CODES = {
+    "id_required": 1,
+    "not_found": 1,
+    "no_compensation": 1,
+    "no_op": 1,
+    "invalid_strategy": 1,
+    "invalid_envelope": 1,
+    "no_task": 1,
+}
+
+
+def _rollback_error_envelope(code: str, message: str, *, receipt_id: int | None = None) -> dict[str, object]:
+    """Schema-stable error envelope for ``myos rollback --json``. Callers
+    convert this to text or JSON depending on the ``--json`` flag."""
+    payload: dict[str, object] = {
+        "schema": "myos.rollback.preview.v1",
+        "error": code,
+        "message": message,
+    }
+    if receipt_id is not None:
+        payload["receipt_id"] = int(receipt_id)
+    return payload
+
+
+def cmd_rollback(args: argparse.Namespace) -> None:
+    """Propose a compensating action for an executed receipt.
+
+    Rollback never bypasses approval — the compensating mutation is
+    inserted into ``agent_actions`` with ``requires_approval=1`` and
+    ``status='proposed'`` so ``myos approve --list`` picks it up like any
+    other queue entry. ``--dry-run`` renders the compensating payload
+    without inserting; ``--json`` emits a stable ``myos.rollback.preview.v1``
+    envelope on both success and error paths.
+    """
+    json_mode = bool(getattr(args, "json", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+    receipt_id = getattr(args, "receipt", None) or getattr(args, "id", None)
+    if not receipt_id:
+        envelope = _rollback_error_envelope("id_required", "--receipt <id> is required.")
+        if json_mode:
+            print(json.dumps(envelope, ensure_ascii=True))
+        else:
+            print(envelope["message"])
+        raise SystemExit(1)
+
+    with connection() as conn:
+        try:
+            preview = rollback.propose_rollback(conn, receipt_id=int(receipt_id), dry_run=dry_run)
+        except rollback.RollbackError as exc:
+            envelope = _rollback_error_envelope(exc.code, exc.message, receipt_id=int(receipt_id))
+            if json_mode:
+                print(json.dumps(envelope, ensure_ascii=True))
+            else:
+                print(exc.message)
+            raise SystemExit(_ROLLBACK_ERROR_EXIT_CODES.get(exc.code, 1)) from exc
+        if not dry_run:
+            conn.commit()
+
+    if json_mode:
+        print(json.dumps(preview, ensure_ascii=True))
+        return
+    strategy = preview.get("strategy") or ""
+    target = preview.get("target") or {}
+    print(f"Rollback preview for receipt #{preview['receipt_id']}")
+    print(f"- strategy: {strategy}")
+    print(f"- compensating action: {preview.get('compensating_action_type')}")
+    if isinstance(target, dict) and target:
+        provider = str(target.get("provider") or "")
+        target_type = str(target.get("target_type") or "")
+        target_ref = str(target.get("target_ref") or "")
+        print(f"- target: {provider}:{target_type or 'update'} ({target_ref or 'n/a'})")
+    if preview.get("rollback_note"):
+        print(f"- note: {preview['rollback_note']}")
+    for line in preview.get("preconditions") or []:
+        print(f"- precondition: {line}")
+    if dry_run:
+        print("Dry run only — no proposal was enqueued. Rerun without --dry-run to propose (approval-gated).")
+    else:
+        action_id = preview.get("proposed_action_id")
+        print(f"Proposed compensating action #{action_id} (requires approval). Review with: myos approve --list")

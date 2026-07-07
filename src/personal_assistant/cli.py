@@ -748,6 +748,9 @@ cmd_review_packet = cli_planning.cmd_review_packet
 cmd_execution_receipt = cli_agent.cmd_execution_receipt
 
 
+cmd_rollback = cli_agent.cmd_rollback
+
+
 cmd_agent_run = cli_agent.cmd_agent_run
 
 
@@ -1706,6 +1709,27 @@ def build_parser() -> argparse.ArgumentParser:
     receipt.add_argument("--limit", type=int, default=20)
     receipt.add_argument("--json", action="store_true", help="Emit a single JSON object instead of formatted text.")
     receipt.set_defaults(func=cmd_execution_receipt)
+
+    rollback_parser = sub.add_parser(
+        "rollback",
+        help="Propose a compensating action for a completed execution receipt.",
+        description=(
+            "Propose the compensating action recorded on a completed execution receipt "
+            "back into the approval queue. Rollback never bypasses approval — the "
+            "compensating mutation is inserted as `requires_approval=1, status='proposed'` "
+            "so `myos approve --list` picks it up like any other queue entry."
+        ),
+    )
+    rollback_parser.add_argument("--receipt", type=int, required=True, help="Execution receipt id to compensate.")
+    rollback_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Render the compensating payload without inserting a proposal.",
+    )
+    rollback_parser.add_argument(
+        "--json", action="store_true", help="Emit a single JSON object instead of formatted text."
+    )
+    rollback_parser.set_defaults(func=cmd_rollback)
 
     autopilot_status = sub.add_parser("autopilot-status", help="Show autopilot runs and pending approvals.")
     autopilot_status.add_argument("--limit", type=int, default=10)

@@ -12,12 +12,12 @@ class ObservabilityTest(unittest.TestCase):
         os.environ["MYOS_DB_PATH"] = db_path
         try:
             from personal_assistant import observability
-            from personal_assistant.db import get_connection, verify_schema
+            from personal_assistant.db import EXPECTED_SCHEMA_VERSION, get_connection, verify_schema
 
             conn = get_connection()
             report = verify_schema(conn)
             self.assertTrue(report["ok"])
-            self.assertEqual(report["expected_version"], 37)
+            self.assertEqual(report["expected_version"], EXPECTED_SCHEMA_VERSION)
 
             corr = observability.start_trace(
                 conn,
