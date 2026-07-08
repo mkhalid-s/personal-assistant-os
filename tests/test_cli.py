@@ -4003,5 +4003,111 @@ class JsonEnvelopeSurfaceTest(unittest.TestCase):
             self.assertEqual(factory_error["id"], 42)
 
 
+class RemindersCliTest(unittest.TestCase):
+    """End-to-end coverage for ``myos remind`` (slice S2).
+
+    Exercises create/list/complete/snooze/cancel through the same
+    ``subprocess`` boundary supervisors and shells use, so the
+    JSON envelope shape (``myos.reminder.v1`` /
+    ``myos.reminder.list.v1``) plus schema-stable error envelopes
+    stay pinned across releases.
+    """
+
+    def _prepared_env(self, tmp: str) -> dict[str, str]:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(Path.cwd() / "src")
+        env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
+        return env
+
+    def _run(self, env: dict[str, str], *args: str, expect_exit: int = 0) -> str:
+        proc = subprocess.run(
+            [sys.executable, "-m", "personal_assistant.cli", *args],
+            cwd=Path.cwd(),
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            proc.returncode,
+            expect_exit,
+            msg=f"unexpected exit {proc.returncode} for {args}: {proc.stdout}\n{proc.stderr}",
+        )
+        return proc.stdout
+
+    def test_reminder_lifecycle_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._prepared_env(tmp)
+
+            create_out = json.loads(self._run(env, "remind", "create", "prep for standup", "--at", "+30m", "--json"))
+            self.assertEqual(create_out["schema"], "myos.reminder.v1")
+            self.assertEqual(create_out["reminder"]["kind"], "followup")
+            self.assertEqual(create_out["reminder"]["status"], "pending")
+            self.assertEqual(create_out["reminder"]["text"], "prep for standup")
+            rid = create_out["reminder"]["id"]
+
+            list_out = json.loads(self._run(env, "remind", "list", "--json"))
+            self.assertEqual(list_out["schema"], "myos.reminder.list.v1")
+            self.assertEqual(list_out["count"], 1)
+            self.assertEqual([r["id"] for r in list_out["entries"]], [rid])
+            self.assertEqual(list_out["filter"], {"due_only": False})
+
+            due_out = json.loads(self._run(env, "remind", "list", "--due-only", "--json"))
+            self.assertEqual(due_out["count"], 0)  # +30m from now is future
+            self.assertEqual(due_out["filter"], {"due_only": True})
+
+            snoozed = json.loads(self._run(env, "remind", "snooze", "--id", str(rid), "--for", "15m", "--json"))
+            self.assertEqual(snoozed["schema"], "myos.reminder.v1")
+            self.assertEqual(snoozed["reminder"]["status"], "pending")
+            self.assertIsNotNone(snoozed["reminder"]["snoozed_until"])
+            self.assertGreater(snoozed["reminder"]["scheduled_at"], create_out["reminder"]["scheduled_at"])
+
+            completed = json.loads(self._run(env, "remind", "complete", "--id", str(rid), "--json"))
+            self.assertEqual(completed["reminder"]["status"], "done")
+
+            # After completion nothing pending remains.
+            empty = json.loads(self._run(env, "remind", "list", "--json"))
+            self.assertEqual(empty["count"], 0)
+            self.assertEqual(empty["entries"], [])
+
+    def test_reminder_error_envelopes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._prepared_env(tmp)
+
+            # Invalid --at rejected with a schema-stable envelope.
+            bad_at = json.loads(self._run(env, "remind", "create", "test", "--at", "nope", "--json", expect_exit=1))
+            self.assertEqual(bad_at["schema"], "myos.reminder.v1")
+            self.assertEqual(bad_at["error"], "invalid_request")
+
+            # Complete on a missing id returns not_found.
+            missing = json.loads(self._run(env, "remind", "complete", "--id", "999", "--json", expect_exit=1))
+            self.assertEqual(missing["schema"], "myos.reminder.v1")
+            self.assertEqual(missing["error"], "not_found")
+            self.assertEqual(missing["id"], 999)
+
+            # Snooze --for accepts Nm/Nh only.
+            self._run(env, "remind", "create", "seed", "--at", "+30m", "--json")
+            bad_snooze = json.loads(
+                self._run(env, "remind", "snooze", "--id", "1", "--for", "bogus", "--json", expect_exit=1)
+            )
+            self.assertEqual(bad_snooze["schema"], "myos.reminder.v1")
+            self.assertEqual(bad_snooze["error"], "invalid_request")
+
+    def test_reminder_cancel_and_text_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._prepared_env(tmp)
+            self._run(env, "remind", "create", "throwaway", "--at", "+30m")
+            text_out = self._run(env, "remind", "list")
+            self.assertIn("Reminders (pending):", text_out)
+            self.assertIn("throwaway", text_out)
+
+            cancel_out = self._run(env, "remind", "cancel", "--id", "1")
+            self.assertIn("Reminder #1", cancel_out)
+            self.assertIn("cancelled", cancel_out)
+
+            empty = self._run(env, "remind", "list")
+            self.assertIn("No pending reminders.", empty)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -23,6 +23,7 @@ from . import (
     cli_local_data,
     cli_operations,
     cli_planning,
+    cli_reminders,
     cli_review,
     cli_runtime,
     cli_setup_live,
@@ -749,6 +750,9 @@ cmd_execution_receipt = cli_agent.cmd_execution_receipt
 
 
 cmd_rollback = cli_agent.cmd_rollback
+
+
+cmd_remind = cli_reminders.cmd_remind_dispatch
 
 
 cmd_agent_run = cli_agent.cmd_agent_run
@@ -1730,6 +1734,88 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", help="Emit a single JSON object instead of formatted text."
     )
     rollback_parser.set_defaults(func=cmd_rollback)
+
+    remind_parser = sub.add_parser(
+        "remind",
+        help="Create and manage local wall-clock reminders (fired by `myos scheduler tick`).",
+        description=(
+            "MYOS-native reminders live in a durable local table and are fired by "
+            "`myos scheduler tick` (typically installed via `myos launchd-install "
+            "--scheduler` on macOS). Every notification flows through the same "
+            "`MYOS_NOTIFY_COMMAND` hook / osascript fallback so scheduled work is "
+            "surfaced consistently with autopilot digests and factory alerts."
+        ),
+    )
+    remind_sub = remind_parser.add_subparsers(dest="remind_action", required=False)
+
+    remind_create = remind_sub.add_parser(
+        "create",
+        help="Create a new reminder scheduled to fire at HH:MM, +Nm/+Nh, or ISO 8601.",
+    )
+    remind_create.add_argument("text", help="Reminder text (privacy filters applied on write).")
+    remind_create.add_argument(
+        "--at",
+        required=True,
+        help="When to fire: HH:MM (today or tomorrow if past), +Nm / +Nh offset, or ISO 8601 datetime.",
+    )
+    remind_create.add_argument(
+        "--kind",
+        default="followup",
+        choices=["followup", "standup", "meeting", "task"],
+        help="Reminder category (default: followup).",
+    )
+    remind_create.add_argument(
+        "--source-ref",
+        dest="source_ref",
+        default=None,
+        help="Optional free-form back-link (e.g. loop:1, factory_run:5, intent:12).",
+    )
+    remind_create.add_argument(
+        "--json", action="store_true", help="Emit a `myos.reminder.v1` JSON envelope instead of text."
+    )
+    remind_create.set_defaults(func=cli_reminders.cmd_remind_create, remind_action="create")
+
+    remind_list = remind_sub.add_parser("list", help="List pending reminders.")
+    remind_list.add_argument(
+        "--due-only",
+        action="store_true",
+        dest="due_only",
+        help="Show only reminders whose scheduled time has arrived (i.e. what the next tick will fire).",
+    )
+    remind_list.add_argument("--limit", type=int, default=50, help="Maximum rows to return (default: 50).")
+    remind_list.add_argument(
+        "--json", action="store_true", help="Emit a `myos.reminder.list.v1` JSON envelope instead of text."
+    )
+    remind_list.set_defaults(func=cli_reminders.cmd_remind_list, remind_action="list")
+
+    remind_complete = remind_sub.add_parser("complete", help="Mark a reminder as done.")
+    remind_complete.add_argument("--id", type=int, required=True, help="Reminder id.")
+    remind_complete.add_argument(
+        "--json", action="store_true", help="Emit a `myos.reminder.v1` JSON envelope instead of text."
+    )
+    remind_complete.set_defaults(func=cli_reminders.cmd_remind_complete, remind_action="complete")
+
+    remind_snooze = remind_sub.add_parser("snooze", help="Reschedule a pending reminder further into the future.")
+    remind_snooze.add_argument("--id", type=int, required=True, help="Reminder id.")
+    remind_snooze.add_argument(
+        "--for",
+        dest="for_",
+        required=True,
+        help="Duration to push forward (e.g. 30m, 2h).",
+    )
+    remind_snooze.add_argument(
+        "--json", action="store_true", help="Emit a `myos.reminder.v1` JSON envelope instead of text."
+    )
+    remind_snooze.set_defaults(func=cli_reminders.cmd_remind_snooze, remind_action="snooze")
+
+    remind_cancel = remind_sub.add_parser("cancel", help="Cancel a reminder.")
+    remind_cancel.add_argument("--id", type=int, required=True, help="Reminder id.")
+    remind_cancel.add_argument(
+        "--json", action="store_true", help="Emit a `myos.reminder.v1` JSON envelope instead of text."
+    )
+    remind_cancel.set_defaults(func=cli_reminders.cmd_remind_cancel, remind_action="cancel")
+
+    remind_parser.set_defaults(func=cmd_remind)
 
     autopilot_status = sub.add_parser("autopilot-status", help="Show autopilot runs and pending approvals.")
     autopilot_status.add_argument("--limit", type=int, default=10)

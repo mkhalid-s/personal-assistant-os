@@ -354,6 +354,12 @@ def snooze(
     (absolute). The row goes back to ``status='pending'`` — snooze is a
     reschedule, not a terminal state — with ``snoozed_until`` recording
     the previous fire attempt for audit.
+
+    ``for_delta`` semantics: added to ``max(now, current scheduled_at)``.
+    That way ``snooze --for 15m`` on a *fired* reminder means "remind me
+    again in 15 minutes" (base is now), and on a *pending future*
+    reminder means "postpone by 15 minutes" (base is the current
+    schedule) — matching the user's mental model in both cases.
     """
     if (for_delta is None) == (until is None):
         raise ReminderError("snooze requires exactly one of for_delta or until")
@@ -362,8 +368,15 @@ def snooze(
         return None
     if row["status"] not in {STATUS_PENDING, STATUS_FIRED, STATUS_SNOOZED}:
         return None
-    base = now or datetime.now(UTC)
+    now_utc = now.astimezone(UTC) if (now and now.tzinfo) else (now or datetime.now(UTC))
     if for_delta is not None:
+        try:
+            current_dt = datetime.fromisoformat(row["scheduled_at"])
+        except ValueError:
+            current_dt = now_utc
+        if current_dt.tzinfo is None:
+            current_dt = current_dt.astimezone()
+        base = max(now_utc.astimezone(UTC), current_dt.astimezone(UTC))
         new_at_dt = base + for_delta
     else:
         assert until is not None
