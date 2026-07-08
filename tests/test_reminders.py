@@ -10,7 +10,9 @@ Covers:
 
 from __future__ import annotations
 
+import json
 import os
+import stat
 import sys
 import tempfile
 import unittest
@@ -295,6 +297,170 @@ class ReminderCrudTest(unittest.TestCase):
         from personal_assistant import reminders
 
         self.assertIsNone(reminders.get(self.conn, 999_999))
+
+
+class NotifyTest(unittest.TestCase):
+    """Cover the three dispatch channels of the notification pipeline
+    (custom hook, macOS osascript, terminal fallback) plus the audit
+    guarantee (event_log + inbox_items on every dispatch, even when
+    the channel fails). Mac and non-mac paths are exercised by
+    toggling ``MYOS_NOTIFY_DISABLE_*`` env vars so the test suite is
+    deterministic on any test-runner OS."""
+
+    def setUp(self) -> None:
+        self.conn, self.path = _fresh_db_conn()
+        # Isolate every test from the developer's real notify config.
+        self._env_backup: dict[str, str] = {}
+        for key in (
+            "MYOS_NOTIFY_COMMAND",
+            "MYOS_NOTIFY_DISABLE_HOOK",
+            "MYOS_NOTIFY_DISABLE_OSASCRIPT",
+            "MYOS_NOTIFY_DISABLE_NOTIFY_SEND",
+        ):
+            if key in os.environ:
+                self._env_backup[key] = os.environ.pop(key)
+        # Force stdout fallback by default; individual tests opt in to the hook.
+        os.environ["MYOS_NOTIFY_DISABLE_OSASCRIPT"] = "1"
+        os.environ["MYOS_NOTIFY_DISABLE_NOTIFY_SEND"] = "1"
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        os.unlink(self.path)
+        for key in (
+            "MYOS_NOTIFY_COMMAND",
+            "MYOS_NOTIFY_DISABLE_HOOK",
+            "MYOS_NOTIFY_DISABLE_OSASCRIPT",
+            "MYOS_NOTIFY_DISABLE_NOTIFY_SEND",
+        ):
+            os.environ.pop(key, None)
+        for key, value in self._env_backup.items():
+            os.environ[key] = value
+
+    def _write_hook(self, tmpdir: Path, body: str) -> Path:
+        hook = tmpdir / "hook.sh"
+        hook.write_text(body)
+        hook.chmod(hook.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
+        return hook
+
+    def test_custom_hook_receives_envelope(self) -> None:
+        from personal_assistant import notify
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            sink = tmpdir / "sink.json"
+            hook = self._write_hook(
+                tmpdir,
+                "#!/usr/bin/env bash\ncat > " + str(sink) + "\n",
+            )
+            os.environ["MYOS_NOTIFY_COMMAND"] = str(hook)
+            result = notify.notify(
+                self.conn,
+                title="Standup in 5",
+                body="prep the demo",
+                kind="reminder",
+                correlation_id="corr-1",
+                source_ref="reminder:1",
+            )
+            self.assertTrue(result["dispatched"])
+            self.assertEqual(result["channel"], "custom_command")
+            self.assertIsNone(result["error"])
+            envelope = json.loads(sink.read_text())
+        self.assertEqual(envelope["schema"], "myos.notify.v1")
+        self.assertEqual(envelope["title"], "Standup in 5")
+        self.assertEqual(envelope["body"], "prep the demo")
+        self.assertEqual(envelope["kind"], "reminder")
+        self.assertEqual(envelope["correlation_id"], "corr-1")
+        self.assertEqual(envelope["source_ref"], "reminder:1")
+        # Audit guarantee: event_log + inbox_items row on success.
+        events = self.conn.execute(
+            "SELECT event_type, payload FROM event_log WHERE event_type = 'notify_dispatch'"
+        ).fetchall()
+        self.assertEqual(len(events), 1)
+        audit = json.loads(events[0]["payload"])
+        self.assertEqual(audit["channel"], "custom_command")
+        self.assertTrue(audit["dispatched"])
+        inbox = self.conn.execute("SELECT kind, text, source FROM inbox_items WHERE source LIKE 'notify:%'").fetchall()
+        self.assertEqual(len(inbox), 1)
+        self.assertEqual(inbox[0]["kind"], "reminder")
+        self.assertEqual(inbox[0]["source"], "notify:reminder")
+        self.assertIn("Standup in 5", inbox[0]["text"])
+
+    def test_hook_failure_records_missed_reminder(self) -> None:
+        from personal_assistant import notify
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            hook = self._write_hook(
+                tmpdir,
+                "#!/usr/bin/env bash\ncat > /dev/null\nexit 3\n",
+            )
+            os.environ["MYOS_NOTIFY_COMMAND"] = str(hook)
+            result = notify.notify(
+                self.conn,
+                title="Ship review",
+                body="check outbox",
+                kind="reminder",
+            )
+        # Hook failed, but the stdout fallback still succeeded, so
+        # ``dispatched`` is True on the terminal channel.
+        self.assertTrue(result["dispatched"])
+        self.assertEqual(result["channel"], "stdout")
+        # The FIRST channel's error string is what we surface.
+        self.assertIsNotNone(result["error"])
+        assert result["error"] is not None
+        self.assertIn("hook exit=3", result["error"])
+        # Because stdout dispatched, the inbox row is 'reminder', not
+        # 'reminder_missed' — a missed row would over-report failure.
+        inbox = self.conn.execute("SELECT kind FROM inbox_items WHERE source LIKE 'notify:%'").fetchall()
+        self.assertEqual([r["kind"] for r in inbox], ["reminder"])
+
+    def test_stdout_fallback_when_no_hook(self) -> None:
+        from personal_assistant import notify
+
+        # No hook configured and darwin osascript disabled; must fall
+        # through to stdout so headless CI still sees the notification.
+        result = notify.notify(
+            self.conn,
+            title="Fallback",
+            body="terminal only",
+            kind="digest",
+        )
+        self.assertTrue(result["dispatched"])
+        self.assertEqual(result["channel"], "stdout")
+        events = self.conn.execute("SELECT payload FROM event_log WHERE event_type = 'notify_dispatch'").fetchall()
+        audit = json.loads(events[0]["payload"])
+        self.assertEqual(audit["channel"], "stdout")
+        self.assertTrue(audit["dispatched"])
+
+    def test_body_is_privacy_filtered(self) -> None:
+        from personal_assistant import notify
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            sink = tmpdir / "sink.json"
+            hook = self._write_hook(
+                tmpdir,
+                "#!/usr/bin/env bash\ncat > " + str(sink) + "\n",
+            )
+            os.environ["MYOS_NOTIFY_COMMAND"] = str(hook)
+            notify.notify(
+                self.conn,
+                title="Ping",
+                body="ping alice@example.com about the retro",
+            )
+            envelope = json.loads(sink.read_text())
+        self.assertNotIn("alice@example.com", envelope["body"])
+        self.assertIn("[REDACTED_EMAIL]", envelope["body"])
+
+    def test_envelope_kind_and_urgency_sanitized(self) -> None:
+        from personal_assistant.notify import build_envelope
+
+        envelope = build_envelope(title="t", body="b", kind="bogus", urgency="extreme")
+        self.assertEqual(envelope["kind"], "generic")
+        self.assertEqual(envelope["urgency"], "normal")
+        envelope = build_envelope(title="t", body="b", kind="digest", urgency="high")
+        self.assertEqual(envelope["kind"], "digest")
+        self.assertEqual(envelope["urgency"], "high")
 
 
 class SchemaVersionTest(unittest.TestCase):
