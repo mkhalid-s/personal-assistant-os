@@ -1095,6 +1095,7 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("36 add_factory_executor_backend", list_out)
             self.assertIn("37 add_approval_integrity_binding", list_out)
             self.assertIn("38 add_receipt_compensating_action", list_out)
+            self.assertIn("39 add_reminders", list_out)
             from personal_assistant.db import EXPECTED_SCHEMA_VERSION
 
             self.assertIn(f"Current version: {EXPECTED_SCHEMA_VERSION} / expected {EXPECTED_SCHEMA_VERSION}", list_out)

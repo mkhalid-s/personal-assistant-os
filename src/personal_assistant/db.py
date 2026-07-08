@@ -6,7 +6,7 @@ import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 
-EXPECTED_SCHEMA_VERSION = 38
+EXPECTED_SCHEMA_VERSION = 39
 
 
 def resolve_db_path() -> Path:
@@ -1620,6 +1620,42 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
             (38, "add_receipt_compensating_action"),
+        )
+
+    if current < 39:
+        # Reminders + scheduler (S1). Durable wall-clock reminders live in
+        # their own table so the scheduler tick can scan a bounded index
+        # without walking work_items / inbox_items. `scheduled_at` is stored
+        # as ISO 8601 UTC ("YYYY-MM-DDTHH:MM:SS[+00:00]") — the scheduler
+        # tick compares string-wise against ``datetime.utcnow().isoformat()``
+        # which is safe because ISO 8601 sorts lexically. `status` moves
+        # through ``pending -> fired``, or ``pending -> snoozed -> pending``
+        # (via snooze), or ``pending -> done`` (manual completion) or
+        # ``pending -> cancelled``. ``correlation_id`` is a free-form
+        # UUID/hash that lets `myos trace` link the scheduler tick that
+        # fired this reminder back to the CLI invocation that created it.
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS reminders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                text TEXT NOT NULL,
+                scheduled_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                kind TEXT NOT NULL DEFAULT 'followup',
+                source_ref TEXT,
+                correlation_id TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                fired_at TEXT,
+                completed_at TEXT,
+                snoozed_until TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_reminders_status_time ON reminders(status, scheduled_at);
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (39, "add_reminders"),
         )
 
     _ensure_fts5(conn)  # self-heal: build the FTS index if a no-FTS5 run stranded migration 17

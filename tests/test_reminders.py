@@ -1,0 +1,304 @@
+"""Tests for the reminders + scheduler + notify subsystem (slices S1-S4).
+
+Covers:
+
+- ``reminders.parse_when`` deterministic edge cases (past HH:MM rolls
+  to tomorrow, ISO with/without tz, invalid input, +Nm / +Nh offsets).
+- CRUD round-trip on ``reminders`` (create/list/mark_fired/mark_done/
+  snooze/cancel) with privacy redaction on ``text``.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+import tempfile
+import unittest
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+SRC = str(Path(__file__).resolve().parents[1] / "src")
+if SRC not in sys.path:
+    sys.path.insert(0, SRC)
+
+
+def _fresh_db_conn():
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)  # noqa: SIM115
+    tmp.close()
+    os.environ["MYOS_DB_PATH"] = tmp.name
+    from personal_assistant.db import get_connection
+
+    return get_connection(), tmp.name
+
+
+class ParseWhenTest(unittest.TestCase):
+    """Parser edge cases.
+
+    ``HH:MM`` tests inject a *local-naive* ``now`` so the wall-clock
+    day arithmetic is deterministic on any test-runner timezone —
+    ``parse_when`` treats a naive ``now`` as local (matching the CLI
+    user expectation that ``--at 15:00`` means "3pm on my clock").
+    """
+
+    def test_hhmm_future_stays_today(self) -> None:
+        from personal_assistant.reminders import parse_when
+
+        now_local = datetime(2026, 7, 8, 10, 0)  # naive → local 10am
+        result = parse_when("15:00", now=now_local)
+        parsed_local = datetime.fromisoformat(result).astimezone()
+        # 15:00 local is later today; we should not have rolled to tomorrow.
+        self.assertEqual(parsed_local.date(), now_local.date())
+        self.assertEqual((parsed_local.hour, parsed_local.minute), (15, 0))
+
+    def test_hhmm_past_rolls_to_tomorrow(self) -> None:
+        from personal_assistant.reminders import parse_when
+
+        now_local = datetime(2026, 7, 8, 18, 0)  # naive → local 6pm
+        # ``05:00`` local has already passed today, so the parser must
+        # roll to 2026-07-09.
+        result = parse_when("05:00", now=now_local)
+        parsed_local = datetime.fromisoformat(result).astimezone()
+        self.assertEqual(parsed_local.date(), (now_local + timedelta(days=1)).date())
+        self.assertEqual((parsed_local.hour, parsed_local.minute), (5, 0))
+
+    def test_relative_offset_minutes(self) -> None:
+        from personal_assistant.reminders import parse_when
+
+        now = datetime(2026, 7, 8, 10, 0, tzinfo=UTC)
+        result = parse_when("+30m", now=now)
+        parsed = datetime.fromisoformat(result)
+        self.assertEqual(parsed, now + timedelta(minutes=30))
+
+    def test_relative_offset_hours(self) -> None:
+        from personal_assistant.reminders import parse_when
+
+        now = datetime(2026, 7, 8, 10, 0, tzinfo=UTC)
+        result = parse_when("+2h", now=now)
+        parsed = datetime.fromisoformat(result)
+        self.assertEqual(parsed, now + timedelta(hours=2))
+
+    def test_iso_with_tz_passthrough(self) -> None:
+        from personal_assistant.reminders import parse_when
+
+        raw = "2026-12-25T09:00:00+00:00"
+        result = parse_when(raw)
+        self.assertTrue(result.startswith("2026-12-25T09:00:00"))
+        self.assertTrue(result.endswith("+00:00"))
+
+    def test_iso_z_suffix_is_utc(self) -> None:
+        from personal_assistant.reminders import parse_when
+
+        result = parse_when("2026-12-25T09:00:00Z")
+        self.assertEqual(result, "2026-12-25T09:00:00+00:00")
+
+    def test_iso_naive_treated_as_local(self) -> None:
+        from personal_assistant.reminders import parse_when
+
+        # Naive ISO should be interpreted as local time and converted to
+        # UTC on write. We don't assert an exact string because the local
+        # tz is machine-dependent, but we assert the shape.
+        result = parse_when("2026-12-25T09:00:00")
+        self.assertTrue(result.endswith("+00:00"))
+        self.assertIn("T", result)
+
+    def test_invalid_raises(self) -> None:
+        from personal_assistant.reminders import ReminderError, parse_when
+
+        for bad in ("", "not-a-time", "25:00", "5pm tomorrow", "-30m", "+m", "+30x"):
+            with self.assertRaises(ReminderError, msg=f"expected ReminderError for {bad!r}"):
+                parse_when(bad)
+
+
+class ParseDurationTest(unittest.TestCase):
+    def test_valid_shapes(self) -> None:
+        from personal_assistant.reminders import parse_duration
+
+        self.assertEqual(parse_duration("30m"), timedelta(minutes=30))
+        self.assertEqual(parse_duration("2h"), timedelta(hours=2))
+        self.assertEqual(parse_duration("1h"), timedelta(hours=1))
+
+    def test_invalid_raises(self) -> None:
+        from personal_assistant.reminders import ReminderError, parse_duration
+
+        for bad in ("", "30", "+30m", "2d", "abc"):
+            with self.assertRaises(ReminderError):
+                parse_duration(bad)
+
+
+class ReminderCrudTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.conn, self.path = _fresh_db_conn()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        os.unlink(self.path)
+
+    def test_create_list_get_roundtrip(self) -> None:
+        from personal_assistant import reminders
+
+        rid = reminders.create(self.conn, "prep for standup", "+30m", kind="standup", source_ref="loop:1")
+        self.assertGreater(rid, 0)
+        row = reminders.get(self.conn, rid)
+        self.assertIsNotNone(row)
+        assert row is not None  # narrow for mypy
+        self.assertEqual(row["text"], "prep for standup")
+        self.assertEqual(row["kind"], "standup")
+        self.assertEqual(row["status"], "pending")
+        self.assertEqual(row["source_ref"], "loop:1")
+        pending = reminders.list_pending(self.conn)
+        self.assertEqual([r["id"] for r in pending], [rid])
+        self.assertEqual(reminders.count_pending(self.conn), 1)
+        self.assertEqual(reminders.next_scheduled_at(self.conn), row["scheduled_at"])
+
+    def test_privacy_redaction_on_text(self) -> None:
+        from personal_assistant import reminders
+
+        rid = reminders.create(self.conn, "ping alice@example.com about launch", "+15m")
+        row = reminders.get(self.conn, rid)
+        assert row is not None
+        self.assertNotIn("alice@example.com", row["text"])
+        self.assertIn("[REDACTED_EMAIL]", row["text"])
+
+    def test_unknown_kind_rejected(self) -> None:
+        from personal_assistant import reminders
+
+        with self.assertRaises(reminders.ReminderError):
+            reminders.create(self.conn, "test", "+5m", kind="bogus")
+
+    def test_empty_text_rejected(self) -> None:
+        from personal_assistant import reminders
+
+        with self.assertRaises(reminders.ReminderError):
+            reminders.create(self.conn, "   ", "+5m")
+
+    def test_mark_fired_moves_to_fired_and_is_idempotent(self) -> None:
+        from personal_assistant import reminders
+
+        rid = reminders.create(self.conn, "task", "+1m")
+        first = reminders.mark_fired(self.conn, rid)
+        self.assertIsNotNone(first)
+        assert first is not None
+        self.assertEqual(first["status"], "fired")
+        self.assertIsNotNone(first["fired_at"])
+        # Second call is a no-op (row not pending anymore).
+        second = reminders.mark_fired(self.conn, rid)
+        self.assertIsNone(second)
+
+    def test_mark_done_from_pending_and_fired(self) -> None:
+        from personal_assistant import reminders
+
+        rid = reminders.create(self.conn, "task", "+1m")
+        done = reminders.mark_done(self.conn, rid)
+        assert done is not None
+        self.assertEqual(done["status"], "done")
+
+        rid2 = reminders.create(self.conn, "task2", "+1m")
+        reminders.mark_fired(self.conn, rid2)
+        done2 = reminders.mark_done(self.conn, rid2)
+        assert done2 is not None
+        self.assertEqual(done2["status"], "done")
+
+    def test_snooze_moves_time_forward_and_keeps_pending(self) -> None:
+        from personal_assistant import reminders
+
+        now = datetime(2026, 7, 8, 10, 0, tzinfo=UTC)
+        rid = reminders.create(self.conn, "task", "+5m", now=now)
+        original = reminders.get(self.conn, rid)
+        assert original is not None
+        snoozed = reminders.snooze(self.conn, rid, for_delta=timedelta(minutes=15), now=now)
+        assert snoozed is not None
+        self.assertEqual(snoozed["status"], "pending")
+        self.assertGreater(snoozed["scheduled_at"], original["scheduled_at"])
+        self.assertEqual(snoozed["snoozed_until"], original["scheduled_at"])
+
+    def test_snooze_requires_exactly_one_arg(self) -> None:
+        from personal_assistant import reminders
+
+        rid = reminders.create(self.conn, "task", "+5m")
+        with self.assertRaises(reminders.ReminderError):
+            reminders.snooze(self.conn, rid)
+        with self.assertRaises(reminders.ReminderError):
+            reminders.snooze(
+                self.conn,
+                rid,
+                for_delta=timedelta(minutes=1),
+                until=datetime(2026, 12, 25, tzinfo=UTC),
+            )
+
+    def test_cancel_moves_to_cancelled(self) -> None:
+        from personal_assistant import reminders
+
+        rid = reminders.create(self.conn, "task", "+5m")
+        cancelled = reminders.cancel(self.conn, rid)
+        assert cancelled is not None
+        self.assertEqual(cancelled["status"], "cancelled")
+        # Cancelled rows don't show up in list_pending.
+        self.assertEqual(reminders.list_pending(self.conn), [])
+        # Cancel is a terminal state — second call is a no-op.
+        self.assertIsNone(reminders.cancel(self.conn, rid))
+
+    def test_list_due_filters_by_time(self) -> None:
+        from personal_assistant import reminders
+
+        now = datetime(2026, 7, 8, 12, 0, tzinfo=UTC)
+        past_id = reminders.create(self.conn, "past", "+1m", now=now - timedelta(hours=1))
+        future_id = reminders.create(self.conn, "future", "+1h", now=now)
+        due = reminders.list_due(self.conn, now=now)
+        self.assertEqual([r["id"] for r in due], [past_id])
+        self.assertNotIn(future_id, [r["id"] for r in due])
+
+    def test_event_log_rows_written(self) -> None:
+        from personal_assistant import reminders
+
+        rid = reminders.create(self.conn, "task", "+1m")
+        reminders.mark_fired(self.conn, rid)
+        events = [
+            row["event_type"]
+            for row in self.conn.execute(
+                "SELECT event_type FROM event_log WHERE entity_type = 'reminder' AND entity_id = ? ORDER BY id",
+                (rid,),
+            ).fetchall()
+        ]
+        self.assertEqual(events, ["reminder_created", "reminder_fired"])
+
+    def test_get_missing_returns_none(self) -> None:
+        from personal_assistant import reminders
+
+        self.assertIsNone(reminders.get(self.conn, 999_999))
+
+
+class SchemaVersionTest(unittest.TestCase):
+    def test_reminders_table_and_version(self) -> None:
+        conn, path = _fresh_db_conn()
+        try:
+            from personal_assistant.db import EXPECTED_SCHEMA_VERSION
+
+            row = conn.execute(
+                "SELECT MAX(version) AS v FROM schema_migrations WHERE name = 'add_reminders'"
+            ).fetchone()
+            self.assertEqual(row["v"], 39)
+            self.assertGreaterEqual(EXPECTED_SCHEMA_VERSION, 39)
+            cols = {c["name"] for c in conn.execute("PRAGMA table_info(reminders)").fetchall()}
+            self.assertEqual(
+                cols,
+                {
+                    "id",
+                    "text",
+                    "scheduled_at",
+                    "status",
+                    "kind",
+                    "source_ref",
+                    "correlation_id",
+                    "created_at",
+                    "fired_at",
+                    "completed_at",
+                    "snoozed_until",
+                },
+            )
+        finally:
+            conn.close()
+            os.unlink(path)
+
+
+if __name__ == "__main__":
+    unittest.main()
