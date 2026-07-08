@@ -31,6 +31,15 @@ def _fresh_db_conn():
     return get_connection(), tmp.name
 
 
+def _to_utc_iso_test(dt: datetime) -> str:
+    """Test helper that mirrors ``reminders._to_utc_iso`` without importing
+    the private symbol, so ordering / equality assertions can compute the
+    expected timestamp string with the same second-precision rounding."""
+    if dt.tzinfo is None:
+        dt = dt.astimezone()
+    return dt.astimezone(UTC).isoformat(timespec="seconds")
+
+
 class ParseWhenTest(unittest.TestCase):
     """Parser edge cases.
 
@@ -201,6 +210,9 @@ class ReminderCrudTest(unittest.TestCase):
     def test_snooze_moves_time_forward_and_keeps_pending(self) -> None:
         from personal_assistant import reminders
 
+        # for_delta on a *pending future* reminder postpones from the
+        # existing schedule (not from now), so the delta compounds on top
+        # of the +5m already in the future — final result is +20m from now.
         now = datetime(2026, 7, 8, 10, 0, tzinfo=UTC)
         rid = reminders.create(self.conn, "task", "+5m", now=now)
         original = reminders.get(self.conn, rid)
@@ -210,6 +222,24 @@ class ReminderCrudTest(unittest.TestCase):
         self.assertEqual(snoozed["status"], "pending")
         self.assertGreater(snoozed["scheduled_at"], original["scheduled_at"])
         self.assertEqual(snoozed["snoozed_until"], original["scheduled_at"])
+        # Confirm the postpone semantics: schedule is now +5m +15m = +20m from ``now``.
+        expected = _to_utc_iso_test(now + timedelta(minutes=20))
+        self.assertEqual(snoozed["scheduled_at"], expected)
+
+    def test_snooze_of_fired_reminder_uses_now_as_base(self) -> None:
+        from personal_assistant import reminders
+
+        # A *fired* reminder should snooze relative to *now* (the "remind
+        # me again in 15 min" mental model). Since fired_at was earlier,
+        # max(now, scheduled) == now, so the new time is now + delta.
+        now = datetime(2026, 7, 8, 10, 0, tzinfo=UTC)
+        later = now + timedelta(minutes=30)
+        rid = reminders.create(self.conn, "task", "+5m", now=now)
+        reminders.mark_fired(self.conn, rid, now=now + timedelta(minutes=6))
+        snoozed = reminders.snooze(self.conn, rid, for_delta=timedelta(minutes=15), now=later)
+        assert snoozed is not None
+        expected = _to_utc_iso_test(later + timedelta(minutes=15))
+        self.assertEqual(snoozed["scheduled_at"], expected)
 
     def test_snooze_requires_exactly_one_arg(self) -> None:
         from personal_assistant import reminders
