@@ -463,6 +463,140 @@ class NotifyTest(unittest.TestCase):
         self.assertEqual(envelope["urgency"], "high")
 
 
+class SchedulerTickTest(unittest.TestCase):
+    """End-to-end coverage for ``cmd_scheduler_tick`` (slice S4).
+
+    Seeds three reminders — one past, one future, one snoozed further
+    into the future — invokes the tick, and asserts the JSON envelope
+    reports exactly the past reminder as fired, transitions its row to
+    ``fired``, records event_log + inbox_items audit rows, and reports
+    the correct ``remaining_pending`` count and ``next_scheduled_at``
+    pointer.
+    """
+
+    def setUp(self) -> None:
+        self.conn, self.path = _fresh_db_conn()
+        # Deterministic dispatch channel across OSes.
+        self._env_backup = {
+            key: os.environ.pop(key)
+            for key in (
+                "MYOS_NOTIFY_COMMAND",
+                "MYOS_NOTIFY_DISABLE_HOOK",
+                "MYOS_NOTIFY_DISABLE_OSASCRIPT",
+                "MYOS_NOTIFY_DISABLE_NOTIFY_SEND",
+            )
+            if key in os.environ
+        }
+        os.environ["MYOS_NOTIFY_DISABLE_OSASCRIPT"] = "1"
+        os.environ["MYOS_NOTIFY_DISABLE_NOTIFY_SEND"] = "1"
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        os.unlink(self.path)
+        for key in (
+            "MYOS_NOTIFY_COMMAND",
+            "MYOS_NOTIFY_DISABLE_HOOK",
+            "MYOS_NOTIFY_DISABLE_OSASCRIPT",
+            "MYOS_NOTIFY_DISABLE_NOTIFY_SEND",
+        ):
+            os.environ.pop(key, None)
+        for key, value in self._env_backup.items():
+            os.environ[key] = value
+
+    def _capture_tick_envelope(self) -> dict:
+        import argparse
+        import contextlib
+        import io
+
+        from personal_assistant import cli_reminders
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            cli_reminders.cmd_scheduler_tick(argparse.Namespace(json=True))
+        # ``notify.stdout`` fallback also writes lines starting with
+        # ``[myos.notify]``; the tick envelope is the LAST JSON line.
+        payload = None
+        for line in buf.getvalue().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("["):
+                continue
+            payload = json.loads(line)
+        assert payload is not None, f"no tick envelope emitted: {buf.getvalue()!r}"
+        return payload
+
+    def test_tick_fires_past_only(self) -> None:
+        from personal_assistant import reminders
+
+        # Anchor on real wall-clock ``now`` because the scheduler tick
+        # uses ``datetime.now(UTC)`` internally — a hardcoded fixture
+        # date would either always be past (everything fires) or always
+        # be future (nothing fires) depending on the run date.
+        now = datetime.now(UTC)
+        past_id = reminders.create(self.conn, "already due", "+1m", now=now - timedelta(hours=1))
+        future_id = reminders.create(self.conn, "later today", "+1h", now=now)
+        snoozed_id = reminders.create(self.conn, "way later", "+3h", now=now)
+        # Move the third reminder further out so it stays clearly pending.
+        reminders.snooze(self.conn, snoozed_id, for_delta=timedelta(hours=1), now=now)
+        self.conn.commit()
+
+        payload = self._capture_tick_envelope()
+
+        self.assertEqual(payload["schema"], "myos.scheduler.tick.v1")
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual([f["id"] for f in payload["fired"]], [past_id])
+        self.assertTrue(payload["fired"][0]["dispatched"])
+        # Two rows still pending (future_id + snoozed_id in the future).
+        self.assertEqual(payload["remaining_pending"], 2)
+        self.assertIsNotNone(payload["next_scheduled_at"])
+        # The future_id fires next (sooner than the snoozed row).
+        future_row = reminders.get(self.conn, future_id)
+        assert future_row is not None
+        self.assertEqual(payload["next_scheduled_at"], future_row["scheduled_at"])
+        self.assertIsNotNone(payload["trace_id"])
+
+        # Past reminder is now `fired`, others untouched.
+        past = reminders.get(self.conn, past_id)
+        assert past is not None
+        self.assertEqual(past["status"], "fired")
+        self.assertIsNotNone(past["fired_at"])
+        for other in (future_id, snoozed_id):
+            row = reminders.get(self.conn, other)
+            assert row is not None
+            self.assertEqual(row["status"], "pending")
+
+        # Audit rows exist for the fired reminder.
+        events = self.conn.execute(
+            "SELECT event_type FROM event_log WHERE entity_type = 'reminder' AND entity_id = ? ORDER BY id",
+            (past_id,),
+        ).fetchall()
+        types = [row["event_type"] for row in events]
+        self.assertIn("reminder_created", types)
+        self.assertIn("reminder_fired", types)
+        inbox = self.conn.execute("SELECT kind, source FROM inbox_items WHERE source = 'notify:reminder'").fetchall()
+        self.assertEqual(len(inbox), 1)
+        self.assertEqual(inbox[0]["kind"], "reminder")
+
+    def test_tick_with_no_due_rows_is_noop_envelope(self) -> None:
+        from personal_assistant import reminders
+
+        # One future-only reminder — nothing should fire.
+        reminders.create(self.conn, "later", "+1h")
+        self.conn.commit()
+        payload = self._capture_tick_envelope()
+        self.assertEqual(payload["count"], 0)
+        self.assertEqual(payload["fired"], [])
+        self.assertEqual(payload["remaining_pending"], 1)
+        self.assertIsNotNone(payload["next_scheduled_at"])
+        # A trace row was recorded even for empty ticks so `myos trace list` picks it up.
+        traces = self.conn.execute(
+            "SELECT command, status FROM execution_traces WHERE command = 'scheduler'"
+        ).fetchall()
+        self.assertGreaterEqual(len(traces), 1)
+        self.assertEqual(traces[-1]["status"], "succeeded")
+
+
 class SchemaVersionTest(unittest.TestCase):
     def test_reminders_table_and_version(self) -> None:
         conn, path = _fresh_db_conn()

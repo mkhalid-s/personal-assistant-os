@@ -20,13 +20,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from typing import Any
 
-from . import reminders
+from . import notify, observability, reminders
 from .db import connection
 
 REMINDER_SCHEMA = "myos.reminder.v1"
 REMINDER_LIST_SCHEMA = "myos.reminder.list.v1"
+SCHEDULER_TICK_SCHEMA = "myos.scheduler.tick.v1"
 
 
 def _reminder_entry(row: dict[str, Any]) -> dict[str, Any]:
@@ -165,6 +167,103 @@ def cmd_remind_cancel(args: argparse.Namespace) -> None:
     _print_reminder_text(row)
 
 
+def cmd_scheduler_tick(args: argparse.Namespace) -> None:
+    """``myos scheduler tick [--json]`` — fire every due reminder once.
+
+    Intended to run on a short cadence (60s default) from launchd via
+    ``myos launchd-install --scheduler``. Each due reminder is
+    dispatched through the ``notify.notify()`` pipeline and then
+    ``reminders.mark_fired()``-transitioned so a subsequent tick won't
+    re-fire it. ``mark_fired`` is a no-op on a non-pending row, so a
+    crashed tick can safely be retried.
+
+    JSON envelope ``myos.scheduler.tick.v1``:
+
+        {
+          "schema": "myos.scheduler.tick.v1",
+          "ts": "<iso>",
+          "fired": [
+            {"id": N, "kind": "…", "dispatched": bool,
+             "channel": "…", "error": str|null, "inbox_id": int|null}
+          ],
+          "count": len(fired),
+          "remaining_pending": N,
+          "next_scheduled_at": "<iso>" | null,
+          "trace_id": "<correlation_id>"
+        }
+
+    The correlation id links this tick to ``myos trace list`` so
+    supervisors can reconcile firing behavior against arbitrary tick
+    windows.
+    """
+    start_ns = time.perf_counter_ns()
+    with connection() as conn:
+        correlation_id = observability.start_trace(
+            conn,
+            command="scheduler",
+            command_path="scheduler tick",
+            surface="scheduler",
+        )
+        due = reminders.list_due(conn)
+        fired: list[dict[str, Any]] = []
+        for row in due:
+            result = notify.notify(
+                conn,
+                title=f"MYOS Reminder: {row['kind']}",
+                body=row["text"],
+                kind="reminder",
+                correlation_id=correlation_id,
+                source_ref=f"reminder:{row['id']}",
+            )
+            reminders.mark_fired(conn, int(row["id"]))
+            fired.append(
+                {
+                    "id": int(row["id"]),
+                    "kind": row["kind"],
+                    "dispatched": bool(result["dispatched"]),
+                    "channel": str(result["channel"]),
+                    "error": result["error"],
+                    "inbox_id": result["inbox_id"],
+                }
+            )
+        remaining = reminders.count_pending(conn)
+        next_at = reminders.next_scheduled_at(conn)
+        ts = notify.build_envelope(title="", body="")["ts"]
+        payload = {
+            "schema": SCHEDULER_TICK_SCHEMA,
+            "ts": ts,
+            "fired": fired,
+            "count": len(fired),
+            "remaining_pending": int(remaining),
+            "next_scheduled_at": next_at,
+            "trace_id": correlation_id,
+        }
+        observability.finish_trace(
+            conn,
+            correlation_id,
+            status="succeeded",
+            duration_ms=(time.perf_counter_ns() - start_ns) // 1_000_000,
+            summary=f"scheduler.tick fired={len(fired)} remaining={remaining}",
+            metadata={"fired_count": len(fired), "remaining_pending": int(remaining)},
+        )
+        conn.commit()
+    if getattr(args, "json", False):
+        print(json.dumps(payload, ensure_ascii=True))
+        return
+    if not fired:
+        print(
+            f"Scheduler tick: 0 due, {payload['remaining_pending']} pending "
+            f"(next: {payload['next_scheduled_at'] or 'none'})."
+        )
+        return
+    print(f"Scheduler tick: fired {len(fired)} reminder(s).")
+    for entry in fired:
+        marker = entry["channel"]
+        if not entry["dispatched"]:
+            marker = f"{entry['channel']} (dispatch failed)"
+        print(f"- #{entry['id']} [{entry['kind']}] via {marker}")
+
+
 def cmd_remind_dispatch(args: argparse.Namespace) -> None:
     """Dispatch entry for ``myos remind …`` subcommands.
 
@@ -190,10 +289,12 @@ def cmd_remind_dispatch(args: argparse.Namespace) -> None:
 __all__ = [
     "REMINDER_LIST_SCHEMA",
     "REMINDER_SCHEMA",
+    "SCHEDULER_TICK_SCHEMA",
     "cmd_remind_cancel",
     "cmd_remind_complete",
     "cmd_remind_create",
     "cmd_remind_dispatch",
     "cmd_remind_list",
     "cmd_remind_snooze",
+    "cmd_scheduler_tick",
 ]
