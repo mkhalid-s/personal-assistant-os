@@ -353,6 +353,19 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         side_effects=("local_db_write",),
     ),
     CommandSpec(
+        "scheduler",
+        "daily",
+        "local_write",
+        "capture",
+        "Fire every due reminder once. Meant to run on a launchd cadence.",
+        subcommands=("tick",),
+        examples=(
+            "myos scheduler tick",
+            "myos scheduler tick --json",
+        ),
+        side_effects=("local_db_write",),
+    ),
+    CommandSpec(
         "action-provider",
         "expert",
         "approval_gated",

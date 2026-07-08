@@ -25,6 +25,7 @@ def cmd_launchd_install(args: argparse.Namespace) -> None:
     env_file_q = str(Path(env_file).expanduser().resolve())
     project_q = shlex.quote(str(project_root))
     env_q = shlex.quote(str(env_file_q))
+    scheduler_interval = int(getattr(args, "scheduler_interval_sec", 60))
     sync_cmd = f"cd {project_q} && source .venv/bin/activate && myos sync --connector all --env-file {env_q}"
     pulse_cmd = (
         f"cd {project_q} && source .venv/bin/activate && "
@@ -35,11 +36,13 @@ def cmd_launchd_install(args: argparse.Namespace) -> None:
         f"cd {project_q} && source .venv/bin/activate && "
         f"myos autopilot --env-file {env_q} --interval-sec {int(args.autopilot_interval_sec)}"
     )
+    scheduler_cmd = f"cd {project_q} && source .venv/bin/activate && myos scheduler tick"
     (project_root / "data").mkdir(parents=True, exist_ok=True)
     target_dir = Path.home() / "Library" / "LaunchAgents"
     dst_sync = target_dir / "com.myos.sync.plist"
     dst_pulse = target_dir / "com.myos.pulse.plist"
     dst_autopilot = target_dir / "com.myos.autopilot.plist"
+    dst_scheduler = target_dir / "com.myos.scheduler.plist"
 
     sync_plist = f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
@@ -110,16 +113,44 @@ def cmd_launchd_install(args: argparse.Namespace) -> None:
 </dict>
 </plist>
 """
+    scheduler_plist = f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
+<plist version=\"1.0\">
+<dict>
+  <key>Label</key>
+  <string>com.myos.scheduler</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>{xml_escape(scheduler_cmd)}</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>{scheduler_interval}</integer>
+  <key>StandardOutPath</key>
+  <string>{xml_escape(str(project_root / "data" / "scheduler.log"))}</string>
+  <key>StandardErrorPath</key>
+  <string>{xml_escape(str(project_root / "data" / "scheduler.err.log"))}</string>
+</dict>
+</plist>
+"""
 
+    scheduler_enabled = bool(getattr(args, "scheduler", False))
     print("Launchd plan:")
     print(f"- write {dst_sync}")
     print(f"- write {dst_pulse}")
     if args.autopilot:
         print(f"- write {dst_autopilot}")
+    if scheduler_enabled:
+        print(f"- write {dst_scheduler} (StartInterval={scheduler_interval}s)")
     print(f"- env file for sync: {env_file_q}")
     print(f"- env file for pulse: {env_file_q}")
     if args.autopilot:
         print(f"- env file for autopilot: {env_file_q}")
+    if scheduler_enabled:
+        print(f"- scheduler runs: `{scheduler_cmd}`")
     print(f"- load agents: {args.load}")
     if not args.apply:
         print("Dry run only. Re-run with --apply to execute.")
@@ -130,6 +161,8 @@ def cmd_launchd_install(args: argparse.Namespace) -> None:
     dst_pulse.write_text(pulse_plist)
     if args.autopilot:
         dst_autopilot.write_text(autopilot_plist)
+    if scheduler_enabled:
+        dst_scheduler.write_text(scheduler_plist)
     print("Copied launchd files.")
     if args.load:
         launchctl = shutil.which("launchctl")
@@ -140,10 +173,14 @@ def cmd_launchd_install(args: argparse.Namespace) -> None:
         subprocess.run([launchctl, "unload", str(dst_pulse)], check=False)
         if args.autopilot:
             subprocess.run([launchctl, "unload", str(dst_autopilot)], check=False)
+        if scheduler_enabled:
+            subprocess.run([launchctl, "unload", str(dst_scheduler)], check=False)
         subprocess.run([launchctl, "load", str(dst_sync)], check=False)
         subprocess.run([launchctl, "load", str(dst_pulse)], check=False)
         if args.autopilot:
             subprocess.run([launchctl, "load", str(dst_autopilot)], check=False)
+        if scheduler_enabled:
+            subprocess.run([launchctl, "load", str(dst_scheduler)], check=False)
         print("Loaded launch agents.")
 
 
@@ -152,10 +189,12 @@ def cmd_launchd_uninstall(args: argparse.Namespace) -> None:
     dst_sync = target_dir / "com.myos.sync.plist"
     dst_pulse = target_dir / "com.myos.pulse.plist"
     dst_autopilot = target_dir / "com.myos.autopilot.plist"
+    dst_scheduler = target_dir / "com.myos.scheduler.plist"
     print("Launchd uninstall plan:")
     print(f"- remove {dst_sync}")
     print(f"- remove {dst_pulse}")
     print(f"- remove {dst_autopilot}")
+    print(f"- remove {dst_scheduler}")
     if not args.apply:
         print("Dry run only. Re-run with --apply to execute.")
         return
@@ -168,6 +207,9 @@ def cmd_launchd_uninstall(args: argparse.Namespace) -> None:
     if dst_autopilot.exists():
         subprocess.run(["launchctl", "unload", str(dst_autopilot)], check=False, capture_output=True, text=True)
         dst_autopilot.unlink()
+    if dst_scheduler.exists():
+        subprocess.run(["launchctl", "unload", str(dst_scheduler)], check=False, capture_output=True, text=True)
+        dst_scheduler.unlink()
     print("Launch agents removed.")
 
 
@@ -196,6 +238,8 @@ def cmd_activate(args: argparse.Namespace, deps: LaunchdRuntimeDependencies) -> 
                 meeting_hours=0.0,
                 autopilot=False,
                 autopilot_interval_sec=900,
+                scheduler=False,
+                scheduler_interval_sec=60,
             )
         )
 

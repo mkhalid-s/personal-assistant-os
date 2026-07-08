@@ -755,6 +755,9 @@ cmd_rollback = cli_agent.cmd_rollback
 cmd_remind = cli_reminders.cmd_remind_dispatch
 
 
+cmd_scheduler_tick = cli_reminders.cmd_scheduler_tick
+
+
 cmd_agent_run = cli_agent.cmd_agent_run
 
 
@@ -1280,6 +1283,17 @@ def build_parser() -> argparse.ArgumentParser:
     launchd_install.add_argument("--meeting-hours", type=float, default=0.0)
     launchd_install.add_argument("--autopilot", action="store_true")
     launchd_install.add_argument("--autopilot-interval-sec", type=int, default=900)
+    launchd_install.add_argument(
+        "--scheduler",
+        action="store_true",
+        help="Also install com.myos.scheduler.plist so `myos scheduler tick` runs on a launchd cadence.",
+    )
+    launchd_install.add_argument(
+        "--scheduler-interval-sec",
+        type=int,
+        default=60,
+        help="Seconds between `myos scheduler tick` runs when --scheduler is set (default: 60).",
+    )
     launchd_install.set_defaults(func=cmd_launchd_install)
 
     launchd_uninstall = sub.add_parser("launchd-uninstall", help="Remove launchd agents for sync/pulse.")
@@ -1816,6 +1830,24 @@ def build_parser() -> argparse.ArgumentParser:
     remind_cancel.set_defaults(func=cli_reminders.cmd_remind_cancel, remind_action="cancel")
 
     remind_parser.set_defaults(func=cmd_remind)
+
+    scheduler_parser = sub.add_parser(
+        "scheduler",
+        help="Reminders scheduler (runs `tick` on a launchd cadence).",
+        description=(
+            "Fires every due reminder once per invocation. Meant to run on a short "
+            "cadence (60s default) via `myos launchd-install --scheduler`. Each due "
+            "reminder is dispatched through the notify pipeline and marked `fired`; "
+            "a subsequent tick will not re-fire it. `mark_fired` is a no-op on a "
+            "non-pending row, so a crashed tick can safely be retried."
+        ),
+    )
+    scheduler_sub = scheduler_parser.add_subparsers(dest="scheduler_action", required=True)
+    scheduler_tick = scheduler_sub.add_parser("tick", help="Fire every due reminder once.")
+    scheduler_tick.add_argument(
+        "--json", action="store_true", help="Emit a `myos.scheduler.tick.v1` JSON envelope instead of text."
+    )
+    scheduler_tick.set_defaults(func=cmd_scheduler_tick)
 
     autopilot_status = sub.add_parser("autopilot-status", help="Show autopilot runs and pending approvals.")
     autopilot_status.add_argument("--limit", type=int, default=10)
