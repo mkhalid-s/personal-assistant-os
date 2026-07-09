@@ -38,11 +38,16 @@ import shutil
 import sqlite3
 import subprocess
 import sys
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from .db import append_event
 from .privacy import apply_privacy_filters
+
+# ``datetime.UTC`` alias — added natively in CPython 3.11; we alias
+# ``timezone.utc`` here so this module also runs on 3.10 (the project's
+# lower Python bound per pyproject.toml).
+UTC = timezone.utc
 
 NOTIFY_SCHEMA = "myos.notify.v1"
 

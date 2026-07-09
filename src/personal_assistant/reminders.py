@@ -30,11 +30,16 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .db import append_event
 from .privacy import apply_privacy_filters
+
+# ``datetime.UTC`` alias — added natively in CPython 3.11; we alias
+# ``timezone.utc`` here so this module also runs on 3.10 (the project's
+# lower Python bound per pyproject.toml).
+UTC = timezone.utc
 
 REMINDER_KINDS = ("followup", "standup", "meeting", "task")
 DEFAULT_KIND = "followup"
