@@ -3812,25 +3812,47 @@ class DbConnectionHelperTest(unittest.TestCase):
     def test_bare_get_connection_emits_resource_warning(self) -> None:
         """Guard against silently re-introducing bare ``get_connection()`` calls.
 
-        The Python resource-warning message must actually appear in stderr
-        when a connection is finalized without ``close()`` — otherwise the CI
-        ``-W error::ResourceWarning`` gate provides no signal. ``gc.collect``
-        under an ``always`` filter surfaces the warning during script
-        execution (not just interpreter shutdown), which is exactly the path
-        the ``connection()`` helper eliminates for every CLI handler.
+        The Python resource-warning message must be recorded when a
+        connection is finalized without ``close()`` — otherwise the CI
+        ``-W error::ResourceWarning`` gate provides no signal.
+
+        We route through ``warnings.catch_warnings(record=True)`` inside
+        the subprocess because CPython's timing for ``sqlite3.Connection``
+        finalization differs across 3.10 / 3.11 / 3.12 / 3.13 and across
+        Linux vs. macOS: on some combinations ``__del__`` fires
+        synchronously during ``gc.collect()`` (surfacing the warning on
+        stderr), on others it defers until interpreter shutdown (nothing
+        on stderr while the script is still running). The recorded-warnings
+        API is deterministic across every combination because it captures
+        the warning at finalization time regardless of stream routing.
         """
         with tempfile.TemporaryDirectory() as tmp:
             env = self._prepared_env(tmp)
             script = (
                 "import gc\n"
+                "import json\n"
                 "import warnings\n"
-                "warnings.simplefilter('always')\n"
                 "from personal_assistant.db import get_connection\n"
+                "\n"
                 "def leak():\n"
                 "    conn = get_connection()\n"
                 "    conn.execute('SELECT 1').fetchone()\n"
-                "leak()\n"
-                "gc.collect()\n"
+                "\n"
+                "with warnings.catch_warnings(record=True) as caught:\n"
+                "    warnings.simplefilter('always')\n"
+                "    leak()\n"
+                "    # Two collections: first schedules the finalizer, second\n"
+                "    # runs it on interpreters that defer to a follow-up cycle\n"
+                "    # (observed on CPython 3.10-3.12 Linux for sqlite3).\n"
+                "    for _ in range(2):\n"
+                "        gc.collect()\n"
+                "\n"
+                "records = [\n"
+                "    {'category': item.category.__name__, 'message': str(item.message)}\n"
+                "    for item in caught\n"
+                "    if issubclass(item.category, ResourceWarning)\n"
+                "]\n"
+                "print('RESOURCE_WARNINGS=' + json.dumps(records))\n"
                 "print('done')\n"
             )
             script_path = Path(tmp) / "leak.py"
@@ -3844,8 +3866,17 @@ class DbConnectionHelperTest(unittest.TestCase):
                 text=True,
             )
             self.assertIn("done", result.stdout)
-            self.assertIn("ResourceWarning", result.stderr)
-            self.assertIn("unclosed database", result.stderr)
+            payload_line = next(
+                (line for line in result.stdout.splitlines() if line.startswith("RESOURCE_WARNINGS=")),
+                None,
+            )
+            self.assertIsNotNone(payload_line, msg=f"no warning envelope in stdout: {result.stdout!r}")
+            assert payload_line is not None  # narrow for mypy
+            records = json.loads(payload_line.split("=", 1)[1])
+            self.assertTrue(
+                any("unclosed database" in rec["message"] for rec in records),
+                msg=f"expected an unclosed-database ResourceWarning, got: {records!r}",
+            )
 
     def test_connection_helper_leaves_no_resource_warning(self) -> None:
         """The positive counterpart: ``connection()`` must not leak.
