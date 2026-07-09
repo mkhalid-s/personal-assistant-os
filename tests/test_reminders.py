@@ -16,8 +16,12 @@ import stat
 import sys
 import tempfile
 import unittest
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+# ``datetime.UTC`` alias — added natively in CPython 3.11; the project
+# supports 3.10+ per pyproject.toml so we alias ``timezone.utc`` here.
+UTC = timezone.utc
 
 SRC = str(Path(__file__).resolve().parents[1] / "src")
 if SRC not in sys.path:
