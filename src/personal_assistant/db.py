@@ -10,10 +10,26 @@ EXPECTED_SCHEMA_VERSION = 39
 
 
 def resolve_db_path() -> Path:
+    """Return the effective SQLite path.
+
+    Precedence: ``MYOS_DB_PATH`` env var wins outright (unchanged),
+    otherwise defer to :func:`personal_assistant.data_dirs.resolve_data_dir`
+    for the parent directory. In a repo checkout that resolves to
+    ``<repo>/data/assistant.db`` (backward-compat); in a ``pipx``
+    install it lands under the platform data dir (macOS
+    ``~/Library/Application Support/myos``, Linux
+    ``$XDG_DATA_HOME/myos``).
+
+    The import is local so ``db.py`` stays importable in
+    ``initialize_schema`` unit tests without pulling the whole
+    ``data_dirs`` module for every legacy call.
+    """
     raw = os.getenv("MYOS_DB_PATH")
     if raw:
         return Path(raw).expanduser()
-    return Path(__file__).resolve().parents[2] / "data" / "assistant.db"
+    from .data_dirs import resolve_data_dir
+
+    return resolve_data_dir() / "assistant.db"
 
 
 def get_connection() -> sqlite3.Connection:

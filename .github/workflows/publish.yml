@@ -1,0 +1,132 @@
+name: Publish to PyPI
+
+# Runs on annotated version tags (`vX.Y.Z`) or manually. The workflow
+# builds sdist + wheel once and publishes them first to TestPyPI, then
+# — after a manual environment approval on the `pypi` environment —
+# to production PyPI. This mirrors the shape recommended by PyPA and
+# uses trusted publishing (OIDC) so no long-lived API tokens are
+# stored in the repository.
+#
+# Enabling this workflow on a fresh PyPI account is a one-time click
+# per index:
+#
+#   1. Create the `personal-assistant-os` project on
+#      https://test.pypi.org and https://pypi.org (initially empty).
+#   2. On each project's "Publishing" tab add a "Trusted publisher"
+#      pointing at:
+#        Owner:      mkhalid-s
+#        Repository: personal-assistant-os
+#        Workflow:   publish.yml
+#        Environment: testpypi  (for TestPyPI)
+#        Environment: pypi      (for PyPI)
+#   3. In this GitHub repo's Settings -> Environments, create the
+#      `pypi` environment with required reviewers so a production
+#      publish requires human approval. TestPyPI publishes freely so
+#      you can smoke a release before promoting.
+#
+# Until step 2 is complete, the publish jobs fail cleanly with
+# "Trusted publisher not configured" and the tag/dispatch still
+# produces build artifacts you can inspect.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build only; skip both TestPyPI and PyPI uploads."
+        type: boolean
+        default: false
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build sdist + wheel
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build==1.3.0 twine==6.2.0
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Verify metadata (twine check)
+        run: python -m twine check dist/*
+
+      - name: Assert version matches tag (skip on manual dispatch)
+        if: github.event_name == 'push'
+        run: |
+          tag="${GITHUB_REF##refs/tags/v}"
+          pkg_version="$(python -c 'import tomllib,sys; print(tomllib.loads(open("pyproject.toml","rb").read().decode())["project"]["version"])')"
+          if [ "$tag" != "$pkg_version" ]; then
+            echo "Tag v$tag does not match pyproject.toml version $pkg_version"
+            exit 1
+          fi
+
+      - name: Upload built distributions as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 14
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    if: ${{ !inputs.dry_run }}
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/personal-assistant-os/
+    permissions:
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Upload to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+
+  publish-pypi:
+    # Production PyPI publish gated on the `pypi` environment approval.
+    # Configure required reviewers in Settings -> Environments -> pypi
+    # so a human has to approve every real release.
+    name: Publish to PyPI
+    if: ${{ !inputs.dry_run && github.event_name == 'push' }}
+    needs: publish-testpypi
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/personal-assistant-os/
+    permissions:
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Upload to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
