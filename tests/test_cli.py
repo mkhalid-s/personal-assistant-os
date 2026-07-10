@@ -24,7 +24,19 @@ class CliFlowTest(unittest.TestCase):
 
     def test_ci_release_readiness_uses_installed_command_path(self) -> None:
         workflow = Path(".github/workflows/ci.yml").read_text()
-        release_job = workflow.split("  release-readiness:", 1)[1]
+        # Bound the substring to the release-readiness job block only.
+        # Before the installer-smoke job existed, splitting once at
+        # ``release-readiness:`` was enough — but any job appended after
+        # it that legitimately sets PYTHONPATH would leak into the
+        # ``assertNotIn`` guard below and produce a spurious failure.
+        # Terminating at the next top-level job header (a newline
+        # followed by two-space-then-word) keeps this test scoped to
+        # the release-readiness block regardless of what comes next.
+        import re
+
+        after = workflow.split("  release-readiness:", 1)[1]
+        next_job = re.search(r"\n {2}[A-Za-z][A-Za-z0-9_-]*:\n", after)
+        release_job = after[: next_job.start()] if next_job else after
         self.assertLess(
             release_job.index("Smoke installed myos command"), release_job.index("Build wheel artifact smoke")
         )
@@ -55,9 +67,16 @@ class CliFlowTest(unittest.TestCase):
 
     def test_standalone_binary_packaging_remains_explicit_decision(self) -> None:
         readme = Path("README.md").read_text()
+        # After the one-package-installer slice landed, the README now
+        # states the packaging choice differently: `pipx` is the
+        # supported single-command install; a signed binary / .pkg /
+        # Homebrew tap remain deferred. Assert on the new wording so
+        # this guard still catches a silent regression that would
+        # promise a standalone binary we do not actually ship.
         self.assertIn("packaged as a Python console application", readme)
         self.assertIn("not a standalone signed binary", readme)
-        self.assertIn("Standalone executable packaging can be layered later", readme)
+        self.assertIn("Homebrew tap and a signed", readme)
+        self.assertIn("deferred", readme)
 
     def test_zero_proof_runbook_is_discoverable_and_approval_gated(self) -> None:
         readme = Path("README.md").read_text()

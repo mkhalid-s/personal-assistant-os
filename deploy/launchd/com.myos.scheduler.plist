@@ -1,4 +1,27 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- Reference template for the com.myos.scheduler LaunchAgent that
+     MYOS writes to ~/Library/LaunchAgents/com.myos.scheduler.plist.
+     Do NOT copy this file into place manually; run `myos install`
+     (or the lower-level `myos launchd-install` with the apply and
+     scheduler flags) so the actual paths and mode get resolved
+     against the current environment.
+
+     The generator emits one of two shapes:
+
+     * Dev-venv mode (contributor workflow: checkout with .venv next
+       to pyproject.toml). This template shows that shape below,
+       with /path/to/personal-assistant-os as the placeholder repo
+       root.
+
+     * Installed mode (pipx or bare wheel: what the one-line
+       install.sh produces). In that shape ProgramArguments[2] is
+       the absolute path to the myos binary (e.g.
+       /Users/you/.local/bin/myos scheduler tick) and MYOS_DATA_DIR
+       plus MYOS_ENV_FILE are stamped into an EnvironmentVariables
+       dict.
+     (XML comments must not contain double-hyphens, so flag names are
+     written in prose here.)
+-->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -8,15 +31,15 @@
   <array>
     <string>/bin/zsh</string>
     <string>-lc</string>
-    <string>cd /path/to/personal-assistant-os && source .venv/bin/activate && myos scheduler tick</string>
+    <string>cd /path/to/personal-assistant-os &amp;&amp; source .venv/bin/activate &amp;&amp; myos scheduler tick</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
   <key>StartInterval</key>
   <integer>60</integer>
   <key>StandardOutPath</key>
-  <string>/path/to/personal-assistant-os/data/scheduler.log</string>
+  <string>/path/to/personal-assistant-os/data/logs/scheduler.log</string>
   <key>StandardErrorPath</key>
-  <string>/path/to/personal-assistant-os/data/scheduler.err.log</string>
+  <string>/path/to/personal-assistant-os/data/logs/scheduler.err.log</string>
 </dict>
 </plist>

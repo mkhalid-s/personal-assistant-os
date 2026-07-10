@@ -1,4 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- Reference template for the com.myos.sync LaunchAgent. See the
+     sibling com.myos.scheduler.plist for a note on the two invocation
+     shapes (dev-venv mode shown here, installed-mode produced by
+     `myos install`). Do not copy this file manually; run
+     `myos launchd-install` with the apply flag and let the generator
+     resolve real paths against the current environment.
+     (XML comments must not contain double-hyphens, so flag names are
+     written in prose here.)
+-->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -8,37 +17,15 @@
   <array>
     <string>/bin/zsh</string>
     <string>-lc</string>
-    <string>cd /path/to/personal-assistant-os && source .venv/bin/activate && myos sync --connector all</string>
+    <string>cd /path/to/personal-assistant-os &amp;&amp; source .venv/bin/activate &amp;&amp; myos sync --connector all</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
   <key>StartInterval</key>
   <integer>1800</integer>
   <key>StandardOutPath</key>
-  <string>/path/to/personal-assistant-os/data/sync.log</string>
+  <string>/path/to/personal-assistant-os/data/logs/sync.log</string>
   <key>StandardErrorPath</key>
-  <string>/path/to/personal-assistant-os/data/sync.err.log</string>
-</dict>
-</plist>
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>com.myos.sync</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/bin/zsh</string>
-    <string>-lc</string>
-    <string>cd /path/to/personal-assistant-os && source .venv/bin/activate && myos sync --connector all</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>StartInterval</key>
-  <integer>1800</integer>
-  <key>StandardOutPath</key>
-  <string>/path/to/personal-assistant-os/data/sync.log</string>
-  <key>StandardErrorPath</key>
-  <string>/path/to/personal-assistant-os/data/sync.err.log</string>
+  <string>/path/to/personal-assistant-os/data/logs/sync.err.log</string>
 </dict>
 </plist>

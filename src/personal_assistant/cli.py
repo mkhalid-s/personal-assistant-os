@@ -18,6 +18,7 @@ from . import (
     cli_em,
     cli_factory,
     cli_health,
+    cli_install,
     cli_knowledge,
     cli_launchd,
     cli_local_data,
@@ -1299,6 +1300,12 @@ def build_parser() -> argparse.ArgumentParser:
     launchd_uninstall = sub.add_parser("launchd-uninstall", help="Remove launchd agents for sync/pulse.")
     launchd_uninstall.add_argument("--apply", action="store_true")
     launchd_uninstall.set_defaults(func=cmd_launchd_uninstall)
+
+    # High-level cross-platform install/uninstall: on macOS delegates to
+    # launchd-install (with scheduler on by default), on Linux writes a
+    # systemd --user timer. This is the entry point the one-line
+    # scripts/install.sh calls after pipx finishes.
+    cli_install.register_subparsers(sub)
 
     activate = sub.add_parser("activate", help="Run end-to-end activation flow.")
     activate.add_argument("--env-file", default="")

@@ -67,37 +67,69 @@ The assistant is designed to propose before it mutates external systems.
 - Conversation logs, action payloads, and indexed text pass through privacy filters.
 - Runtime data lives under `data/`, which is ignored by git.
 
-## Setup
+## Install
+
+### One-shot install (recommended)
+
+macOS and Linux, assuming Python 3.10+ is present:
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/mkhalid-s/personal-assistant-os/main/scripts/install.sh | bash
+```
+
+That single line:
+
+1. Detects Python 3.10+ and installs `pipx` if missing.
+2. Installs MYOS into an isolated pipx venv (default source: `git+…@main`; override with `--source pypi` once published, or `--source local:.` to install from a checkout).
+3. Runs `myos install` — creates the platform data directory (macOS `~/Library/Application Support/myos`, Linux `$XDG_DATA_HOME/myos`), seeds `.env.myos`, and registers the background scheduler (launchd on macOS, `systemd --user` timer on Linux) so `myos scheduler tick` fires every 60 s.
+
+Preview without changing anything:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mkhalid-s/personal-assistant-os/main/scripts/install.sh | bash -s -- --dry-run
+```
+
+Verify it worked:
+
+```bash
+myos --help
+myos doctor
+myos remind create "first reminder" --at +2m
+```
+
+### Uninstall
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mkhalid-s/personal-assistant-os/main/scripts/uninstall.sh | bash
+```
+
+Add `--purge` to also delete the data directory (DB, logs, `.env.myos`). By default the data dir is preserved so a later reinstall keeps your local knowledge base.
+
+### Optional voice dependencies
+
+```bash
+pipx inject personal-assistant-os sounddevice faster-whisper
+```
+
+### Development install (contributors)
+
+For hacking on MYOS itself, use an editable install so code changes are picked up live and `data/` stays in the repo:
+
+```bash
+git clone https://github.com/mkhalid-s/personal-assistant-os
 cd personal-assistant-os
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e .
-```
-
-This installs the `myos` console command from the package entrypoint:
-
-```bash
+python -m pip install -e '.[voice]'   # drop [voice] for a minimal install
 myos doctor
 myos release-check --strict
 ```
 
-For an isolated local CLI install, use `pipx` from the repository root:
+In this mode `myos launchd-install` / `myos install` detect the checkout + `.venv` and generate agents that source the venv's activate script, so the same commands work for both installed and dev workflows.
 
-```bash
-pipx install .
-```
+CI smokes the installed `myos` command with `myos --help`, builds a wheel via `python -m pip wheel --no-deps .`, and runs `scripts/install.sh --dry-run --source local:.` on macOS and Ubuntu runners before the strict release-readiness gate.
 
-CI also smokes the installed `myos` command with `myos --help`, then performs a lightweight wheel artifact build with `python -m pip wheel --no-deps .` before the strict release-readiness gate.
-
-MYOS is currently packaged as a Python console application, not a standalone signed binary. Standalone executable packaging can be layered later with tools such as zipapp, PyInstaller, or a Homebrew formula after the Python package boundary is stable.
-
-Install optional voice dependencies only if needed:
-
-```bash
-python -m pip install -e '.[voice]'
-```
+MYOS is packaged as a Python console application, not a standalone signed binary. A Homebrew tap and a signed `.pkg` are both deferred until PyPI publishing lands (see `ROADMAP.md`).
 
 ## Configuration
 
