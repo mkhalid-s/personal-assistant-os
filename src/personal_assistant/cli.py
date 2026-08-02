@@ -1880,6 +1880,9 @@ def build_parser() -> argparse.ArgumentParser:
     goal_add.add_argument("--context", default="")
     goal_add.add_argument("--cadence-minutes", type=int, default=1440)
     goal_add.add_argument("--priority", type=int, default=2)
+    goal_add.add_argument(
+        "--persona", default="", help="Persona name to scope this goal's actions to (see 'persona list')."
+    )
     goal_add.set_defaults(func=cmd_goal)
     goal_list = goal_sub.add_parser("list", help="List assistant goals.")
     goal_list.add_argument("--limit", type=int, default=50)

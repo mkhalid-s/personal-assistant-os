@@ -441,12 +441,13 @@ def cmd_goal(args: argparse.Namespace) -> None:
         if args.goal_action == "add":
             objective = apply_privacy_filters(conn, args.objective)
             context = apply_privacy_filters(conn, args.context)
+            persona_name = str(getattr(args, "persona", "") or "")
             conn.execute(
                 """
-                INSERT INTO assistant_goals (objective, context, cadence_minutes, priority, status)
-                VALUES (?, ?, ?, ?, 'active')
+                INSERT INTO assistant_goals (objective, context, cadence_minutes, priority, status, persona_name)
+                VALUES (?, ?, ?, ?, 'active', ?)
                 """,
-                (objective, context, args.cadence_minutes, args.priority),
+                (objective, context, args.cadence_minutes, args.priority, persona_name or None),
             )
             goal_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
             conn.commit()

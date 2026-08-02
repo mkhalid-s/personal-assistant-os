@@ -7,7 +7,7 @@ import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 
-EXPECTED_SCHEMA_VERSION = 42
+EXPECTED_SCHEMA_VERSION = 43
 PRIVATE_DB_MODE = 0o600
 
 
@@ -1754,6 +1754,13 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
             (42, "add_factory_persona"),
+        )
+
+    if current < 43:
+        conn.execute("ALTER TABLE assistant_goals ADD COLUMN persona_name TEXT")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (43, "add_goal_persona"),
         )
 
     _ensure_fts5(conn)  # self-heal: build the FTS index if a no-FTS5 run stranded migration 17
