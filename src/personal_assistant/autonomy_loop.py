@@ -11,7 +11,7 @@ import json
 import sqlite3
 from typing import Any
 
-from . import agentcore, observability, providers
+from . import agentcore, observability, personas, providers
 from .db import append_event
 from .execution import _execute_agent_action, _status_from_result
 from .planner import _agent_action_specs, _agent_analogies, _agent_plan, _normalize_ai_actions, _normalize_ai_plan
@@ -45,6 +45,7 @@ def _constraints(
     max_actions: int,
     cycles: int = 0,
     goal_id: int | None = None,
+    persona: str = "",
 ) -> dict[str, object]:
     meta: dict[str, object] = {
         "source": LOOP_SOURCE,
@@ -55,6 +56,8 @@ def _constraints(
     }
     if goal_id is not None:
         meta["goal_id"] = int(goal_id)
+    if persona:
+        meta["persona"] = str(persona)
     return meta
 
 
@@ -261,7 +264,7 @@ def _finish_cycle(
 def eligible_goals(conn: sqlite3.Connection, *, limit: int = 5) -> list[dict[str, object]]:
     rows = conn.execute(
         """
-        SELECT id, objective, context, priority, cadence_minutes, last_evaluated_at
+        SELECT id, objective, context, priority, cadence_minutes, last_evaluated_at, persona_name
         FROM assistant_goals
         WHERE status = 'active'
           AND (
@@ -284,6 +287,7 @@ def eligible_goals(conn: sqlite3.Connection, *, limit: int = 5) -> list[dict[str
                 "priority": int(row["priority"] or 2),
                 "cadence_minutes": int(row["cadence_minutes"] or 1440),
                 "last_evaluated_at": row["last_evaluated_at"],
+                "persona": str(row["persona_name"] or ""),
                 "loop": loop,
             }
         )
@@ -293,7 +297,7 @@ def eligible_goals(conn: sqlite3.Connection, *, limit: int = 5) -> list[dict[str
 def _get_goal(conn: sqlite3.Connection, goal_id: int) -> dict[str, object] | None:
     row = conn.execute(
         """
-        SELECT id, objective, context, priority, cadence_minutes, last_evaluated_at
+        SELECT id, objective, context, priority, cadence_minutes, last_evaluated_at, persona_name
         FROM assistant_goals
         WHERE id = ? AND status = 'active'
         """,
@@ -308,6 +312,7 @@ def _get_goal(conn: sqlite3.Connection, goal_id: int) -> dict[str, object] | Non
         "priority": int(row["priority"] or 2),
         "cadence_minutes": int(row["cadence_minutes"] or 1440),
         "last_evaluated_at": row["last_evaluated_at"],
+        "persona": str(row["persona_name"] or ""),
         "loop": find_goal_loop(conn, int(row["id"])),
     }
 
@@ -458,12 +463,15 @@ def start_loop(
     max_actions: int = DEFAULT_MAX_ACTIONS,
     mode: str = "safe",
     goal_id: int | None = None,
+    persona: str = "",
 ) -> dict[str, object]:
     objective = apply_privacy_filters(conn, objective).strip()
     context = apply_privacy_filters(conn, context).strip()
     if not objective:
         raise ValueError("autonomy loop objective is required")
-    meta = _constraints(mode=mode, backend=backend, max_actions=max_actions, cycles=1, goal_id=goal_id)
+    meta = _constraints(
+        mode=mode, backend=backend, max_actions=max_actions, cycles=1, goal_id=goal_id, persona=persona
+    )
     conn.execute(
         """
         INSERT INTO agent_tasks (objective, context, constraints_json, priority, status)
@@ -642,6 +650,7 @@ def run_goal_cycle(
             max_actions=max_actions,
             mode="safe",
             goal_id=selected_goal_id,
+            persona=str(goal.get("persona") or ""),
         )
         event_type = "autonomy_goal_started"
         action = "started"
@@ -684,6 +693,18 @@ def _run_cycle(conn: sqlite3.Connection, *, task_id: int, max_actions: int) -> d
         backend_name=backend_name,
         purpose="autonomy_loop",
     )
+    persona_name = str(meta.get("persona") or "")
+    if persona_name:
+        persona = personas.get_persona(conn, persona_name)
+        if persona:
+            actions, rejected = personas.filter_actions(persona, actions)
+            if rejected:
+                _record_observation(
+                    conn,
+                    int(task_id),
+                    "persona_action_rejected",
+                    f"Persona '{persona_name}' blocked actions not in its allowed_actions: {', '.join(rejected)}.",
+                )
     conn.execute(
         """
         INSERT INTO agent_runs (agent_task_id, agent_name, provider, status, plan_json, summary)
