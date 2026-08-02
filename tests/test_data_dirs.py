@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -192,6 +193,21 @@ class DbPathIntegrationTest(unittest.TestCase):
         os.environ["MYOS_DATA_DIR"] = "/tmp/should-be-ignored"
         os.environ["MYOS_DB_PATH"] = "/tmp/explicit.db"
         self.assertEqual(db.resolve_db_path(), Path("/tmp/explicit.db"))
+
+    def test_get_connection_hardens_database_permissions(self) -> None:
+        from personal_assistant import db
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "assistant.db"
+            os.environ["MYOS_DB_PATH"] = str(db_path)
+            conn = db.get_connection()
+            try:
+                self.assertEqual(db_path.stat().st_mode & 0o777, 0o600)
+                wal_path = Path(f"{db_path}-wal")
+                if wal_path.exists():
+                    self.assertEqual(wal_path.stat().st_mode & 0o777, 0o600)
+            finally:
+                conn.close()
 
 
 if __name__ == "__main__":

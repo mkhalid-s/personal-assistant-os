@@ -232,10 +232,10 @@ def cmd_setup_live(args: argparse.Namespace, dependencies: SetupLiveDependencies
         print("Launchd install requested, but no launchd installer is configured.")
         raise SystemExit(1)
 
-    data_dir.mkdir(parents=True, exist_ok=True)
-    (data_dir / "autopilot").mkdir(parents=True, exist_ok=True)
-    (data_dir / "outbox").mkdir(parents=True, exist_ok=True)
-    watch_dir.mkdir(parents=True, exist_ok=True)
+    private_dirs = (data_dir, data_dir / "autopilot", data_dir / "outbox", watch_dir)
+    for private_dir in private_dirs:
+        private_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        private_dir.chmod(0o700)
     if not env_path.exists() or args.force:
         env_path.write_text(_env_template(db_path))
         env_path.chmod(0o600)

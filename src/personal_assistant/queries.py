@@ -136,16 +136,25 @@ def _fts_match(query: str) -> str:
     return " OR ".join(f'"{t}"' for t in toks[:20])
 
 
-def context_search(conn, query: str, limit: int = 5) -> list[dict]:
+def context_search(conn, query: str, limit: int = 5, *, source_types: set[str] | None = None) -> list[dict]:
     """Full-text search via FTS5 (real ranking); falls back to a brute-force
     hybrid scan when FTS5 is unavailable or returns nothing."""
     match = _fts_match(query)
     if match:
         try:
+            type_sql = ""
+            params: list[object] = [match]
+            if source_types is not None:
+                if not source_types:
+                    return []
+                placeholders = ",".join("?" for _ in source_types)
+                type_sql = f" AND source_type IN ({placeholders})"
+                params.extend(sorted(source_types))
+            params.append(limit)
             rows = conn.execute(
                 "SELECT source_type, source_id, content, bm25(text_chunks_fts) AS rank "
-                "FROM text_chunks_fts WHERE text_chunks_fts MATCH ? ORDER BY rank LIMIT ?",
-                (match, limit),
+                f"FROM text_chunks_fts WHERE text_chunks_fts MATCH ?{type_sql} ORDER BY rank LIMIT ?",
+                params,
             ).fetchall()
             out = []
             for r in rows:
@@ -163,8 +172,18 @@ def context_search(conn, query: str, limit: int = 5) -> list[dict]:
         except Exception:
             pass  # FTS5 missing / query error -> fall back to scan
 
+    type_sql = ""
+    params = []
+    if source_types is not None:
+        if not source_types:
+            return []
+        placeholders = ",".join("?" for _ in source_types)
+        type_sql = f"WHERE source_type IN ({placeholders}) "
+        params.extend(sorted(source_types))
+    params.append(400)
     rows = conn.execute(
-        "SELECT source_type, source_id, content FROM text_chunks ORDER BY created_at DESC LIMIT 400"
+        f"SELECT source_type, source_id, content FROM text_chunks {type_sql}ORDER BY created_at DESC LIMIT ?",
+        params,
     ).fetchall()
     scored = [(hybrid_score(query, r["content"]), dict(r)) for r in rows]
     scored.sort(key=lambda x: x[0], reverse=True)

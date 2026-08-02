@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 from typing import Any
 
-from . import agentcore, autonomy, graphrag, intents, observability, plans, providers, zero_executor
+from . import agentcore, autonomy, graphrag, intents, observability, personas, plans, providers, zero_executor
 from .db import append_event
 from .execution import approve_and_execute
 from .inbox import insert_inbox_item_dedup
@@ -185,6 +185,7 @@ def _role_run(
     retrieval_run_id: int | None,
     factory_run_id: int,
     workflow_pack: str,
+    persona: dict[str, Any] | None = None,
 ) -> int:
     objective = f"factory {role}: {intent['objective']}"
     conn.execute(
@@ -209,18 +210,27 @@ def _role_run(
     }[role]
     provider_name = "local_factory"
     provider_output: dict[str, Any] = {}
-    configured_backend = os.getenv("MYOS_FACTORY_ROLE_BACKEND", "").strip()
+    configured_backend = str(persona.get("default_backend") or "").strip() if persona else ""
+    configured_backend = configured_backend or os.getenv("MYOS_FACTORY_ROLE_BACKEND", "").strip()
     if configured_backend:
         try:
             backend = providers.get_backend(configured_backend)
             ok, _ = backend.available()
             if ok:
+                persona_context = ""
+                if persona is not None:
+                    persona_context = (
+                        f"Active persona: {persona['display_name']} ({persona['name']}). "
+                        f"Instructions: {persona['instructions']}"
+                    )
                 result = backend.reason(
                     conn,
                     {
                         "purpose": f"factory_{role}",
                         "objective": objective,
-                        "context": intent.get("context") or "",
+                        "context": "\n\n".join(
+                            part for part in (persona_context, str(intent.get("context") or "")) if part
+                        ),
                         "factory": {
                             "factory_run_id": int(factory_run_id),
                             "workflow_pack": workflow_pack,
@@ -231,10 +241,15 @@ def _role_run(
                     },
                 )
                 provider_name = f"factory_{backend.name}"
+                accepted_actions = result.get("actions") or []
+                rejected_actions: list[str] = []
+                if persona is not None:
+                    accepted_actions, rejected_actions = personas.filter_actions(persona, accepted_actions)
                 provider_output = {
                     "reply": str(result.get("reply") or "")[:2000],
                     "plan": result.get("plan") or [],
-                    "actions": result.get("actions") or [],
+                    "actions": accepted_actions,
+                    "rejected_action_types": rejected_actions,
                 }
         except Exception as exc:  # noqa: BLE001 - provider roles must degrade to local fallback
             provider_output = {"provider_error": str(exc)[:500]}
@@ -247,6 +262,7 @@ def _role_run(
         "retrieval_run_id": int(retrieval_run_id) if retrieval_run_id is not None else None,
         "responsibility": responsibility,
         "approval_gate": role in {"executor", "reviewer", "critic"},
+        "persona": persona["name"] if persona is not None else None,
         "provider_output": provider_output,
     }
     conn.execute(
@@ -402,6 +418,7 @@ def start_review_first_run(
     workflow_pack: str = "intent_execution",
     executor_backend: str = "local",
     executor_context: dict[str, Any] | None = None,
+    persona_name: str = "",
 ) -> dict[str, Any]:
     if mode not in MODES:
         raise ValueError(f"unsupported factory mode: {mode}")
@@ -415,6 +432,9 @@ def start_review_first_run(
     intent = intents.get_intent(conn, int(intent_id))
     if intent is None:
         raise ValueError(f"intent #{intent_id} not found")
+    persona = personas.get_persona(conn, persona_name) if persona_name else None
+    if persona_name and persona is None:
+        raise ValueError(f"persona not found: {persona_name}")
     allowed, reason = mode_allowed(conn, intent_id=int(intent_id), requested_mode=mode)
     if not allowed:
         raise ValueError(reason)
@@ -426,9 +446,10 @@ def start_review_first_run(
     conn.execute(
         """
         INSERT INTO factory_runs (
-            intent_id, plan_id, mode, workflow_pack, executor_backend, executor_context_json, status, summary
+            intent_id, plan_id, mode, workflow_pack, executor_backend, executor_context_json,
+            persona_name, status, summary
         )
-        VALUES (?, ?, ?, ?, ?, ?, 'running', ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)
         """,
         (
             int(intent_id),
@@ -437,6 +458,7 @@ def start_review_first_run(
             workflow_pack,
             executor_backend,
             json.dumps(executor_context or {}, ensure_ascii=True),
+            persona["name"] if persona is not None else None,
             f"{workflow_pack} factory run for intent #{intent_id}",
         ),
     )
@@ -449,6 +471,7 @@ def start_review_first_run(
         limit=5,
         record_run=True,
         mode=f"factory_{workflow_pack}",
+        allowed_source_types=(personas.retrieval_source_types(persona) if persona is not None else None),
     )
     retrieval_run_id = None
     if hits and hits[0].get("retrieval_run_id"):
@@ -491,6 +514,7 @@ def start_review_first_run(
             retrieval_run_id=retrieval_run_id,
             factory_run_id=factory_run_id,
             workflow_pack=workflow_pack,
+            persona=persona,
         )
         agent_run_ids.append(agent_run_id)
         _artifact(conn, factory_run_id, "agent_run", agent_run_id, role)
@@ -574,6 +598,7 @@ def start_review_first_run(
                 "mode": mode,
                 "workflow_pack": workflow_pack,
                 "executor_backend": executor_backend,
+                "persona": persona["name"] if persona is not None else None,
             },
             ensure_ascii=True,
         ),
@@ -589,6 +614,7 @@ def start_review_first_run(
         "proposed_action_ids": prepared_action_ids,
         "status": final_status,
         "executor_backend": executor_backend,
+        "persona": persona["name"] if persona is not None else None,
         "learning_insights": learning,
     }
 
@@ -1021,6 +1047,10 @@ def prepare_execution_actions(conn: sqlite3.Connection, factory_run_id: int) -> 
     intent = intents.get_intent(conn, int(run["intent_id"]))
     if intent is None:
         raise ValueError(f"intent #{run['intent_id']} not found")
+    persona_name = str(run.get("persona_name") or "")
+    persona = personas.get_persona(conn, persona_name) if persona_name else None
+    if persona_name and persona is None:
+        raise ValueError(f"factory run references unavailable persona: {persona_name}")
     conn.execute(
         """
         INSERT INTO agent_tasks (objective, context, constraints_json, priority, status)
@@ -1047,6 +1077,19 @@ def prepare_execution_actions(conn: sqlite3.Connection, factory_run_id: int) -> 
         str(run.get("workflow_pack") or "") == "software_delivery"
         and str(run.get("executor_backend") or "local") == "zero"
     ):
+        allowed_actions = {str(item) for item in persona.get("allowed_actions", [])} if persona else None
+        if allowed_actions is not None and not {"apply_patch", "draft_external_update"}.issubset(allowed_actions):
+            append_event(
+                conn,
+                "factory_actions_rejected_by_persona",
+                "factory_run",
+                int(factory_run_id),
+                json.dumps(
+                    {"persona": persona_name, "rejected": ["apply_patch", "draft_external_update"]},
+                    ensure_ascii=True,
+                ),
+            )
+            return []
         action_id, agent_run_id = _prepare_zero_software_action(conn, run=run, intent=intent, task_id=task_id)
         _artifact(conn, int(factory_run_id), "agent_run", agent_run_id, "zero executor")
         _artifact(conn, int(factory_run_id), "agent_action", action_id, "zero apply_patch")
@@ -1059,7 +1102,11 @@ def prepare_execution_actions(conn: sqlite3.Connection, factory_run_id: int) -> 
         )
         return [action_id]
     action_ids: list[int] = []
-    for spec in _execution_action_specs(conn, run, intent):
+    specs = _execution_action_specs(conn, run, intent)
+    rejected: list[str] = []
+    if persona is not None:
+        specs, rejected = personas.filter_actions(persona, specs)
+    for spec in specs:
         action_id = agentcore.enqueue_proposal(
             conn,
             task_id=task_id,
@@ -1075,7 +1122,10 @@ def prepare_execution_actions(conn: sqlite3.Connection, factory_run_id: int) -> 
         "factory_actions_prepared",
         "factory_run",
         int(factory_run_id),
-        json.dumps({"actions": action_ids}, ensure_ascii=True),
+        json.dumps(
+            {"actions": action_ids, "persona": persona_name or None, "rejected_action_types": rejected},
+            ensure_ascii=True,
+        ),
     )
     return action_ids
 

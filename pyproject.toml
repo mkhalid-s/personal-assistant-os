@@ -31,11 +31,9 @@ where = ["src"]
 [tool.setuptools.package-data]
 personal_assistant = ["route_eval_fixtures.json"]
 
-# Ruff configuration. The CI static-checks job runs `ruff check` fatally
-# on a narrow set of safety-critical modules (command_registry, privacy,
-# execution, db, zero_executor) and advisorily on the rest of the tree.
-# Format-on-save is fine but is not enforced fatally yet — future slices
-# will format the tree progressively and flip the format check to fatal.
+# Ruff configuration. CI runs both lint and format checks fatally across
+# the complete source and test trees, with an additional explicit pass over
+# the safety-critical modules.
 [tool.ruff]
 target-version = "py310"
 line-length = 120

@@ -1047,6 +1047,7 @@ class CliFlowTest(unittest.TestCase):
             )
             self.assertIn("Created config template", out.stdout)
             self.assertTrue(cfg.exists())
+            self.assertEqual(cfg.stat().st_mode & 0o777, 0o600)
 
     def test_doctor_strict_and_public_templates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1115,6 +1116,8 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("37 add_approval_integrity_binding", list_out)
             self.assertIn("38 add_receipt_compensating_action", list_out)
             self.assertIn("39 add_reminders", list_out)
+            self.assertIn("40 add_personas", list_out)
+            self.assertIn("41 scrub_connector_payloads", list_out)
             from personal_assistant.db import EXPECTED_SCHEMA_VERSION
 
             self.assertIn(f"Current version: {EXPECTED_SCHEMA_VERSION} / expected {EXPECTED_SCHEMA_VERSION}", list_out)
@@ -1122,6 +1125,7 @@ class CliFlowTest(unittest.TestCase):
             backup_out = run("backup", "--output", str(backup_path))
             self.assertIn("Backup created", backup_out)
             self.assertTrue(backup_path.exists())
+            self.assertEqual(backup_path.stat().st_mode & 0o777, 0o600)
 
             run("capture", "Task: this should disappear after restore")
             run("triage")
@@ -2645,6 +2649,7 @@ class CliFlowTest(unittest.TestCase):
             env = os.environ.copy()
             env["PYTHONPATH"] = str(Path.cwd() / "src")
             env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
+            env["HOME"] = tmp
             cfg = Path(tmp) / ".env.myos"
             cfg.write_text("")
             start = subprocess.run(
@@ -2671,6 +2676,7 @@ class CliFlowTest(unittest.TestCase):
             env = os.environ.copy()
             env["PYTHONPATH"] = str(Path.cwd() / "src")
             env["MYOS_DB_PATH"] = str(Path(tmp) / "assistant.db")
+            env["HOME"] = tmp
             cfg = Path(tmp) / ".env.myos"
             cfg.write_text("")
             out = subprocess.run(
@@ -2682,6 +2688,7 @@ class CliFlowTest(unittest.TestCase):
                 text=True,
             )
             self.assertIn("Launchd plan", out.stdout)
+            self.assertTrue((Path(tmp) / "Library" / "LaunchAgents" / "com.myos.sync.plist").is_file())
 
     def test_cleanup_and_renegotiate_commands(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

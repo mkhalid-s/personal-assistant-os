@@ -17,6 +17,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sqlite3
+from typing import Any
 
 from . import command_registry
 
@@ -26,7 +28,7 @@ BLOCKED = "blocked"
 LEVELS = ("safe", "balanced", "bold")
 DEFAULT_LEVEL = "balanced"
 DECISIONS = ("allowed", "needs_approval", BLOCKED)
-COMMAND_DECISION_FIXTURES = (
+COMMAND_DECISION_FIXTURES: tuple[dict[str, Any], ...] = (
     {
         "id": "read_context",
         "command": "context",
@@ -116,7 +118,7 @@ _DESTRUCTIVE_HINTS = (
 # finding #2): no external mutation may ever auto-send without a human tap, at any
 # level. `bold` only changes prompts/latency elsewhere, never the send gate. Add a
 # type here ONLY if it is purely local and fully reversible.
-_BOLD_AUTO: frozenset = frozenset()
+_BOLD_AUTO: frozenset[str] = frozenset()
 
 # Read-only tool/op names (Agent SDK + MYOS) -> auto.
 _READ_TOOLS = {
@@ -141,7 +143,7 @@ _READ_TOKENS = frozenset(_READ_HINTS)  # token-exact membership (see classify_to
 _WRITE_HINTS = ("write", "edit", "create", "update", "comment", "post", "send", "add", "apply", "set")
 
 
-def _command_metadata(command: str) -> dict:
+def _command_metadata(command: str) -> dict[str, Any]:
     spec = command_registry.find_command((command or "").strip().lower())
     if not spec:
         return {
@@ -158,7 +160,7 @@ def _command_metadata(command: str) -> dict:
     }
 
 
-def _with_command_metadata(decision: dict, command: str) -> dict:
+def _with_command_metadata(decision: dict[str, Any], command: str) -> dict[str, Any]:
     decision.update(_command_metadata(command))
     return decision
 
@@ -202,7 +204,7 @@ def _norm_level(level: str | None) -> str:
     return level if level in LEVELS else DEFAULT_LEVEL
 
 
-def _is_destructive_payload(payload: dict | None) -> bool:
+def _is_destructive_payload(payload: dict[str, Any] | None) -> bool:
     payload = payload or {}
     if payload.get("destructive") is True:
         return True
@@ -213,7 +215,9 @@ def _is_destructive_payload(payload: dict | None) -> bool:
     return False
 
 
-def classify_action(action_type: str, payload: dict | None = None, *, level: str = DEFAULT_LEVEL) -> dict:
+def classify_action(
+    action_type: str, payload: dict[str, Any] | None = None, *, level: str = DEFAULT_LEVEL
+) -> dict[str, Any]:
     """Classify a queued ``agent_action`` (action_type + payload)."""
     level = _norm_level(level)
     at = (action_type or "").lower()
@@ -226,7 +230,9 @@ def classify_action(action_type: str, payload: dict | None = None, *, level: str
     return {"tier": tier, "destructive": False, "reason": f"{action_type} -> {tier} (level={level})"}
 
 
-def classify_tool(tool_name: str, tool_input: dict | None = None, *, level: str = DEFAULT_LEVEL) -> dict:
+def classify_tool(
+    tool_name: str, tool_input: dict[str, Any] | None = None, *, level: str = DEFAULT_LEVEL
+) -> dict[str, Any]:
     """Classify a live Agent-SDK tool call (built-in tool or mcp__server__op)."""
     level = _norm_level(level)
     name = (tool_name or "").lower()
@@ -269,7 +275,7 @@ def decide_command(
     requires_confirmation: bool = False,
     level: str = DEFAULT_LEVEL,
     requested_mode: str = "",
-) -> dict:
+) -> dict[str, Any]:
     """Explain the autonomy decision for a top-level MYOS command.
 
     This is intentionally small and advisory for normal local work. The hard
@@ -377,13 +383,13 @@ def decide_command(
 
 
 def recommend_next_steps(
-    decision: dict,
+    decision: dict[str, Any],
     *,
     command: str = "",
     intent: str = "",
     workflow_pack: str = "",
     factory_run_id: int | None = None,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Return deterministic, read-only next-step guidance for an autonomy decision."""
     decision_name = str(decision.get("decision") or "")
     safety = str(decision.get("safety") or "")
@@ -533,14 +539,14 @@ def recommend_next_steps(
     return []
 
 
-def recommendation_key(step: dict) -> str:
+def recommendation_key(step: dict[str, Any]) -> str:
     label = str(step.get("label") or "").strip()
     command = str(step.get("command") or "").strip()
     base = f"{label}|{command}"
     return _text_hash(base)[:24]
 
 
-def _feedback_scores(conn) -> dict[str, int]:
+def _feedback_scores(conn: sqlite3.Connection) -> dict[str, int]:
     try:
         rows = conn.execute(
             """
@@ -555,7 +561,7 @@ def _feedback_scores(conn) -> dict[str, int]:
     return {str(row["recommendation_key"]): int(row["score"] or 0) for row in rows}
 
 
-def _learning_side_effect_scores(conn) -> dict[str, int]:
+def _learning_side_effect_scores(conn: sqlite3.Connection) -> dict[str, int]:
     try:
         rows = conn.execute(
             """
@@ -602,7 +608,7 @@ def _learning_side_effect_scores(conn) -> dict[str, int]:
     return scores
 
 
-def _step_side_effects(step: dict) -> list[str]:
+def _step_side_effects(step: dict[str, Any]) -> list[str]:
     side_effects = step.get("side_effects") or []
     if not isinstance(side_effects, list):
         return []
@@ -675,7 +681,7 @@ def _recommendation_surface(label: str, command: str) -> str:
     return "general"
 
 
-def _learning_score_for_side_effects(conn, side_effects: list[str]) -> int:
+def _learning_score_for_side_effects(conn: sqlite3.Connection, side_effects: list[str]) -> int:
     if not side_effects:
         return 0
     scores = _learning_side_effect_scores(conn)
@@ -686,10 +692,10 @@ _RECOMMENDATION_SUMMARY_RECENT_DAYS = DAILY_RECOMMENDATION_FEEDBACK_WINDOW_DAYS
 _RECOMMENDATION_SUMMARY_MIN_LIMIT = RECOMMENDATION_SUMMARY_MIN_LIMIT
 
 
-def ranked_recommendations(conn, steps: list[dict]) -> list[dict]:
+def ranked_recommendations(conn: sqlite3.Connection, steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
     scores = _feedback_scores(conn)
     learning_scores = _learning_side_effect_scores(conn)
-    ranked: list[tuple[int, int, int, dict]] = []
+    ranked: list[tuple[int, int, int, dict[str, Any]]] = []
     for index, step in enumerate(steps):
         key = recommendation_key(step)
         enriched = dict(step)
@@ -711,7 +717,7 @@ def ranked_recommendations(conn, steps: list[dict]) -> list[dict]:
 
 
 def record_recommendation_feedback(
-    conn,
+    conn: sqlite3.Connection,
     *,
     label: str,
     command: str = "",
@@ -745,16 +751,17 @@ def record_recommendation_feedback(
         ),
     )
     conn.commit()
+    assert cur.lastrowid is not None
     return int(cur.lastrowid)
 
 
 def _recommendation_feedback_summary_rows(
-    conn,
+    conn: sqlite3.Connection,
     *,
     limit: int,
     daily_only: bool = False,
     active_daily_only: bool = False,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     daily_commands_sql = ", ".join(f"'{command}'" for command in DAILY_RECOMMENDATION_COMMANDS)
     daily_filter = (
         f"WHERE label LIKE '{DAILY_RECOMMENDATION_LABEL_PREFIX}%' AND command IN ({daily_commands_sql})"
@@ -813,13 +820,13 @@ def _recommendation_feedback_summary_rows(
     ]
 
 
-def _sort_summary_rows(rows: list[dict]) -> None:
+def _sort_summary_rows(rows: list[dict[str, Any]]) -> None:
     rows.sort(key=lambda item: (str(item.get("label") or ""), str(item.get("command") or "")))
     rows.sort(key=lambda item: str(item.get("last_feedback_at") or ""), reverse=True)
     rows.sort(key=lambda item: (-int(item.get("recent_score") or 0), -int(item.get("score") or 0)))
 
 
-def recommendation_feedback_summary(conn, *, limit: int = 20) -> list[dict]:
+def recommendation_feedback_summary(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict[str, Any]]:
     display_limit = max(_RECOMMENDATION_SUMMARY_MIN_LIMIT, int(limit))
     rows = _recommendation_feedback_summary_rows(conn, limit=display_limit)
     daily_rows = _recommendation_feedback_summary_rows(conn, limit=1, daily_only=True, active_daily_only=True)
@@ -829,7 +836,7 @@ def recommendation_feedback_summary(conn, *, limit: int = 20) -> list[dict]:
         else:
             rows.append(daily_rows[0])
         _sort_summary_rows(rows)
-    result = []
+    result: list[dict[str, Any]] = []
     for item in rows:
         side_effects = _recommendation_side_effects(str(item.get("label") or ""), str(item.get("command") or ""))
         item["side_effects"] = side_effects
@@ -847,8 +854,8 @@ def _text_hash(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
 
-def evaluate_command_decisions(*, level: str = DEFAULT_LEVEL) -> dict:
-    cases = []
+def evaluate_command_decisions(*, level: str = DEFAULT_LEVEL) -> dict[str, Any]:
+    cases: list[dict[str, Any]] = []
     for fixture in COMMAND_DECISION_FIXTURES:
         decision = decide_command(
             fixture["command"],
@@ -887,7 +894,7 @@ def evaluate_command_decisions(*, level: str = DEFAULT_LEVEL) -> dict:
     }
 
 
-def record_command_decision_eval(conn, eval_result: dict) -> int:
+def record_command_decision_eval(conn: sqlite3.Connection, eval_result: dict[str, Any]) -> int:
     summary = eval_result["summary"]
     cur = conn.execute(
         """
@@ -901,6 +908,7 @@ def record_command_decision_eval(conn, eval_result: dict) -> int:
             summary["calibration"],
         ),
     )
+    assert cur.lastrowid is not None
     run_id = int(cur.lastrowid)
     for case in eval_result["cases"]:
         conn.execute(
@@ -928,7 +936,7 @@ def record_command_decision_eval(conn, eval_result: dict) -> int:
 
 
 def record_command_decision_feedback(
-    conn,
+    conn: sqlite3.Connection,
     *,
     trace_id: int,
     expected_decision: str,
@@ -967,6 +975,7 @@ def record_command_decision_feedback(
         ),
     )
     conn.commit()
+    assert cur.lastrowid is not None
     return int(cur.lastrowid)
 
 
@@ -977,7 +986,7 @@ def _normalize_cmd(cmd: str) -> str:
     return re.sub(r"\s+", " ", c)
 
 
-def level_from_policy(conn) -> str:
+def level_from_policy(conn: sqlite3.Connection) -> str:
     """Read the active autonomy level from assistant_policies (direct query, no cli import)."""
     try:
         row = conn.execute("SELECT value FROM assistant_policies WHERE key = 'autonomy_level'").fetchone()

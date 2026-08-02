@@ -302,17 +302,23 @@ def cmd_launchd_uninstall(args: argparse.Namespace) -> None:
     if not args.apply:
         print("Dry run only. Re-run with --apply to execute.")
         return
+    launchctl = shutil.which("launchctl")
+
+    def unload(path: Path) -> None:
+        if launchctl:
+            subprocess.run([launchctl, "unload", str(path)], check=False, capture_output=True, text=True)
+
     if dst_sync.exists():
-        subprocess.run(["launchctl", "unload", str(dst_sync)], check=False, capture_output=True, text=True)
+        unload(dst_sync)
         dst_sync.unlink()
     if dst_pulse.exists():
-        subprocess.run(["launchctl", "unload", str(dst_pulse)], check=False, capture_output=True, text=True)
+        unload(dst_pulse)
         dst_pulse.unlink()
     if dst_autopilot.exists():
-        subprocess.run(["launchctl", "unload", str(dst_autopilot)], check=False, capture_output=True, text=True)
+        unload(dst_autopilot)
         dst_autopilot.unlink()
     if dst_scheduler.exists():
-        subprocess.run(["launchctl", "unload", str(dst_scheduler)], check=False, capture_output=True, text=True)
+        unload(dst_scheduler)
         dst_scheduler.unlink()
     print("Launch agents removed.")
 

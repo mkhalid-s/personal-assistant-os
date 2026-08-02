@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 
-EXPECTED_SCHEMA_VERSION = 39
+EXPECTED_SCHEMA_VERSION = 42
+PRIVATE_DB_MODE = 0o600
 
 
 def resolve_db_path() -> Path:
@@ -41,6 +43,9 @@ def get_connection() -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout = 5000;")
     conn.execute("PRAGMA foreign_keys = ON;")
     initialize_schema(conn)
+    for candidate in (db_path, Path(f"{db_path}-wal"), Path(f"{db_path}-shm")):
+        if candidate.exists():
+            candidate.chmod(PRIVATE_DB_MODE)
     return conn
 
 
@@ -1672,6 +1677,83 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
             (39, "add_reminders"),
+        )
+
+    if current < 40:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS personas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                display_name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                instructions TEXT NOT NULL,
+                allowed_actions_json TEXT NOT NULL DEFAULT '[]',
+                retrieval_scopes_json TEXT NOT NULL DEFAULT '[]',
+                default_backend TEXT NOT NULL DEFAULT '',
+                is_builtin INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_personas_status_name ON personas(status, name);
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (40, "add_personas"),
+        )
+
+    if current < 41:
+        # Connector payloads created before the persistence chokepoint began
+        # applying privacy filters may contain PII in columns or nested raw JSON.
+        # Scrub them once during upgrade so the fix protects existing stores too.
+        from .privacy import apply_privacy_filters, redact_obj
+
+        rows = conn.execute(
+            """
+            SELECT id, title, body, owner, status, priority, due_date, url, raw_json
+            FROM external_items
+            """
+        ).fetchall()
+        for row in rows:
+            try:
+                raw_payload = json.loads(row["raw_json"] or "{}")
+            except (TypeError, ValueError):
+                raw_payload = {}
+
+            def safe(value: object) -> str | None:
+                return apply_privacy_filters(conn, str(value)) if value is not None else None
+
+            conn.execute(
+                """
+                UPDATE external_items
+                SET title=?, body=?, owner=?, status=?, priority=?, due_date=?, url=?, raw_json=?
+                WHERE id=?
+                """,
+                (
+                    safe(row["title"]),
+                    safe(row["body"]),
+                    safe(row["owner"]),
+                    safe(row["status"]),
+                    safe(row["priority"]),
+                    safe(row["due_date"]),
+                    safe(row["url"]),
+                    json.dumps(redact_obj(conn, raw_payload), ensure_ascii=True),
+                    int(row["id"]),
+                ),
+            )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (41, "scrub_connector_payloads"),
+        )
+
+    if current < 42:
+        conn.execute("ALTER TABLE factory_runs ADD COLUMN persona_name TEXT")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (42, "add_factory_persona"),
         )
 
     _ensure_fts5(conn)  # self-heal: build the FTS index if a no-FTS5 run stranded migration 17

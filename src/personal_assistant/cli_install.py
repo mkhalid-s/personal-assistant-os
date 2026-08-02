@@ -42,6 +42,8 @@ from . import cli_launchd, data_dirs
 SYSTEMD_USER_DIR = Path.home() / ".config" / "systemd" / "user"
 SYSTEMD_SERVICE_NAME = "myos-scheduler.service"
 SYSTEMD_TIMER_NAME = "myos-scheduler.timer"
+PRIVATE_DIR_MODE = 0o700
+PRIVATE_FILE_MODE = 0o600
 
 
 def _repo_env_example() -> Path | None:
@@ -62,6 +64,7 @@ def _seed_env_file(env_path: Path) -> str:
     exist. Returns a short status string suitable for CLI output.
     """
     if env_path.exists():
+        env_path.chmod(PRIVATE_FILE_MODE)
         return f"env file kept in place at {env_path}"
     template = _repo_env_example()
     if template is None:
@@ -72,8 +75,10 @@ def _seed_env_file(env_path: Path) -> str:
             "# MYOS env file — populate real values, then re-run `myos install`.\n"
             "# See https://github.com/mkhalid-s/personal-assistant-os for the full template.\n"
         )
+        env_path.chmod(PRIVATE_FILE_MODE)
         return f"env file seeded (minimal stub) at {env_path}"
     env_path.write_text(template.read_text())
+    env_path.chmod(PRIVATE_FILE_MODE)
     return f"env file seeded from {template} at {env_path}"
 
 
@@ -141,6 +146,8 @@ def _install_linux_scheduler(env_file: Path, data_dir: Path, interval_sec: int, 
     SYSTEMD_USER_DIR.mkdir(parents=True, exist_ok=True)
     service_dst.write_text(service_body)
     timer_dst.write_text(timer_body)
+    service_dst.chmod(PRIVATE_FILE_MODE)
+    timer_dst.chmod(PRIVATE_FILE_MODE)
 
     systemctl = shutil.which("systemctl")
     if systemctl is None:
@@ -199,8 +206,10 @@ def cmd_install(args: argparse.Namespace) -> None:
         print("(dry-run) — pass without --dry-run to execute.")
         return
 
-    data_dir.mkdir(parents=True, exist_ok=True)
-    log_dir.mkdir(parents=True, exist_ok=True)
+    data_dir.mkdir(parents=True, exist_ok=True, mode=PRIVATE_DIR_MODE)
+    log_dir.mkdir(parents=True, exist_ok=True, mode=PRIVATE_DIR_MODE)
+    data_dir.chmod(PRIVATE_DIR_MODE)
+    log_dir.chmod(PRIVATE_DIR_MODE)
     print(_seed_env_file(env_file))
 
     if sys.platform == "darwin":

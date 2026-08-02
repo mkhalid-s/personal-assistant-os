@@ -27,6 +27,7 @@ The design is inspired by AI-native software-factory ideas: intent-first workflo
 - Ingests text, audio transcripts, images, meeting notes, and watched folders.
 - Builds searchable memory with provenance, deterministic entity and relationship extraction, graph links, hybrid retrieval, persisted retrieval traces, retrieval eval fixtures, and graph-aware "why" explanations.
 - Runs assistant workflows through chat, voice, autopilot, one-shot smart routing, morning briefs, durable plans, review packets, policy-aware factory runs, provider-backed role runs with local fallback, risk scans, delegation, approvals, connector dry-run outbox workflows, and weekly reviews.
+- Provides built-in and custom personas with explicit instructions, retrieval scopes, backend preferences, and action allowlists; persona actions remain subject to the global approval and execution policy.
 - Redacts common PII and secrets before persistence and keeps private runtime data out of git.
 
 ## Design Docs
@@ -239,6 +240,23 @@ Most daily use should start with one of these surfaces instead of memorizing the
 The `zero` backend here refers to [GitLawb Zero](https://github.com/gitlawb/zero), the coding agent CLI. It is distinct from the [Agent Zero framework](https://github.com/agent0ai/agent-zero). Use the factory path when you need the full MYOS loop; use `myos code` for a direct one-off patch proposal. `myos doctor` reports `zero_stream_executor` as an optional preflight for the structured factory path.
 
 Use `myos help daily`, `myos help workflows`, `myos help expert`, or `myos help diagnostic` to see a smaller tiered command list.
+
+Personas provide a narrower working style without creating a second permission system:
+
+```bash
+myos persona list
+myos persona show chief-of-staff
+myos chat --persona researcher
+myos voice --persona coach
+myos delegate "Prepare my weekly priorities" --persona chief-of-staff
+myos factory start --intent 1 --pack software_delivery --persona engineer
+myos persona create focus-guide \
+  --instructions "Help me choose one concrete next step" \
+  --allow-action create_inbox_item \
+  --retrieval-scope work_items
+```
+
+A persona can only narrow retrieval, tools, and proposed action types. It cannot make an action safer, bypass approval, or authorize execution. Interactive scoped personas currently use structured backends such as `claude`; the open-ended `claude-sdk` tool surface is rejected until every SDK tool can be mapped reliably to persona actions.
 
 ## Tiny Local Router Model
 

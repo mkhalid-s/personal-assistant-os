@@ -20,7 +20,10 @@ It does not yet provide:
 - Full production GraphRAG with real embeddings, stronger reranking, and graph summaries.
 - A graph database backend.
 - Production embeddings or vector search.
-- A complete autonomous execution workflow with external mutation receipts and mature rollback automation.
+- Project-scoped persona inheritance, persona-specific curated memory, and persona use across scheduled goals. Durable personas now constrain delegated work, interactive chat/voice, and factory runs.
+- Live connector mutation adapters beyond Jira and GitHub comments; Confluence and Aha remain reviewable drafts.
+- A focused daily surface that hides the 100+ expert commands behind a small product workflow.
+- A tagged, published release with upgrade compatibility proven across real user databases.
 
 ## Phase 0: Public Baseline
 
@@ -276,10 +279,10 @@ The most relevant inspiration from `Gitlawb/zero` and `agent0ai/agent-zero` shou
 
 ## Near-Term Surgical Plan
 
-The next implementation batch should be small:
+The next implementation batches should consolidate the existing platform:
 
-1. Add `.env.example` and a local-only demo script.
-2. Add CI for tests and scans.
-3. Add `intents` and `intent_evidence` tables with CLI create/list/show commands.
-4. Add `ARCHITECTURE.md` and keep README current-state honest.
-5. Add GraphRAG design tests before adding new graph storage.
+1. Add persona inheritance to scheduled goals, building on the structurally scoped delegate/chat/voice/factory paths.
+2. Add project-scoped persona defaults and curated persona memory without duplicating the global policy/approval path.
+3. Reduce the daily product surface to capture, morning, ask/do, approvals, reminders, and review; keep the full command catalog as an expert interface.
+4. Add end-to-end offline acceptance journeys and upgrade tests over versioned database fixtures, then publish the first tagged package release.
+5. Measure retrieval quality with a larger eval set before choosing real embeddings or an optional graph backend.

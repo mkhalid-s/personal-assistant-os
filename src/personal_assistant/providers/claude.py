@@ -19,8 +19,9 @@ from __future__ import annotations
 
 import json
 import os
+from typing import Any
 
-from .. import agentcore, em, queries, watch
+from .. import agentcore, em, personas, queries, watch
 from . import BaseBackend
 
 SYSTEM_PROMPT = """You are MYOS, an always-on personal chief-of-staff for a Staff/Senior \
@@ -322,23 +323,65 @@ class ClaudeBackend(BaseBackend):
         return False, "ANTHROPIC_API_KEY not set (or set MYOS_LLM_BACKEND=bedrock|aws)"
 
     @staticmethod
-    def _system_blocks() -> list[dict]:
+    def _system_blocks(persona: dict | None = None) -> list[dict]:
         # Plain system block: it's far below the cacheable minimum so a cache_control
         # marker here never fires (finding #10). Real caching is the top-level
         # cache_control on the stream call, which caches the growing conversation.
-        return [{"type": "text", "text": SYSTEM_PROMPT}]
+        prompt = SYSTEM_PROMPT
+        if persona is not None:
+            prompt += (
+                f"\n\nActive persona: {persona['display_name']} ({persona['name']}).\n"
+                f"Persona instructions: {persona['instructions']}\n"
+                f"The available tools are already narrowed to this persona. Never claim to have used "
+                f"a capability outside its allowed actions: {', '.join(persona['allowed_actions']) or 'none'}."
+            )
+        return [{"type": "text", "text": prompt}]
+
+    @staticmethod
+    def _tools_for_persona(persona: dict | None) -> list[dict]:
+        if persona is None:
+            return TOOLS
+        scopes = {str(item) for item in persona.get("retrieval_scopes", [])}
+        actions = {str(item) for item in persona.get("allowed_actions", [])}
+        names: set[str] = set()
+        if "work_items" in scopes:
+            names.update(
+                {"get_brief", "list_at_risk", "list_waiting_on", "get_today", "risk_radar", "why_item", "metrics"}
+            )
+        if "external_items" in scopes:
+            names.add("scan_risks")
+        if "people" in scopes:
+            names.update({"list_team", "person_dossier", "draft_review"})
+        if personas.retrieval_source_types(persona):
+            names.update({"query_context", "recall"})
+        if "create_inbox_item" in actions:
+            names.add("capture_item")
+        if "remember" in actions:
+            names.add("remember")
+        if "update_people" in actions:
+            names.update(_EM_WRITE_TOOLS)
+        if "draft_external_update" in actions:
+            names.update({str(tool["name"]) for tool in TOOLS if str(tool["name"]).startswith("propose_")})
+        return [tool for tool in TOOLS if str(tool["name"]) in names]
 
     # -- conversational REPL turn -------------------------------------------------
-    def run_turn(self, conn, user_text: str, history: list[dict], on_text=None) -> dict:
+    def run_turn(self, conn, user_text: str, history: list[dict], on_text=None, *, persona: dict | None = None) -> dict:
         client, model = self._client_and_model()
         messages = list(history) + [{"role": "user", "content": user_text}]
-        ctx = {"task_id": None, "ids": []}
+        active_tools = self._tools_for_persona(persona)
+        ctx: dict[str, Any] = {
+            "task_id": None,
+            "ids": [],
+            "allowed_tools": ({str(tool["name"]) for tool in active_tools} if persona is not None else None),
+            "source_types": (personas.retrieval_source_types(persona) if persona is not None else None),
+            "rejected_tools": [],
+        }
         reply_parts: list[str] = []
         stream_kwargs = dict(
             model=model,
             max_tokens=16000,
-            system=self._system_blocks(),
-            tools=TOOLS,
+            system=self._system_blocks(persona),
+            tools=active_tools,
             thinking={"type": "adaptive", "display": "summarized"},  # #24: avoid empty-thinking pause
             output_config={"effort": "high"},
         )
@@ -391,12 +434,24 @@ class ClaudeBackend(BaseBackend):
 
         conn.commit()
         reply = "\n".join(p for p in reply_parts if p).strip()
-        return {"reply": reply, "proposed_action_ids": ctx["ids"], "history": messages, "backend": "claude"}
+        return {
+            "reply": reply,
+            "proposed_action_ids": ctx["ids"],
+            "history": messages,
+            "backend": "claude",
+            **({"persona": persona["name"], "rejected_tools": ctx["rejected_tools"]} if persona is not None else {}),
+        }
 
     def _dispatch(self, conn, name: str, args: dict, ctx: dict) -> tuple[str, bool]:
         try:
+            allowed_tools = ctx.get("allowed_tools")
+            if allowed_tools is not None and name not in allowed_tools:
+                ctx.setdefault("rejected_tools", []).append(name)
+                return f"tool blocked by active persona: {name}", True
             if name in _READ_TOOLS:
-                return json.dumps(self._read(conn, name, args), default=str), False
+                return json.dumps(
+                    self._read(conn, name, args, source_types=ctx.get("source_types")), default=str
+                ), False
             if name == "capture_item":
                 inbox_id, created = agentcore.capture_item(
                     conn,
@@ -422,7 +477,7 @@ class ClaudeBackend(BaseBackend):
             return f"tool error: {exc}", True
 
     @staticmethod
-    def _read(conn, name: str, args: dict):
+    def _read(conn, name: str, args: dict, *, source_types: set[str] | None = None):
         if name == "get_brief":
             return queries.brief(
                 conn,
@@ -435,7 +490,9 @@ class ClaudeBackend(BaseBackend):
         if name == "list_waiting_on":
             return queries.waiting_on(conn, int(args.get("limit", 10)))
         if name in ("query_context", "recall"):
-            return queries.context_search(conn, str(args.get("query", "")), int(args.get("limit", 5)))
+            return queries.context_search(
+                conn, str(args.get("query", "")), int(args.get("limit", 5)), source_types=source_types
+            )
         if name == "get_today":
             return queries.today(conn, float(args.get("meeting_hours", 0.0)))
         if name == "risk_radar":

@@ -18,33 +18,60 @@ from .privacy import apply_privacy_filters, get_policy_map, redact_obj
 from .retrieval import hybrid_score
 
 
-def _agent_analogies(conn, query: str, limit: int = 5) -> list[tuple[float, str, str]]:
+def _agent_analogies(conn, query: str, limit: int = 5, scopes: set[str] | None = None) -> list[tuple[float, str, str]]:
+    active_scopes = scopes if scopes is not None else {"work_items", "local_memory"}
     candidates: list[tuple[str, str]] = []
-    work_rows = conn.execute(
-        """
-        SELECT id, title, kind, risk_score, status
-        FROM work_items
-        ORDER BY updated_at DESC
-        LIMIT 200
-        """
-    ).fetchall()
-    for row in work_rows:
-        candidates.append(
-            (
-                f"work_item#{row['id']}",
-                f"{row['title']} kind={row['kind']} risk={row['risk_score']} status={row['status']}",
+    if "work_items" in active_scopes:
+        work_rows = conn.execute(
+            """
+            SELECT id, title, kind, risk_score, status
+            FROM work_items
+            ORDER BY updated_at DESC
+            LIMIT 200
+            """
+        ).fetchall()
+        for row in work_rows:
+            candidates.append(
+                (
+                    f"work_item#{row['id']}",
+                    f"{row['title']} kind={row['kind']} risk={row['risk_score']} status={row['status']}",
+                )
             )
-        )
-    obs_rows = conn.execute(
-        """
-        SELECT observation_type, content
-        FROM agent_observations
-        ORDER BY created_at DESC
-        LIMIT 100
-        """
-    ).fetchall()
-    for row in obs_rows:
-        candidates.append((f"observation:{row['observation_type']}", row["content"]))
+    if "local_memory" in active_scopes:
+        obs_rows = conn.execute(
+            """
+            SELECT observation_type, content
+            FROM agent_observations
+            ORDER BY created_at DESC
+            LIMIT 100
+            """
+        ).fetchall()
+        for row in obs_rows:
+            candidates.append((f"observation:{row['observation_type']}", row["content"]))
+    if "intents" in active_scopes:
+        for row in conn.execute(
+            "SELECT id, objective, context, status FROM intents ORDER BY updated_at DESC LIMIT 100"
+        ).fetchall():
+            candidates.append(
+                (f"intent#{row['id']}", f"{row['objective']} {row['context'] or ''} status={row['status']}")
+            )
+    if "external_items" in active_scopes:
+        for row in conn.execute(
+            "SELECT id, connector, title, body, status FROM external_items ORDER BY fetched_at DESC LIMIT 100"
+        ).fetchall():
+            candidates.append(
+                (
+                    f"external_item#{row['id']}",
+                    f"{row['connector']} {row['title']} {row['body'] or ''} status={row['status'] or ''}",
+                )
+            )
+    if "people" in active_scopes:
+        for row in conn.execute(
+            "SELECT id, name, role, relation FROM people ORDER BY updated_at DESC LIMIT 100"
+        ).fetchall():
+            candidates.append(
+                (f"person#{row['id']}", f"{row['name']} role={row['role'] or ''} relation={row['relation'] or ''}")
+            )
 
     scored: list[tuple[float, str, str]] = []
     for source, content in candidates:
@@ -186,20 +213,22 @@ def _ai_reason_artifacts(
     context: str,
     analogies: list[tuple[float, str, str]],
     purpose: str,
+    backend_name_override: str = "",
 ) -> tuple[list[dict[str, str]], list[dict[str, object]], str]:
     policy = get_policy_map(conn)
     provider = os.getenv("MYOS_AI_PROVIDER") or policy.get("ai_provider", "local")
-    command = os.getenv("MYOS_AI_COMMAND", "").strip()
+    backend_name_override = (backend_name_override or "").strip().lower()
+    command = "" if backend_name_override else os.getenv("MYOS_AI_COMMAND", "").strip()
     if not command:
         # Pluggable backend (claude/copilot/cursor) before the keyword fallback.
-        backend_name = (
+        backend_name = backend_name_override or (
             (os.getenv("MYOS_AGENT_BACKEND") or os.getenv("MYOS_AI_PROVIDER") or policy.get("ai_provider", ""))
             .strip()
             .lower()
         )
         if backend_name in ("", "local") and os.getenv("ANTHROPIC_API_KEY", "").strip():
             backend_name = "claude"
-        if backend_name in ("claude", "anthropic", "copilot", "cursor"):
+        if backend_name not in ("", "local"):
             try:
                 backend = providers.get_backend("claude" if backend_name == "anthropic" else backend_name)
                 result = backend.reason(
