@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypedDict
 
 from . import command_registry
 
@@ -11,6 +11,19 @@ _EXTERNAL_ACTION_TYPES = {
     "draft_message",
     "send_message",
 }
+
+
+class ActionReviewContext(TypedDict):
+    side_effects: list[str]
+    dry_run: bool
+    approval_reason: str
+    safer_commands: list[str]
+
+
+class FactoryReviewContext(TypedDict):
+    side_effects: list[str]
+    review_gate: str
+    safer_commands: list[str]
 
 
 def _truthy(value: object) -> bool:
@@ -29,7 +42,7 @@ def _dedupe(values: list[str]) -> list[str]:
 
 def action_review_context(
     action_type: str, payload: dict[str, Any] | None, *, requires_approval: bool = True
-) -> dict[str, object]:
+) -> ActionReviewContext:
     payload = payload if isinstance(payload, dict) else {}
     action_type = (action_type or "").strip()
     command_text = str(payload.get("command") or payload.get("myos_command") or "").strip()
@@ -122,7 +135,7 @@ def format_action_review_context(
     return lines
 
 
-def factory_review_context(workflow_pack: str) -> dict[str, object]:
+def factory_review_context(workflow_pack: str) -> FactoryReviewContext:
     pack = (workflow_pack or "intent_execution").strip()
     side_effects = ["local_db_write"]
     safer_commands = ["myos approve --list", "myos execution-receipt list"]

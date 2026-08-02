@@ -317,6 +317,7 @@ def _record_retrieval_run(
         """,
         (query, mode, int(limit), int(graph_hops), int(candidate_limit), len(hits)),
     )
+    assert cur.lastrowid is not None
     run_id = int(cur.lastrowid)
     for rank, hit in enumerate(hits, start=1):
         preview = str(hit["content"]).strip().replace("\n", " ")
@@ -353,6 +354,7 @@ def retrieve(
     candidate_limit: int = 400,
     record_run: bool = False,
     mode: str = "graph",
+    allowed_source_types: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """SQLite-first GraphRAG retrieval trace over existing chunks and graph edges.
 
@@ -370,6 +372,9 @@ def retrieve(
         hits.extend(_claim_hits(conn, query))
         for hit in direct:
             hits.extend(_expand_work_item_graph(conn, hit, max_hops=graph_hops))
+
+    if allowed_source_types is not None:
+        hits = [hit for hit in hits if hit.source_type in allowed_source_types]
 
     best_by_source: dict[tuple[str, int], RetrievalHit] = {}
     for hit in hits:
@@ -394,7 +399,7 @@ def retrieve(
             graph_hops=graph_hops,
             candidate_limit=candidate_limit,
         )
-        for rank, hit in enumerate(result, start=1):
-            hit["retrieval_run_id"] = run_id
-            hit["retrieval_rank"] = rank
+        for rank, result_hit in enumerate(result, start=1):
+            result_hit["retrieval_run_id"] = run_id
+            result_hit["retrieval_rank"] = rank
     return result

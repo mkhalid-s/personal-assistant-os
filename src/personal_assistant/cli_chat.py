@@ -14,7 +14,7 @@ import contextlib
 import os
 from collections.abc import Callable
 
-from . import assistant, autonomy, cli_autonomy, providers, router
+from . import assistant, autonomy, cli_autonomy, personas, providers, router
 from .db import connection
 from .execution import _handle_proposals
 
@@ -61,12 +61,23 @@ def cmd_chat(args: argparse.Namespace, *, load_env_file: Callable[[str], int]) -
     if getattr(args, "env_file", ""):
         load_env_file(args.env_file)
     with connection() as conn:
-        backend = providers.get_backend(args.backend or None)
+        persona = personas.get_persona(conn, args.persona) if getattr(args, "persona", "") else None
+        if getattr(args, "persona", "") and persona is None:
+            print(f"Persona not found: {args.persona}")
+            raise SystemExit(1)
+        backend_name = args.backend or (persona["default_backend"] if persona else "") or None
+        backend = providers.get_backend(backend_name)
+        if persona is not None and backend.name == "claude-sdk":
+            print("Scoped personas cannot safely use the claude-sdk backend yet; choose --backend claude.")
+            raise SystemExit(1)
         ok, detail = backend.available()
         if not ok:
             print(f"Backend '{backend.name}' is not available: {detail}")
             raise SystemExit(1)
-        print(f"MYOS chat [{backend.name}] — ask anything; external changes are proposed for your approval.")
+        persona_label = f" / {persona['display_name']}" if persona else ""
+        print(
+            f"MYOS chat [{backend.name}{persona_label}] — ask anything; external changes are proposed for your approval."
+        )
         print("Type 'exit' to quit.")
         history: list[dict] = []
         conversation_id: int | None = None
@@ -84,9 +95,10 @@ def cmd_chat(args: argparse.Namespace, *, load_env_file: Callable[[str], int]) -
                 conn,
                 user,
                 history,
-                backend_name=args.backend or None,
+                backend_name=backend_name,
                 surface="chat",
                 conversation_id=conversation_id,
+                persona_name=(persona["name"] if persona else None),
             )
             conversation_id = result.get("conversation_id", conversation_id)
             history = result.get("history", history)
@@ -103,12 +115,21 @@ def cmd_voice(args: argparse.Namespace, *, load_env_file: Callable[[str], int]) 
     if getattr(args, "env_file", ""):
         load_env_file(args.env_file)
     with connection() as conn:
-        backend = providers.get_backend(args.backend or None)
+        persona = personas.get_persona(conn, args.persona) if getattr(args, "persona", "") else None
+        if getattr(args, "persona", "") and persona is None:
+            print(f"Persona not found: {args.persona}")
+            raise SystemExit(1)
+        backend_name = args.backend or (persona["default_backend"] if persona else "") or None
+        backend = providers.get_backend(backend_name)
+        if persona is not None and backend.name == "claude-sdk":
+            print("Scoped personas cannot safely use the claude-sdk backend yet; choose --backend claude.")
+            raise SystemExit(1)
         ok, detail = backend.available()
         if not ok:
             print(f"Backend '{backend.name}' is not available: {detail}")
             raise SystemExit(1)
-        print(f"MYOS voice [{backend.name}] — push-to-talk. Ctrl-C to quit.")
+        persona_label = f" / {persona['display_name']}" if persona else ""
+        print(f"MYOS voice [{backend.name}{persona_label}] — push-to-talk. Ctrl-C to quit.")
         history: list[dict] = []
         conversation_id: int | None = None
         while True:
@@ -131,9 +152,10 @@ def cmd_voice(args: argparse.Namespace, *, load_env_file: Callable[[str], int]) 
                 conn,
                 text,
                 history,
-                backend_name=args.backend or None,
+                backend_name=backend_name,
                 surface="voice",
                 conversation_id=conversation_id,
+                persona_name=(persona["name"] if persona else None),
             )
             conversation_id = result.get("conversation_id", conversation_id)
             history = result.get("history", history)

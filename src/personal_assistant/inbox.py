@@ -6,12 +6,15 @@ LLM brain is involved (capture, external ingest, the deterministic planner fallb
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import date
 
 from .graph import upsert_node
 
 
-def index_chunk(conn, source_type: str, source_id: int, content: str, provenance_id: int | None = None) -> bool:
+def index_chunk(
+    conn: sqlite3.Connection, source_type: str, source_id: int, content: str, provenance_id: int | None = None
+) -> bool:
     """Write one FTS-indexed text_chunk. Returns True if a row was written, False otherwise.
 
     Redacts before inserting — this is the second text_chunks write path alongside
@@ -30,7 +33,7 @@ def index_chunk(conn, source_type: str, source_id: int, content: str, provenance
     return True
 
 
-def ensure_work_item_node(conn, item_id: int, title: str) -> int:
+def ensure_work_item_node(conn: sqlite3.Connection, item_id: int, title: str) -> int:
     return upsert_node(conn, "work_item", item_id, title)
 
 
@@ -103,7 +106,7 @@ def infer_from_external(item_type: str, title: str, status: str | None) -> tuple
 
 
 def insert_inbox_item_dedup(
-    conn,
+    conn: sqlite3.Connection,
     *,
     text: str,
     kind: str,

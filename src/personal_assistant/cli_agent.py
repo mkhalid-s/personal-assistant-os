@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from . import assistant, intents, plans, rollback
+from . import agentcore, assistant, intents, personas, plans, rollback
 from .approval_context import format_action_review_context, format_compact_action_review_context
 from .db import append_event, connection
 from .execution import (
@@ -17,7 +17,7 @@ from .execution import (
     execute_connector_mutation,
 )
 from .planner import _agent_analogies, _ai_reason_artifacts
-from .privacy import apply_privacy_filters, redact_obj
+from .privacy import apply_privacy_filters
 
 
 def _print_zero_approval_context(payload: dict) -> None:
@@ -101,6 +101,10 @@ def _receipt_integrity_lines(request: dict) -> list[str]:
 def cmd_delegate(args: argparse.Namespace) -> None:
     with connection() as conn:
         target = getattr(args, "to", "").strip().lower()
+        persona_name = getattr(args, "persona", "").strip().lower()
+        if target and persona_name:
+            print("Delegation failed: --persona cannot yet be combined with --to; use the local persona path.")
+            raise SystemExit(1)
         if target and target not in ("local",):
             result = assistant.delegate_to_agent(conn, target, args.objective)
             if result.get("error"):
@@ -110,19 +114,45 @@ def cmd_delegate(args: argparse.Namespace) -> None:
             for aid in result.get("proposed_action_ids", []):
                 print(f"- proposed action #{aid} (review with `myos approve --list`)")
             return
-        constraints = {"mode": args.mode, "max_actions": args.max_actions}
+        persona = personas.get_persona(conn, persona_name) if persona_name else None
+        if persona_name and persona is None:
+            print(f"Delegation failed: persona not found: {persona_name}")
+            raise SystemExit(1)
+        constraints = {
+            "mode": args.mode,
+            "max_actions": args.max_actions,
+            "persona": persona_name,
+            "preferred_backend": str(persona.get("default_backend") or "") if persona else "",
+        }
         if args.constraint:
             constraints["constraints"] = args.constraint
         objective = apply_privacy_filters(conn, args.objective)
         context = apply_privacy_filters(conn, args.context)
-        analogies = _agent_analogies(conn, f"{objective} {context}", limit=args.analogy_limit)
+        reasoning_context = context
+        if persona:
+            reasoning_context = (
+                f"Persona instructions: {persona['instructions']}\n"
+                f"Retrieval scopes: {', '.join(persona['retrieval_scopes'])}\n"
+                f"User context: {context}"
+            ).strip()
+        persona_scopes = {str(item) for item in persona["retrieval_scopes"]} if persona else None
+        analogies = _agent_analogies(
+            conn,
+            f"{objective} {context}",
+            limit=args.analogy_limit,
+            scopes=persona_scopes,
+        )
         plan, actions, provider = _ai_reason_artifacts(
             conn,
             objective=objective,
-            context=context,
+            context=reasoning_context,
             analogies=analogies,
-            purpose="delegate",
+            purpose=f"persona_{persona_name}" if persona_name else "delegate",
+            backend_name_override=str(persona.get("default_backend") or "") if persona else "",
         )
+        rejected_actions: list[str] = []
+        if persona:
+            actions, rejected_actions = personas.filter_actions(persona, actions)
         actions = actions[: args.max_actions]
 
         conn.execute(
@@ -142,7 +172,8 @@ def cmd_delegate(args: argparse.Namespace) -> None:
                 task_id,
                 provider,
                 json.dumps(plan, ensure_ascii=True),
-                f"Created {len(plan)} plan steps and {len(actions)} proposed actions.",
+                f"Created {len(plan)} plan steps and {len(actions)} proposed actions"
+                + (f"; persona rejected {len(rejected_actions)} action(s)." if rejected_actions else "."),
             ),
         )
         for score, source, content in analogies:
@@ -154,29 +185,38 @@ def cmd_delegate(args: argparse.Namespace) -> None:
                 (task_id, f"{source}: {content}", min(0.95, max(0.55, score))),
             )
         for action in actions:
-            conn.execute(
-                """
-                INSERT INTO agent_actions (agent_task_id, action_type, title, payload_json, requires_approval)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    task_id,
-                    action["action_type"],
-                    apply_privacy_filters(conn, str(action["title"]))[:500],
-                    json.dumps(redact_obj(conn, action["payload"]), ensure_ascii=True),
-                    action["requires_approval"],
-                ),
+            raw_payload = action.get("payload")
+            payload = raw_payload if isinstance(raw_payload, dict) else {}
+            agentcore.enqueue_proposal(
+                conn,
+                task_id=task_id,
+                action_type=str(action["action_type"]),
+                title=str(action["title"]),
+                payload=payload,
+                requires_approval=int(action.get("requires_approval") or 0),
             )
         append_event(
             conn,
             "agent_delegate",
             "agent_task",
             task_id,
-            json.dumps({"actions": len(actions), "analogies": len(analogies)}, ensure_ascii=True),
+            json.dumps(
+                {
+                    "actions": len(actions),
+                    "analogies": len(analogies),
+                    "persona": persona_name or None,
+                    "persona_rejected_actions": rejected_actions,
+                },
+                ensure_ascii=True,
+            ),
         )
         conn.commit()
 
         print(f"Delegated task #{task_id}: {objective}")
+        if persona:
+            print(f"Persona: {persona['display_name']} ({persona['name']})")
+            if rejected_actions:
+                print("Persona policy rejected actions: " + ", ".join(rejected_actions))
         print("Plan:")
         for idx, step in enumerate(plan, start=1):
             print(f"{idx}. {step['step']}: {step['detail']}")

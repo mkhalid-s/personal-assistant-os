@@ -129,7 +129,26 @@ def redact_obj(conn: sqlite3.Connection, obj: Any) -> Any:
     if isinstance(obj, str):
         return apply_privacy_filters(conn, obj)
     if isinstance(obj, dict):
-        return {k: redact_obj(conn, v) for k, v in obj.items()}
+        redact_secrets = _policy_bool(get_policy_map(conn).get("redact_secrets", "1"), True)
+
+        def redact_entry(key: object, value: Any) -> Any:
+            normalized = str(key).strip().lower().replace("-", "_")
+            sensitive = normalized in {
+                "api_key",
+                "apikey",
+                "authorization",
+                "credential",
+                "credentials",
+                "password",
+                "passwd",
+                "secret",
+                "token",
+            } or normalized.endswith(("_api_key", "_password", "_secret", "_token"))
+            if redact_secrets and sensitive:
+                return "[REDACTED_SECRET]"
+            return redact_obj(conn, value)
+
+        return {k: redact_entry(k, v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
         return [redact_obj(conn, v) for v in obj]
     return obj

@@ -81,12 +81,16 @@ jobs:
       # the hard destructive guard, the approval integrity check, the payload
       # hash pinning, the TTL enforcement, and every execution receipt write.
       # A type regression here can silently mis-classify or corrupt approvals.
-      - name: Mypy strict (command_registry + privacy + db + zero_executor + execution)
+      - name: Mypy strict (safety-critical execution boundary)
         run: |
           mypy --strict \
             src/personal_assistant/command_registry.py \
             src/personal_assistant/privacy.py \
             src/personal_assistant/db.py \
+            src/personal_assistant/approval_context.py \
+            src/personal_assistant/autonomy.py \
+            src/personal_assistant/inbox.py \
+            src/personal_assistant/agentcore.py \
             src/personal_assistant/zero_executor.py \
             src/personal_assistant/execution.py
 

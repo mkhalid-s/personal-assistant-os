@@ -128,6 +128,7 @@ def cmd_factory(args: argparse.Namespace) -> None:
                     "max_turns": getattr(args, "max_turns", 0),
                     "verification_commands": getattr(args, "verify_command", []) or [],
                 },
+                persona_name=getattr(args, "persona", ""),
             )
         except ValueError as exc:
             print(str(exc))
@@ -136,7 +137,8 @@ def cmd_factory(args: argparse.Namespace) -> None:
         print(f"Factory run #{result['id']} for intent #{result['intent_id']} status={result['status']}")
         executor = result.get("executor_backend", "local")
         executor_part = f" executor={executor}" if executor != "local" else ""
-        print(f"mode={args.mode} pack={args.pack}{executor_part} plan=#{result['plan_id']}")
+        persona_part = f" persona={result['persona']}" if result.get("persona") else ""
+        print(f"mode={args.mode} pack={args.pack}{executor_part}{persona_part} plan=#{result['plan_id']}")
         if result["retrieval_run_id"] is not None:
             print(f"retrieval_run=#{result['retrieval_run_id']}")
         print(f"review_packet=#{result['review_packet_id']}")
@@ -182,6 +184,7 @@ def cmd_factory(args: argparse.Namespace) -> None:
                     "mode": str(run.get("mode") or ""),
                     "workflow_pack": str(run.get("workflow_pack") or ""),
                     "executor_backend": str(run.get("executor_backend") or "local"),
+                    "persona": str(run.get("persona_name") or ""),
                     "status": str(run.get("status") or ""),
                     "summary": str(run.get("summary") or ""),
                     "outcome": str(run.get("outcome") or ""),
@@ -212,9 +215,10 @@ def cmd_factory(args: argparse.Namespace) -> None:
             return
         executor = run.get("executor_backend", "local")
         executor_part = f" executor={executor}" if executor != "local" else ""
+        persona_part = f" persona={run['persona_name']}" if run.get("persona_name") else ""
         print(
             f"Factory run #{run['id']} intent=#{run['intent_id']} plan=#{run['plan_id']} "
-            f"mode={run['mode']} pack={run['workflow_pack']}{executor_part} status={run['status']}"
+            f"mode={run['mode']} pack={run['workflow_pack']}{executor_part}{persona_part} status={run['status']}"
         )
         if run.get("summary"):
             print(f"Summary: {run['summary']}")

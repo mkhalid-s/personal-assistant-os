@@ -108,12 +108,17 @@ class InstallSeedsEnvFileTest(unittest.TestCase):
         self.assertTrue(env_target.is_file())
         self.assertIn("env file seeded from", out)
         self.assertIn("Personal Assistant OS example configuration", env_target.read_text())
+        self.assertEqual(env_target.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(Path(self._tmp.name).stat().st_mode & 0o777, 0o700)
+        self.assertEqual((Path(self._tmp.name) / "logs").stat().st_mode & 0o777, 0o700)
 
     def test_second_run_leaves_existing_env_file_intact(self) -> None:
         env_target = Path(self._tmp.name) / ".env.myos"
         env_target.write_text("USER_CUSTOMIZED=1\n")
+        env_target.chmod(0o644)
         out = self._run_install()
         self.assertEqual(env_target.read_text(), "USER_CUSTOMIZED=1\n")
+        self.assertEqual(env_target.stat().st_mode & 0o777, 0o600)
         self.assertIn("env file kept in place", out)
 
 

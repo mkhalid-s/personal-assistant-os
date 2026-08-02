@@ -23,6 +23,7 @@ from . import (
     cli_launchd,
     cli_local_data,
     cli_operations,
+    cli_personas,
     cli_planning,
     cli_reminders,
     cli_review,
@@ -1306,6 +1307,7 @@ def build_parser() -> argparse.ArgumentParser:
     # systemd --user timer. This is the entry point the one-line
     # scripts/install.sh calls after pipx finishes.
     cli_install.register_subparsers(sub)
+    cli_personas.register_subparsers(sub)
 
     activate = sub.add_parser("activate", help="Run end-to-end activation flow.")
     activate.add_argument("--env-file", default="")
@@ -1533,6 +1535,7 @@ def build_parser() -> argparse.ArgumentParser:
     factory_start.add_argument("--mode", choices=list(factory.MODES), default="review_first")
     factory_start.add_argument("--pack", choices=list(factory.WORKFLOW_PACKS), default="intent_execution")
     factory_start.add_argument("--executor", choices=["local", "zero"], default="local")
+    factory_start.add_argument("--persona", default="", help="Apply a named persona to retrieval, roles, and actions.")
     factory_start.add_argument("--repo", default=".", help="Repository path for coding executors.")
     factory_start.add_argument("--timeout", type=int, default=600, help="Executor timeout in seconds.")
     factory_start.add_argument(
@@ -1615,6 +1618,7 @@ def build_parser() -> argparse.ArgumentParser:
     delegate.add_argument("--priority", type=int, default=2)
     delegate.add_argument("--max-actions", type=int, default=5)
     delegate.add_argument("--analogy-limit", type=int, default=5)
+    delegate.add_argument("--persona", default="", help="Run through a named persona and its scoped action policy.")
     delegate.add_argument(
         "--to",
         default="",
@@ -1964,6 +1968,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--backend", default="", help="claude|copilot|cursor|zero|command (default: MYOS_AGENT_BACKEND or claude)."
     )
     chat.add_argument("--env-file", default="")
+    chat.add_argument("--persona", default="", help="Run with a named, action-scoped persona.")
     chat.set_defaults(func=cmd_chat)
 
     voice = sub.add_parser("voice", help="Interactive always-on assistant (push-to-talk voice).")
@@ -1971,6 +1976,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--backend", default="", help="claude|copilot|cursor|zero|command (default: MYOS_AGENT_BACKEND or claude)."
     )
     voice.add_argument("--env-file", default="")
+    voice.add_argument("--persona", default="", help="Run with a named, action-scoped persona.")
     voice.add_argument("--text-reply", action="store_true", help="Print replies without speaking them.")
     voice.set_defaults(func=cmd_voice)
 

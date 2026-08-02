@@ -83,7 +83,9 @@ class ClaudeSdkBackend(BaseBackend):
 
         return can_use_tool
 
-    def run_turn(self, conn, user_text: str, history: list[dict], on_text=None) -> dict:
+    def run_turn(self, conn, user_text: str, history: list[dict], on_text=None, *, persona: dict | None = None) -> dict:
+        if persona is not None:
+            raise ValueError("claude-sdk cannot enforce scoped persona tools")
         level = autonomy.level_from_policy(conn)
         try:
             return asyncio.run(self._arun_turn(user_text, history, on_text, level))

@@ -34,6 +34,7 @@ src/personal_assistant/
 ├── factory.py                  # review-first workflow packs and stages
 ├── zero_executor.py            # external `zero` streaming coding executor
 ├── planner.py, plans.py        # planning/review-packet primitives
+├── personas.py                 # durable persona manifests + action narrowing
 ├── intents.py                  # first-class intents
 ├── agentcore.py                # agent tasks + proposals
 ├── assistant.py                # backend-agnostic run_turn loop

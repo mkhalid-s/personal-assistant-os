@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import os
 
-from .. import agentcore
+from .. import agentcore, personas
 
 DEFAULT_BACKEND = "claude"
 
@@ -62,18 +62,30 @@ class BaseBackend:
     def reason(self, conn, request: dict) -> dict:
         raise NotImplementedError
 
-    def run_turn(self, conn, user_text: str, history: list[dict], on_text=None) -> dict:
+    def run_turn(self, conn, user_text: str, history: list[dict], on_text=None, *, persona: dict | None = None) -> dict:
         # CLI backends produce no token stream; on_text is accepted for a uniform
         # call signature and simply ignored here.
         context = _history_to_context(history)
+        objective = user_text
+        if persona is not None:
+            objective = (
+                f"Persona: {persona['display_name']}\n"
+                f"Instructions: {persona['instructions']}\n"
+                f"Allowed actions: {', '.join(persona['allowed_actions']) or 'none'}\n\n"
+                f"User request: {user_text}"
+            )
         result = self.reason(
             conn,
-            {"purpose": "chat", "objective": user_text, "context": context, "analogies": []},
+            {"purpose": "chat", "objective": objective, "context": context, "analogies": []},
         )
         reply = (result.get("reply") or _plan_to_text(result.get("plan", []))).strip()
         ids: list[int] = []
         task_id: int | None = None
-        for action in result.get("actions", []):
+        actions = result.get("actions", [])
+        rejected: list[str] = []
+        if persona is not None:
+            actions, rejected = personas.filter_actions(persona, actions)
+        for action in actions:
             if task_id is None:
                 task_id = agentcore.ensure_turn_task(conn, user_text)
             ids.append(
@@ -91,7 +103,13 @@ class BaseBackend:
             {"role": "user", "content": user_text},
             {"role": "assistant", "content": reply or "(no reply)"},
         ]
-        return {"reply": reply, "proposed_action_ids": ids, "history": new_history, "backend": self.name}
+        return {
+            "reply": reply,
+            "proposed_action_ids": ids,
+            "history": new_history,
+            "backend": self.name,
+            **({"persona": persona["name"], "rejected_action_types": rejected} if persona is not None else {}),
+        }
 
 
 def _history_to_context(history: list[dict], limit: int = 6) -> str:

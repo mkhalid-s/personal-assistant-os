@@ -6,7 +6,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from .db import get_connection, resolve_db_path, verify_schema
+from .db import PRIVATE_DB_MODE, get_connection, resolve_db_path, verify_schema
 from .privacy import _cleanup_policy_retention
 
 
@@ -70,12 +70,15 @@ def cmd_backup(args: argparse.Namespace) -> None:
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     output = Path(args.output).expanduser() if args.output else source.parent / "backups" / f"assistant-{timestamp}.db"
     output.parent.mkdir(parents=True, exist_ok=True)
+    if not args.output:
+        output.parent.chmod(0o700)
     dest = sqlite3.connect(output)
     try:
         conn.backup(dest)
     finally:
         dest.close()
         conn.close()
+    output.chmod(PRIVATE_DB_MODE)
     print(f"Backup created: {output}")
 
 
@@ -92,7 +95,9 @@ def cmd_restore(args: argparse.Namespace) -> None:
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         safety_backup = target.parent / "backups" / f"pre-restore-{timestamp}.db"
         safety_backup.parent.mkdir(parents=True, exist_ok=True)
+        safety_backup.parent.chmod(0o700)
         shutil.copy2(target, safety_backup)
+        safety_backup.chmod(PRIVATE_DB_MODE)
         print(f"Current database backed up: {safety_backup}")
     shutil.copy2(source, target)
     for sidecar in (target.with_name(target.name + "-wal"), target.with_name(target.name + "-shm")):
@@ -139,6 +144,7 @@ def cmd_config_init(args: argparse.Namespace) -> None:
         )
         + "\n"
     )
+    target.chmod(PRIVATE_DB_MODE)
     print(f"Created config template: {target}")
     print("Fill values, then run: myos run-day --env-file " + str(target))
 

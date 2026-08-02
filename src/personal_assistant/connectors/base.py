@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from personal_assistant.models import ExternalItem
+from personal_assistant.privacy import apply_privacy_filters, redact_obj
 
 
 @dataclass(slots=True)
@@ -63,6 +64,9 @@ class BaseConnector:
         )
 
     def upsert_external(self, item: ExternalItem) -> None:
+        def safe(value: str | None) -> str | None:
+            return apply_privacy_filters(self.conn, value) if value is not None else None
+
         self.conn.execute(
             """
             INSERT INTO external_items (
@@ -85,14 +89,14 @@ class BaseConnector:
                 item.connector,
                 item.external_id,
                 item.item_type,
-                item.title,
-                item.body,
-                item.owner,
-                item.status,
-                item.priority,
-                item.due_date,
-                item.url,
-                json.dumps(item.raw or {}, ensure_ascii=True),
+                safe(item.title),
+                safe(item.body),
+                safe(item.owner),
+                safe(item.status),
+                safe(item.priority),
+                safe(item.due_date),
+                safe(item.url),
+                json.dumps(redact_obj(self.conn, item.raw or {}), ensure_ascii=True),
             ),
         )
 

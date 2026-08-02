@@ -53,6 +53,8 @@ This is useful for a local MVP, but it is not equivalent to production embedding
 
 Agent outputs flow through proposed actions and approval gates. The policy layer classifies actions as safe, confirm-required, or blocked. External mutations are drafted and require approval before execution.
 
+Personas are durable, user-visible manifests layered above that control plane. They provide instructions, retrieval scopes, a backend preference, and an action allowlist. A persona may narrow the actions a reasoning backend can propose, but it cannot change global action classification, approve an action, or execute it directly.
+
 ### Audit and Privacy
 
 Events, proposed actions, execution receipts, provider calls, conversation turns, and context observations are persisted. Failed or blocked execution receipts create follow-up inbox items so failures do not disappear. Privacy filters redact common PII and secret patterns before data is stored or indexed.

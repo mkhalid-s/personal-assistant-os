@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- First-class personas: six built-in manifests (`chief-of-staff`, `researcher`, `coach`, `reviewer`, `operator`, and `engineer`), durable custom personas, JSON/text inspection commands, retrieval scopes, backend preferences, and per-persona action allowlists. `delegate`, `chat`, `voice`, and factory runs inject persona instructions and structurally reject out-of-scope retrieval, tools, and proposals before all accepted actions enter the existing global policy and approval path.
+- Harden local-first privacy and repeatability: connector fields and raw payloads are redacted before persistence, including a migration scrub for rows already stored; installer/setup-created runtime directories, env files, SQLite databases, and backups use private owner-only permissions; launchd teardown tolerates hosts without `launchctl`; and lifecycle tests isolate `HOME` so repeat test runs cannot mutate the operator's real launch-agent directory. The strict type boundary now explicitly includes approval context, autonomy policy, inbox writes, and the shared action-proposal core so a cold CI run cannot hide transitive errors behind a warm cache.
 - Local reliability kernel: backup, restore, migration verification, release readiness checks, dependency checks, and performance baselines.
 - First-class intents, durable plans, review packets, retrieval evidence attachment, and execution receipts.
 - SQLite-first GraphRAG depth: deterministic entities, relationships, claims, entity-aware retrieval expansion, retrieval traces, and graph eval coverage.

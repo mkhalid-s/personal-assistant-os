@@ -11,6 +11,8 @@ one place.
 from __future__ import annotations
 
 import json
+import sqlite3
+from typing import Any
 
 from . import autonomy
 from .db import append_event
@@ -21,7 +23,7 @@ from .db import append_event
 AUTO_SAFE_ACTION_TYPES = autonomy.AUTO_ACTION_TYPES
 
 
-def ensure_turn_task(conn, objective: str, context: str = "") -> int:
+def ensure_turn_task(conn: sqlite3.Connection, objective: str, context: str = "") -> int:
     """Create an ``agent_tasks`` row to hold the proposals from one turn/run."""
     conn.execute(
         """
@@ -34,12 +36,12 @@ def ensure_turn_task(conn, objective: str, context: str = "") -> int:
 
 
 def enqueue_proposal(
-    conn,
+    conn: sqlite3.Connection,
     *,
     task_id: int,
     action_type: str,
     title: str,
-    payload: dict,
+    payload: dict[str, Any],
     requires_approval: int = 1,
 ) -> int:
     """Insert one proposed action and return its id.
@@ -76,7 +78,7 @@ def enqueue_proposal(
 
 
 def capture_item(
-    conn,
+    conn: sqlite3.Connection,
     *,
     text: str,
     kind: str = "task",
@@ -109,7 +111,7 @@ def capture_item(
     return inbox_id, True
 
 
-def remember(conn, text: str, *, source_type: str = "memory", source_id: int = 0) -> int | None:
+def remember(conn: sqlite3.Connection, text: str, *, source_type: str = "memory", source_id: int = 0) -> int | None:
     """Persist a fact to long-term memory (text_chunks). The FTS5 triggers index
     it automatically, so it is immediately recall-able across sessions.
 

@@ -184,8 +184,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "factory_run",
         "Delegate an objective to the assistant core.",
         required_args=("objective",),
-        examples=("myos delegate 'Handle blocked launch dependency'",),
+        examples=(
+            "myos delegate 'Handle blocked launch dependency'",
+            "myos delegate 'Prepare the weekly plan' --persona chief-of-staff",
+        ),
         requires_confirmation=True,
+    ),
+    CommandSpec(
+        "persona",
+        "workflow",
+        "local_write",
+        "factory_run",
+        "List, inspect, and create personas with scoped retrieval and action permissions.",
+        subcommands=("list", "show", "create"),
+        examples=("myos persona list", "myos persona show chief-of-staff"),
+        side_effects=("local_db_write",),
     ),
     CommandSpec(
         "loop",

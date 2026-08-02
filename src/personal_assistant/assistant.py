@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 import time
 
-from . import agentcore, context, graphrag, router
+from . import agentcore, context, graphrag, personas, router
 from .providers import get_backend, resolve_backend_name
 
 
@@ -28,6 +28,7 @@ def run_turn(
     *,
     surface: str = "chat",
     conversation_id: int | None = None,
+    persona_name: str | None = None,
 ) -> dict:
     """One conversational turn against the active (or named) brain.
 
@@ -36,7 +37,18 @@ def run_turn(
     observations, and derived relationships are persisted automatically. Logging is
     best-effort: a failure here never breaks the turn, and policy can disable it.
     """
-    backend = get_backend(backend_name)
+    persona = None
+    if persona_name:
+        persona = personas.get_persona(conn, persona_name)
+        if persona is None:
+            raise ValueError(f"persona not found: {persona_name}")
+    effective_backend = backend_name or (str(persona.get("default_backend") or "") if persona else None)
+    backend = get_backend(effective_backend)
+    if persona is not None and backend.name == "claude-sdk":
+        raise ValueError(
+            "scoped personas are not supported by the claude-sdk backend because its open-ended tools "
+            "cannot yet be mapped reliably to persona actions; use claude or another structured backend"
+        )
     route_decision = router.route_with_feedback(conn, user_text, surface=surface)
     try:
         router.record_route_event(conn, user_text, surface=surface, decision=route_decision)
@@ -45,14 +57,25 @@ def run_turn(
         conn.rollback()
     retrieval_run_ids: list[int] = []
     try:
-        hits = graphrag.retrieve(conn, user_text, limit=3, record_run=True, mode=f"{surface}_answer")
+        hits = graphrag.retrieve(
+            conn,
+            user_text,
+            limit=3,
+            record_run=True,
+            mode=f"{surface}_answer",
+            allowed_source_types=(personas.retrieval_source_types(persona) if persona is not None else None),
+        )
         if hits and hits[0].get("retrieval_run_id"):
             retrieval_run_ids.append(int(hits[0]["retrieval_run_id"]))
             conn.commit()
     except Exception:  # noqa: BLE001 - retrieval traces should never block a chat turn
         conn.rollback()
     started = time.monotonic()
-    result = backend.run_turn(conn, user_text, history, on_text=on_text)
+    if persona is None:
+        result = backend.run_turn(conn, user_text, history, on_text=on_text)
+    else:
+        result = backend.run_turn(conn, user_text, history, on_text=on_text, persona=persona)
+        result["persona"] = persona["name"]
     result["route_decision"] = route_decision.to_dict()
     if not (result.get("reply") or "").strip() and route_decision.confidence >= 0.7:
         result["reply"] = f"Smart route: {route_decision.intent}. {route_decision.recommended_workflow}"
