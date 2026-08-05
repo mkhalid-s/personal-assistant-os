@@ -469,9 +469,7 @@ def start_loop(
     context = apply_privacy_filters(conn, context).strip()
     if not objective:
         raise ValueError("autonomy loop objective is required")
-    meta = _constraints(
-        mode=mode, backend=backend, max_actions=max_actions, cycles=1, goal_id=goal_id, persona=persona
-    )
+    meta = _constraints(mode=mode, backend=backend, max_actions=max_actions, cycles=1, goal_id=goal_id, persona=persona)
     conn.execute(
         """
         INSERT INTO agent_tasks (objective, context, constraints_json, priority, status)

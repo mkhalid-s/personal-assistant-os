@@ -1705,7 +1705,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             (40, "add_personas"),
         )
 
-    if current < 41:
+    migration_41_applied = conn.execute("SELECT 1 FROM schema_migrations WHERE version=41").fetchone() is not None
+    if current < 41 or not migration_41_applied:
         # Connector payloads created before the persistence chokepoint began
         # applying privacy filters may contain PII in columns or nested raw JSON.
         # Scrub them once during upgrade so the fix protects existing stores too.
