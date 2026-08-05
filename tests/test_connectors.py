@@ -139,8 +139,10 @@ class ConnectorTest(unittest.TestCase):
             self.assertNotIn("supersecretvalue", row["body"])
             raw = json.loads(row["raw_json"])
             self.assertEqual(raw["api_token"], "[REDACTED_SECRET]")
-            version = conn.execute("SELECT MAX(version) AS v FROM schema_migrations").fetchone()["v"]
-            self.assertEqual(version, 41)
+            applied = conn.execute(
+                "SELECT 1 FROM schema_migrations WHERE version=41 AND name='scrub_connector_payloads'"
+            ).fetchone()
+            self.assertIsNotNone(applied)
             conn.close()
 
 
