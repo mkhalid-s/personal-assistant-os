@@ -1,0 +1,33 @@
+name: Buildkite Status Sync
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  statuses: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const state = run.conclusion === 'success' ? 'success' : 'failure';
+            const description =
+              run.conclusion === 'success'
+                ? 'Passed via GitHub Actions CI'
+                : 'Failed via GitHub Actions CI';
+
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: run.head_sha,
+              state,
+              context: 'buildkite/personal-assistant-os',
+              description,
+              target_url: run.html_url,
+            });

@@ -2,5 +2,118 @@ agents:
   queue: linux-small
 
 steps:
-  - label: ":wave: Pipeline smoke"
-    command: echo "Buildkite pipeline upload succeeded"
+  - group: ":test_tube: Tests"
+    steps:
+      - label: ":python: Tests 3.10"
+        key: tests-310
+        plugins:
+          - docker#v5.11.0:
+              image: "python:3.10-bookworm"
+              propagate-environment: true
+              mount-checkout: true
+        commands:
+          - python -m pip install --upgrade pip
+          - python -m pip install -e .
+          - PYTHONPATH=src python -W error::ResourceWarning -m unittest discover -s tests
+
+      - label: ":python: Tests 3.11"
+        key: tests-311
+        plugins:
+          - docker#v5.11.0:
+              image: "python:3.11-bookworm"
+              propagate-environment: true
+              mount-checkout: true
+        commands:
+          - python -m pip install --upgrade pip
+          - python -m pip install -e .
+          - PYTHONPATH=src python -W error::ResourceWarning -m unittest discover -s tests
+
+      - label: ":python: Tests 3.12"
+        key: tests-312
+        plugins:
+          - docker#v5.11.0:
+              image: "python:3.12-bookworm"
+              propagate-environment: true
+              mount-checkout: true
+        commands:
+          - python -m pip install --upgrade pip
+          - python -m pip install -e .
+          - PYTHONPATH=src python -W error::ResourceWarning -m unittest discover -s tests
+
+  - label: ":lint: Static Checks"
+    key: static-checks
+    plugins:
+      - docker#v5.11.0:
+          image: "python:3.12-bookworm"
+          propagate-environment: true
+          mount-checkout: true
+    commands:
+      - python -m pip install --upgrade pip
+      - python -m pip install -e .
+      - python -m pip install ruff==0.15.20 mypy==2.1.0 pip-audit==2.10.1
+      - |
+        ruff check \
+          src/personal_assistant/command_registry.py \
+          src/personal_assistant/privacy.py \
+          src/personal_assistant/execution.py \
+          src/personal_assistant/db.py \
+          src/personal_assistant/zero_executor.py
+      - |
+        mypy --strict \
+          src/personal_assistant/command_registry.py \
+          src/personal_assistant/privacy.py \
+          src/personal_assistant/db.py \
+          src/personal_assistant/approval_context.py \
+          src/personal_assistant/autonomy.py \
+          src/personal_assistant/inbox.py \
+          src/personal_assistant/agentcore.py \
+          src/personal_assistant/zero_executor.py \
+          src/personal_assistant/execution.py
+      - ruff check src/personal_assistant tests
+      - ruff format --check src/personal_assistant tests
+      - pip-audit --strict --progress-spinner off || true
+
+  - label: ":broom: Public Hygiene"
+    key: hygiene
+    command: bash scripts/ci-public-hygiene.sh
+
+  - label: ":rocket: Release Readiness"
+    key: release-readiness
+    plugins:
+      - docker#v5.11.0:
+          image: "python:3.12-bookworm"
+          propagate-environment: true
+          mount-checkout: true
+    commands:
+      - python -m pip install --upgrade pip
+      - python -m pip install -e .
+      - myos --help >/dev/null
+      - python -m pip wheel --no-deps . -w dist/wheel-smoke
+      - |
+        python - <<'PY'
+        from pathlib import Path
+        wheels = sorted(Path("dist/wheel-smoke").glob("*.whl"))
+        if not wheels:
+            raise SystemExit("wheel build produced no wheel")
+        print(f"Built wheel: {wheels[0].name}")
+        PY
+      - myos release-check --strict
+
+  - label: ":package: Installer Smoke (ubuntu)"
+    key: installer-smoke
+    plugins:
+      - docker#v5.11.0:
+          image: "python:3.12-bookworm"
+          propagate-environment: true
+          mount-checkout: true
+    commands:
+      - python -m pip install --upgrade pip
+      - python -m pip install -e .
+      - bash -n scripts/install.sh
+      - bash scripts/install.sh --help >/dev/null
+      - bash scripts/install.sh --dry-run --source local:.
+      - bash -n scripts/uninstall.sh
+      - bash scripts/uninstall.sh --help >/dev/null
+      - bash scripts/uninstall.sh --dry-run
+      - MYOS_DATA_DIR=/tmp/myos-smoke myos install --dry-run
+      - MYOS_DATA_DIR=/tmp/myos-smoke myos uninstall --dry-run
