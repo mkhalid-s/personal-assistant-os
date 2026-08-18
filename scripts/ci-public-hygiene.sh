@@ -3,9 +3,17 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-git fetch --depth=1 origin main
+git fetch origin refs/heads/main:refs/remotes/origin/main
+if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+  git fetch --unshallow
+fi
 
-git diff --check HEAD~1..HEAD
+range="HEAD~1..HEAD"
+if [ -n "${BUILDKITE_PULL_REQUEST:-}" ] && [ "${BUILDKITE_PULL_REQUEST}" != "false" ]; then
+  range="origin/main..HEAD"
+fi
+
+git diff --check "$range"
 
 patterns=("Guide""wire" "GW Bed""rock" "/Users/""mshaikh/Documents/""GW")
 for pattern in "${patterns[@]}"; do
@@ -15,11 +23,15 @@ for pattern in "${patterns[@]}"; do
   fi
 done
 
-range="HEAD~1..HEAD"
-if [ -n "${BUILDKITE_PULL_REQUEST:-}" ] && [ "${BUILDKITE_PULL_REQUEST}" != "false" ]; then
-  range="origin/main..HEAD"
+trailer_pattern='^Co-authored-''by:'
+msgs="$(git log --format=%B "$range")"
+if printf '%s\n' "$msgs" | grep -qi "$trailer_pattern"; then
+  echo "Found co-author trailer in commit messages"
+  exit 1
 fi
-trailer_pattern='^Co-authored-by:'
-! git log --format=%B "$range" | grep -i "$trailer_pattern"
 
-! git ls-files | grep -E '(^|/)(\.env|\.DS_Store|\.cursor|\.claude)(/|$)|\.(db|sqlite|sqlite3|log)$'
+tracked="$(git ls-files)"
+if printf '%s\n' "$tracked" | grep -E '(^|/)(\.env|\.DS_Store|\.cursor|\.claude)(/|$)|\.(db|sqlite|sqlite3|log)$'; then
+  echo "Tracked local-only artifact"
+  exit 1
+fi
