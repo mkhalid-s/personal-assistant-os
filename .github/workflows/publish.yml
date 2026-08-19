@@ -2,10 +2,14 @@ name: Publish to PyPI
 
 # Runs on annotated version tags (`vX.Y.Z`) or manually. The workflow
 # builds sdist + wheel once and publishes them first to TestPyPI, then
-# — after a manual environment approval on the `pypi` environment —
-# to production PyPI. This mirrors the shape recommended by PyPA and
-# uses trusted publishing (OIDC) so no long-lived API tokens are
-# stored in the repository.
+# — on tag pushes only — to production PyPI. This mirrors the shape
+# recommended by PyPA and uses trusted publishing (OIDC) so no
+# long-lived API tokens are stored in the repository.
+#
+# GitHub Environments are not used: this repository cannot run jobs
+# that set `environment:` (GitHub reports environments and environment
+# secrets as unsupported). Production still requires a `v*` tag; manual
+# dispatch only builds and (unless dry-run) uploads to TestPyPI.
 #
 # Enabling this workflow on a fresh PyPI account is a one-time click
 # per index:
@@ -17,12 +21,7 @@ name: Publish to PyPI
 #        Owner:      mkhalid-s
 #        Repository: personal-assistant-os
 #        Workflow:   publish.yml
-#        Environment: testpypi  (for TestPyPI)
-#        Environment: pypi      (for PyPI)
-#   3. In this GitHub repo's Settings -> Environments, create the
-#      `pypi` environment with required reviewers so a production
-#      publish requires human approval. TestPyPI publishes freely so
-#      you can smoke a release before promoting.
+#        Environment: (leave blank — do not pin a GitHub Environment)
 #
 # Until step 2 is complete, the publish jobs fail cleanly with
 # "Trusted publisher not configured" and the tag/dispatch still
@@ -88,9 +87,6 @@ jobs:
     if: ${{ !inputs.dry_run }}
     needs: build
     runs-on: ubuntu-latest
-    environment:
-      name: testpypi
-      url: https://test.pypi.org/project/personal-assistant-os/
     permissions:
       id-token: write
     steps:
@@ -107,16 +103,11 @@ jobs:
           skip-existing: true
 
   publish-pypi:
-    # Production PyPI publish gated on the `pypi` environment approval.
-    # Configure required reviewers in Settings -> Environments -> pypi
-    # so a human has to approve every real release.
+    # Production PyPI publish is tag-only (no GitHub Environment gate).
     name: Publish to PyPI
     if: ${{ !inputs.dry_run && github.event_name == 'push' }}
     needs: publish-testpypi
     runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/project/personal-assistant-os/
     permissions:
       id-token: write
     steps:
