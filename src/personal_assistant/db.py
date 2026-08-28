@@ -7,7 +7,7 @@ import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 
-EXPECTED_SCHEMA_VERSION = 43
+EXPECTED_SCHEMA_VERSION = 44
 PRIVATE_DB_MODE = 0o600
 
 
@@ -1762,6 +1762,34 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
             (43, "add_goal_persona"),
+        )
+
+    if current < 44:
+        # Persisted embedding cache keyed by (source_type, source_id).
+        # content_hash (SHA-256 of content) detects stale entries when content
+        # is edited — embed_and_cache() skips insertion when hash matches.
+        # model_name lets a backfill command sweep and re-embed rows produced
+        # by an older model without touching rows from the current one.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS embedding_cache (
+                source_type    TEXT NOT NULL,
+                source_id      TEXT NOT NULL,
+                content_hash   TEXT NOT NULL,
+                model_name     TEXT NOT NULL,
+                embedding_blob BLOB NOT NULL,
+                dims           INTEGER NOT NULL,
+                created_at     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (source_type, source_id)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_embedding_cache_model ON embedding_cache(model_name)"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (44, "add_embedding_cache"),
         )
 
     _ensure_fts5(conn)  # self-heal: build the FTS index if a no-FTS5 run stranded migration 17
