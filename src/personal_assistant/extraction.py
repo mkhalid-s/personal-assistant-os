@@ -20,7 +20,7 @@ def extract_suggestions(text: str) -> list[SuggestedItem]:
         if not s:
             continue
         sl = s.lower()
-        if sl.startswith("decision") or " we decided " in sl:
+        if sl.startswith("decision") or bool(re.search(r"\bwe decided\b", sl)):
             suggestions.append(SuggestedItem("decision", s, 0.85))
         elif any(k in sl for k in ["follow up", "i will", "i'll", "by "]):
             suggestions.append(SuggestedItem("commitment", s, 0.75))
