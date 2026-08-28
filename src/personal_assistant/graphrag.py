@@ -75,16 +75,71 @@ def _chunk_for_source(conn: sqlite3.Connection, source_type: str, source_id: str
     ).fetchone()
 
 
+def _fts_query(query: str) -> str:
+    """Sanitize a query string for FTS5 MATCH.
+
+    FTS5 treats several characters as operators (+, -, *, ^, :, ", (, )).
+    Strip them so an arbitrary user query never causes a syntax error.
+    Returns an empty string when nothing indexable remains.
+
+    Uses OR semantics (token1 OR token2 …) so any matching token makes a
+    candidate row eligible, matching the permissive semantics of the original
+    recency-scan + hybrid_score approach. Reranking by hybrid_score filters
+    low-relevance candidates after candidate selection.
+    """
+    import re as _re
+    tokens = _re.findall(r"[a-zA-Z0-9_]+", query)
+    if not tokens:
+        return ""
+    return " OR ".join(tokens)
+
+
 def _direct_hits(conn: sqlite3.Connection, query: str, *, candidate_limit: int) -> list[RetrievalHit]:
-    rows = conn.execute(
-        """
-        SELECT id, source_type, source_id, content, provenance_id
-        FROM text_chunks
-        ORDER BY created_at DESC, id DESC
-        LIMIT ?
-        """,
-        (int(candidate_limit),),
-    ).fetchall()
+    """Select candidates then rerank by hybrid_score.
+
+    Primary path: FTS5 MATCH on text_chunks_fts ordered by BM25 rank.
+    Candidates are semantically pre-filtered instead of taking the N most
+    recent rows, so relevant chunks from months ago outrank recent-but-
+    irrelevant ones.
+
+    Fallback: recency scan when FTS5 is unavailable or the sanitized query
+    is empty (e.g. a pure-symbol query like "???").
+    """
+    fts_q = _fts_query(query)
+    rows = None
+    if fts_q:
+        # Check that the FTS5 table exists before querying it.
+        has_fts = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='text_chunks_fts'"
+        ).fetchone()
+        if has_fts:
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT tc.id, tc.source_type, tc.source_id, tc.content, tc.provenance_id
+                    FROM text_chunks_fts fts
+                    JOIN text_chunks tc ON tc.id = fts.rowid
+                    WHERE text_chunks_fts MATCH ?
+                    ORDER BY rank
+                    LIMIT ?
+                    """,
+                    (fts_q, int(candidate_limit)),
+                ).fetchall()
+            except Exception:  # noqa: BLE001 — FTS5 syntax error or unavailable
+                rows = None
+
+    if rows is None:
+        # Fallback: recency scan (original behaviour).
+        rows = conn.execute(
+            """
+            SELECT id, source_type, source_id, content, provenance_id
+            FROM text_chunks
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            (int(candidate_limit),),
+        ).fetchall()
+
     hits: list[RetrievalHit] = []
     for row in rows:
         score = hybrid_score(query, row["content"])
