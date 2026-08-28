@@ -4,6 +4,7 @@ import math
 import re
 import zlib
 from collections import Counter
+from typing import Protocol, runtime_checkable
 
 
 def tokenize(text: str) -> list[str]:
@@ -33,10 +34,68 @@ def embed_text(text: str, dims: int = 64) -> list[float]:
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
-    return sum(x * y for x, y in zip(a, b, strict=True))
+    if len(a) != len(b):
+        raise ValueError(f"vector dimension mismatch: {len(a)} vs {len(b)}")
+    return sum(x * y for x, y in zip(a, b))
 
 
-def hybrid_score(query: str, text: str) -> float:
+# ---------------------------------------------------------------------------
+# Embedding backend — pluggable seam
+#
+# Default: _HashBackend (wraps the existing embed_text() — identical output,
+# zero behavior change). Register a real backend with set_embedding_backend()
+# to get semantic embeddings. hybrid_score() picks up the change automatically.
+# ---------------------------------------------------------------------------
+
+@runtime_checkable
+class EmbeddingBackend(Protocol):
+    """Minimal protocol for an embedding backend."""
+
+    @property
+    def dims(self) -> int: ...
+
+    def embed(self, text: str) -> list[float]: ...
+
+
+class _HashBackend:
+    """Fallback backend using the zlib-crc32 hashing trick. No external deps."""
+
+    dims: int = 64
+
+    def embed(self, text: str) -> list[float]:
+        return embed_text(text, dims=self.dims)
+
+
+_backend: EmbeddingBackend = _HashBackend()
+
+
+def set_embedding_backend(backend: EmbeddingBackend) -> None:
+    """Register a real embedding backend. Call once at startup."""
+    global _backend
+    _backend = backend
+
+
+def get_embedding_backend() -> EmbeddingBackend:
+    """Return the currently registered backend."""
+    return _backend
+
+
+def is_semantic_backend() -> bool:
+    """True when a non-hash backend is registered (useful for logging/doctor checks)."""
+    return not isinstance(_backend, _HashBackend)
+
+
+def hybrid_score(
+    query: str,
+    text: str,
+    *,
+    lexical_w: float = 0.45,
+    semantic_w: float = 0.55,
+) -> float:
+    """Combine lexical and semantic scores. Weights default to values calibrated
+    for the hash backend; callers using a real embedding backend should pass
+    lexical_w=0.30, semantic_w=0.70 for better results."""
+    b = get_embedding_backend()
     lex = lexical_score(query, text)
-    sem = cosine_similarity(embed_text(query), embed_text(text))
-    return 0.45 * lex + 0.55 * sem
+    sem = cosine_similarity(b.embed(query), b.embed(text))
+    return lexical_w * lex + semantic_w * sem

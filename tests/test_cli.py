@@ -18,8 +18,15 @@ class CliFlowTest(unittest.TestCase):
 
     def test_ci_hygiene_scans_new_commit_messages_only(self) -> None:
         workflow = Path(".github/workflows/ci.yml").read_text()
-        self.assertIn('range="${{ github.event.before }}..${{ github.sha }}"', workflow)
-        self.assertIn('git log --format=%B "$range"', workflow)
+        # Range is computed once in a named step (id: range) and passed to all
+        # hygiene functions via steps.range.outputs.range — avoids repeating
+        # the range derivation logic in each step.
+        self.assertIn("github.event.before", workflow)
+        self.assertIn("github.sha", workflow)
+        self.assertIn("steps.range.outputs.range", workflow)
+        # The hygiene check functions are sourced from scripts/lib/hygiene-checks.sh
+        # so git log is called inside that lib, not inlined in the workflow YAML.
+        self.assertIn("hygiene_check_coauthor_trailers", workflow)
         self.assertNotIn("git log --format=%B | grep", workflow)
 
     def test_ci_release_readiness_uses_installed_command_path(self) -> None:
