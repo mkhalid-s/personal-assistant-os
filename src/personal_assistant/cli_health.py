@@ -164,6 +164,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         ]
     )
     optional_checks.append(("zero_stream_executor", *_zero_stream_preflight()))
+    from .embedding_backends import embedding_doctor_check
+    optional_checks.append(("embedding_backend", *embedding_doctor_check()))
     router_status = model_setup.router_status()
     optional_checks.append(
         (
