@@ -26,7 +26,7 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
-from . import autonomy, observability, rollback
+from . import autonomy, observability, personas, rollback
 from .approval_context import compact_action_review_context
 from .db import append_event, resolve_db_path
 from .inbox import insert_inbox_item_dedup
@@ -724,6 +724,10 @@ def execute_connector_mutation(
             response = _post_jira_comment(str(mutation["target_ref"]), str(mutation["body"]))
         elif connector == "github":
             response = _post_github_comment(payload, str(mutation["body"]))
+        elif connector == "confluence":
+            response = _post_confluence_comment(str(mutation["target_ref"]), str(mutation["body"]))
+        elif connector == "aha":
+            response = _post_aha_comment(payload, str(mutation["body"]))
         else:
             return {"status": "blocked", "outbox_id": outbox_id, "error": f"live {connector} adapter is not enabled"}
         conn.execute(
@@ -764,6 +768,73 @@ def _post_github_comment(payload: dict[str, object], body: str) -> str:
         return text[:1000]
 
 
+def _post_confluence_comment(page_id: str, body: str) -> str:
+    """Post a comment to a Confluence Cloud page.
+
+    Credentials: CONFLUENCE_BASE_URL, CONFLUENCE_USER_EMAIL, CONFLUENCE_API_TOKEN.
+    The page_id is the numeric page ID (target_ref from the mutation payload).
+    Uses Confluence Cloud REST API v1 storage-format comment endpoint.
+    """
+    base_url = os.getenv("CONFLUENCE_BASE_URL", "").rstrip("/")
+    email = os.getenv("CONFLUENCE_USER_EMAIL", "")
+    token = os.getenv("CONFLUENCE_API_TOKEN", "")
+    if not (base_url and email and token and page_id):
+        raise ValueError("missing Confluence target or credentials (CONFLUENCE_BASE_URL / CONFLUENCE_USER_EMAIL / CONFLUENCE_API_TOKEN)")
+    auth = base64.b64encode(f"{email}:{token}".encode()).decode("ascii")
+    payload = {
+        "type": "comment",
+        "container": {"id": page_id, "type": "page"},
+        "body": {
+            "storage": {
+                "value": body,
+                "representation": "storage",
+            }
+        },
+    }
+    req = urllib.request.Request(
+        f"{base_url}/wiki/rest/api/content",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Basic {auth}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        text: str = resp.read().decode("utf-8")
+        return text[:1000]
+
+
+def _post_aha_comment(payload: dict[str, object], body: str) -> str:
+    """Post a comment to an Aha! feature or idea.
+
+    Credentials: AHA_BASE_URL (e.g. https://company.aha.io), AHA_API_KEY.
+    The target_ref in the mutation payload is the Aha! feature/idea reference key
+    (e.g. MYOS-123). Resource type is inferred from the payload 'target_type'
+    field ('feature' or 'idea'); defaults to 'features'.
+    """
+    base_url = os.getenv("AHA_BASE_URL", "").rstrip("/")
+    api_key = os.getenv("AHA_API_KEY", "")
+    target_ref = str(payload.get("target_ref") or "").strip()
+    if not (base_url and api_key and target_ref):
+        raise ValueError("missing Aha! target or credentials (AHA_BASE_URL / AHA_API_KEY / target_ref)")
+    resource = "ideas" if str(payload.get("target_type") or "").lower() == "idea" else "features"
+    req = urllib.request.Request(
+        f"{base_url}/api/v1/{resource}/{target_ref}/comments",
+        data=json.dumps({"comment": {"body": body}}).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        text: str = resp.read().decode("utf-8")
+        return text[:1000]
+
+
 def approve_and_execute(
     conn: sqlite3.Connection,
     action_id: int,
@@ -780,6 +851,52 @@ def approve_and_execute(
     row = conn.execute("SELECT * FROM agent_actions WHERE id = ?", (action_id,)).fetchone()
     if not row:
         return {"code": "not_found", "approved": False, "result": "", "status": ""}
+
+    # Persona guard: if the owning task declares a persona, the action type must
+    # be in its allowed_actions. This catches manual approve_and_execute calls
+    # outside the autonomy loop (e.g. `myos act <id>`) that bypass filter_actions
+    # in _run_cycle. The check runs before approval so a blocked action is never
+    # approved, not just not-executed.
+    if row["agent_task_id"] is not None:
+        task_row = conn.execute(
+            "SELECT constraints_json FROM agent_tasks WHERE id = ?",
+            (int(row["agent_task_id"]),),
+        ).fetchone()
+        if task_row:
+            try:
+                task_meta = json.loads(task_row["constraints_json"] or "{}")
+            except (TypeError, ValueError):
+                task_meta = {}
+            persona_name = str(task_meta.get("persona") or "")
+            if persona_name:
+                persona_obj = personas.get_persona(conn, persona_name)
+                if persona_obj:
+                    _, rejected = personas.filter_actions(
+                        persona_obj,
+                        [{"action_type": str(row["action_type"] or "")}],
+                    )
+                    if rejected:
+                        block_msg = (
+                            f"blocked: persona '{persona_name}' does not allow "
+                            f"action_type='{row['action_type']}'"
+                        )
+                        conn.execute(
+                            "UPDATE agent_actions SET status='blocked', result=? WHERE id=?",
+                            (block_msg, action_id),
+                        )
+                        append_event(
+                            conn,
+                            "persona_execution_block",
+                            "agent_action",
+                            action_id,
+                            json.dumps(
+                                {"persona": persona_name, "action_type": str(row["action_type"] or "")},
+                                ensure_ascii=True,
+                            ),
+                        )
+                        conn.commit()
+                        return {"code": "blocked", "approved": False, "result": block_msg, "status": "blocked"}
+
     approved = False
     if do_approve and row["status"] in ("proposed", "failed"):
         # Pin an integrity hash and the approval timestamp at the *moment* of
