@@ -1,27 +1,49 @@
 name: Release
 
+# Runs on annotated version tags. CI already ran tests + static checks on the
+# commit, so this job focuses only on release-specific gates: version alignment,
+# dependency/license audit, and the doctor/migration smoke that matter at ship
+# time. Full test re-run is intentionally omitted — the tag cannot move past CI.
+
 on:
   workflow_dispatch:
   push:
     tags:
       - "v*"
 
+permissions:
+  contents: read
+
 jobs:
-  validate:
+  release-gate:
+    name: Release Gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+
       - name: Install package
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e .
+
+      - name: Assert version matches tag
+        if: github.event_name == 'push'
+        run: |
+          tag="${GITHUB_REF##refs/tags/v}"
+          pkg_version="$(python -c 'import tomllib; print(tomllib.loads(open("pyproject.toml","rb").read().decode())["project"]["version"])')"
+          if [ "$tag" != "$pkg_version" ]; then
+            echo "Tag v$tag does not match pyproject.toml version $pkg_version"
+            exit 1
+          fi
+
       - name: Smoke installed myos command
         run: myos --help >/dev/null
-      - name: Run tests
-        run: python -m unittest discover -s tests
+
       - name: Build wheel artifact smoke
         run: |
           python -m pip wheel --no-deps . -w dist/wheel-smoke
@@ -32,8 +54,10 @@ jobs:
               raise SystemExit("wheel build produced no wheel")
           print(f"Built wheel: {wheels[0].name}")
           PY
+
       - name: Verify dependency and license gate
         run: myos dependency-check --strict
+
       - name: Verify local health commands
         run: |
           myos doctor --strict
