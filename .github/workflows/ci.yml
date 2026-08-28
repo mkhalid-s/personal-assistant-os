@@ -6,6 +6,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# Cancel in-progress runs for the same ref so stale runs don't waste minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -13,19 +19,22 @@ permissions:
 jobs:
   tests:
     name: Tests (Python ${{ matrix.python-version }})
+    # Skip draft PRs — run only when explicitly marked ready or on push/dispatch.
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
 
       - name: Install package
         run: |
@@ -39,6 +48,7 @@ jobs:
 
   static-checks:
     name: Static Checks (ruff + mypy + pip-audit)
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -48,6 +58,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
 
       - name: Install package and static tools
         run: |
@@ -112,6 +123,7 @@ jobs:
 
   hygiene:
     name: Public Hygiene
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -119,36 +131,45 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Compute the commit range once; all subsequent hygiene steps use it.
+      - name: Determine commit range
+        id: range
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "range=origin/${{ github.base_ref }}..HEAD" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ github.event.before }}" ] && \
+               [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            echo "range=${{ github.event.before }}..${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "range=HEAD~1..HEAD" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Shared check logic lives in scripts/lib/hygiene-checks.sh.
+      # The Buildkite mirror (scripts/ci-public-hygiene.sh) sources the
+      # same lib — update there if check behaviour needs to change.
       - name: Check diff whitespace
-        run: git diff --check HEAD~1..HEAD
+        run: |
+          source scripts/lib/hygiene-checks.sh
+          hygiene_check_whitespace "${{ steps.range.outputs.range }}"
 
       - name: Scan for private references
         run: |
-          patterns=("Guide""wire" "GW Bed""rock" "/Users/""mshaikh/Documents/""GW")
-          for pattern in "${patterns[@]}"; do
-            if git grep -n -F "$pattern" -- ':!*.lock'; then
-              echo "Found private reference: $pattern"
-              exit 1
-            fi
-          done
+          source scripts/lib/hygiene-checks.sh
+          hygiene_check_private_refs
 
       - name: Scan commit messages for co-author trailers
         run: |
-          range="HEAD~1..HEAD"
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            range="origin/${{ github.base_ref }}..HEAD"
-          elif [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
-            range="${{ github.event.before }}..${{ github.sha }}"
-          fi
-          trailer_pattern='^Co-authored-''by:'
-          ! git log --format=%B "$range" | grep -i "$trailer_pattern"
+          source scripts/lib/hygiene-checks.sh
+          hygiene_check_coauthor_trailers "${{ steps.range.outputs.range }}"
 
       - name: Verify local-only artifacts are not tracked
         run: |
-          ! git ls-files | grep -E '(^|/)(\.env|\.DS_Store|\.cursor|\.claude)(/|$)|\.(db|sqlite|sqlite3|log)$'
+          source scripts/lib/hygiene-checks.sh
+          hygiene_check_tracked_artifacts
 
   release-readiness:
     name: Release Readiness
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -158,6 +179,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
 
       - name: Install package
         run: |
@@ -194,6 +216,7 @@ jobs:
     # unit-level proof that installed-mode plists resolve correctly;
     # the smoke here catches any shell-syntax or argparse regression.
     name: Installer Smoke (${{ matrix.os }})
+    if: github.event.pull_request.draft != true
     strategy:
       fail-fast: false
       matrix:
@@ -207,6 +230,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
 
       - name: Install package (editable, so `myos` is on PATH)
         run: |
