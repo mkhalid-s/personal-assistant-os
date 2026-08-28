@@ -18,6 +18,7 @@ classifiers = [
 
 [project.optional-dependencies]
 voice = ["sounddevice", "faster-whisper"]
+embed = ["fastembed>=0.3"]
 
 [project.scripts]
 myos = "personal_assistant.cli:main"
