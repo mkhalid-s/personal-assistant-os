@@ -10,6 +10,7 @@ The digest flow:
   3. Write to assistant_digests (source_type='autonomy_task', source_id=task_id)
   4. Call agentcore.remember() → FTS5 + embedding indexed for free via B5 hooks
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -47,6 +48,7 @@ def generate_cycle_digest(
     obs_text = "\n".join(f"[{o['observation_type']}] {o['content'][:300]}" for o in obs)
     try:
         from . import providers
+
         backend = providers.get_backend(backend_name)
         ok, _ = backend.available()
         if not ok:

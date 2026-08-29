@@ -3,6 +3,7 @@
 Verifies that index_chunk() and agentcore.remember() call embed_and_cache()
 and that the CLI backfill command fills the cache for pre-existing rows.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -20,6 +21,7 @@ from personal_assistant.retrieval import _HashBackend, set_embedding_backend
 
 class _MockBackend:
     dims = 128
+
     def embed(self, text: str) -> list[float]:
         return [0.5] * self.dims
 
@@ -34,6 +36,7 @@ def _conn() -> sqlite3.Connection:
 # ---------------------------------------------------------------------------
 # index_chunk write-time hook
 # ---------------------------------------------------------------------------
+
 
 class IndexChunkEmbedHookTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -70,6 +73,7 @@ class IndexChunkEmbedHookTest(unittest.TestCase):
 # agentcore.remember write-time hook
 # ---------------------------------------------------------------------------
 
+
 class RememberEmbedHookTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
@@ -105,6 +109,7 @@ class RememberEmbedHookTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # backfill: embed_and_cache on pre-existing rows
 # ---------------------------------------------------------------------------
+
 
 class BackfillTest(unittest.TestCase):
     def setUp(self) -> None:

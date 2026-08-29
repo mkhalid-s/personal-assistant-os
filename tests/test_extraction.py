@@ -154,11 +154,7 @@ class ExtractSuggestionsMultiSentenceTest(unittest.TestCase):
         # "We decided" at the start of a sentence now matches via \bwe decided\b
         # (the old " we decided " space-delimited check missed sentence-initial
         # occurrences — fixed in extraction.py).
-        text = (
-            "We decided to freeze the API. "
-            "I will write the migration script. "
-            "TODO: update the docs."
-        )
+        text = "We decided to freeze the API. I will write the migration script. TODO: update the docs."
         items = extract_suggestions(text)
         self.assertEqual(len(items), 3)
         kinds = [i.kind for i in items]

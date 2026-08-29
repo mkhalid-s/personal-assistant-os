@@ -92,6 +92,7 @@ def _agent_analogies(conn, query: str, limit: int = 5, scopes: set[str] | None =
     try:
         from .embedding_backends import load_cached_embeddings_bulk
         from .retrieval import cosine_similarity, get_embedding_backend, is_semantic_backend, lexical_score
+
         if is_semantic_backend():
             keys = [k for k in (_parse_source_key(s) for s, _ in candidates) if k is not None]
             cached_vecs = load_cached_embeddings_bulk(conn, keys) if keys else {}

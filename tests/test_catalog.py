@@ -23,14 +23,17 @@ class ServiceRefIdTest(unittest.TestCase):
 
     def test_same_name_same_id(self) -> None:
         from personal_assistant.catalog import _service_ref_id
+
         self.assertEqual(_service_ref_id("auth-service"), _service_ref_id("auth-service"))
 
     def test_different_names_different_ids(self) -> None:
         from personal_assistant.catalog import _service_ref_id
+
         self.assertNotEqual(_service_ref_id("auth"), _service_ref_id("billing"))
 
     def test_case_insensitive(self) -> None:
         from personal_assistant.catalog import _service_ref_id
+
         self.assertEqual(_service_ref_id("Auth-Service"), _service_ref_id("auth-service"))
 
     def test_known_stable_value(self) -> None:
@@ -38,6 +41,7 @@ class ServiceRefIdTest(unittest.TestCase):
         import zlib
 
         from personal_assistant.catalog import _service_ref_id
+
         expected = zlib.crc32(b"auth-service") % (10**9)
         self.assertEqual(_service_ref_id("auth-service"), expected)
 
@@ -60,9 +64,7 @@ class AddServiceTest(unittest.TestCase):
     def test_indexes_text_chunk(self) -> None:
         add_service(self.conn, "payments", description="Payment gateway")
         self.conn.commit()
-        chunk = self.conn.execute(
-            "SELECT content FROM text_chunks WHERE source_type='service'"
-        ).fetchone()
+        chunk = self.conn.execute("SELECT content FROM text_chunks WHERE source_type='service'").fetchone()
         self.assertIsNotNone(chunk)
         self.assertIn("payments", chunk["content"].lower())
 
@@ -125,9 +127,7 @@ class RemoveServiceTest(unittest.TestCase):
         self.conn.commit()
         remove_service(self.conn, "svc-to-delete")
         self.conn.commit()
-        row = self.conn.execute(
-            "SELECT 1 FROM text_chunks WHERE source_type='service'"
-        ).fetchone()
+        row = self.conn.execute("SELECT 1 FROM text_chunks WHERE source_type='service'").fetchone()
         self.assertIsNone(row)
 
 

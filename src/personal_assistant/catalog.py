@@ -8,6 +8,7 @@ Usage:
     catalog.add_service(conn, "auth-service", owner="platform", description="OAuth2 gateway", deps=["postgres"])
     context = catalog.get_service_context(conn, "auth token expired")
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -57,7 +58,7 @@ def add_service(
         content += f" {description.strip()}."
     index_chunk(conn, "service", ref_id, content)
 
-    for dep in (deps or []):
+    for dep in deps or []:
         dep = dep.strip()
         if not dep:
             continue
@@ -110,11 +111,13 @@ def list_services(conn: sqlite3.Connection) -> list[dict]:
             "SELECT content FROM text_chunks WHERE source_type='service' AND source_id=? LIMIT 1",
             (node["ref_id"],),
         ).fetchone()
-        result.append({
-            "name": node["label"],
-            "description": str(chunk["content"]) if chunk else "",
-            "deps": [d["label"] for d in deps],
-        })
+        result.append(
+            {
+                "name": node["label"],
+                "description": str(chunk["content"]) if chunk else "",
+                "deps": [d["label"] for d in deps],
+            }
+        )
     return result
 
 
@@ -125,9 +128,7 @@ def get_service_context(conn: sqlite3.Connection, query: str, *, limit: int = 5)
     top-k with their direct dependencies formatted for prompt injection.
     Returns an empty string when the catalog is empty (no-op for callers).
     """
-    nodes = conn.execute(
-        "SELECT id, ref_id, label FROM knowledge_nodes WHERE node_type='service'"
-    ).fetchall()
+    nodes = conn.execute("SELECT id, ref_id, label FROM knowledge_nodes WHERE node_type='service'").fetchall()
     if not nodes:
         return ""
 

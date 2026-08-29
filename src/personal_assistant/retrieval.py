@@ -47,6 +47,7 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
 # to get semantic embeddings. hybrid_score() picks up the change automatically.
 # ---------------------------------------------------------------------------
 
+
 @runtime_checkable
 class EmbeddingBackend(Protocol):
     """Minimal protocol for an embedding backend."""

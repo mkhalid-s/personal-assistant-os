@@ -3,6 +3,7 @@
 Previously retrieval.py had zero direct test coverage despite being the
 scoring foundation for both graphrag.retrieve() and planner._agent_analogies().
 """
+
 from __future__ import annotations
 
 import math
@@ -25,6 +26,7 @@ from personal_assistant.retrieval import (
 # tokenize
 # ---------------------------------------------------------------------------
 
+
 class TokenizeTest(unittest.TestCase):
     def test_lowercases_and_splits(self) -> None:
         self.assertEqual(tokenize("Hello World"), ["hello", "world"])
@@ -45,6 +47,7 @@ class TokenizeTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # lexical_score
 # ---------------------------------------------------------------------------
+
 
 class LexicalScoreTest(unittest.TestCase):
     def test_exact_match_returns_positive(self) -> None:
@@ -71,6 +74,7 @@ class LexicalScoreTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # embed_text (hash backend)
 # ---------------------------------------------------------------------------
+
 
 class EmbedTextTest(unittest.TestCase):
     def test_returns_list_of_floats(self) -> None:
@@ -105,6 +109,7 @@ class EmbedTextTest(unittest.TestCase):
 # cosine_similarity
 # ---------------------------------------------------------------------------
 
+
 class CosineSimilarityTest(unittest.TestCase):
     def test_identical_unit_vectors_return_one(self) -> None:
         v = embed_text("hello world")
@@ -130,6 +135,7 @@ class CosineSimilarityTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # hybrid_score
 # ---------------------------------------------------------------------------
+
 
 class HybridScoreTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -169,6 +175,7 @@ class HybridScoreTest(unittest.TestCase):
 
         class TrackingBackend:
             dims = 64
+
             def embed(self, text: str) -> list[float]:
                 calls.append(text)
                 return embed_text(text)
@@ -182,6 +189,7 @@ class HybridScoreTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # EmbeddingBackend seam
 # ---------------------------------------------------------------------------
+
 
 class EmbeddingBackendSeamTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -199,6 +207,7 @@ class EmbeddingBackendSeamTest(unittest.TestCase):
     def test_register_custom_backend(self) -> None:
         class MockBackend:
             dims = 384
+
             def embed(self, text: str) -> list[float]:
                 return [0.0] * self.dims
 
@@ -220,6 +229,7 @@ class EmbeddingBackendSeamTest(unittest.TestCase):
     def test_reset_to_hash_restores_default(self) -> None:
         class MockBackend:
             dims = 128
+
             def embed(self, text: str) -> list[float]:
                 return [0.0] * self.dims
 
@@ -230,6 +240,7 @@ class EmbeddingBackendSeamTest(unittest.TestCase):
     def test_backend_dims_propagated_to_embed(self) -> None:
         class Wide:
             dims = 256
+
             def embed(self, text: str) -> list[float]:
                 return embed_text(text, dims=256)
 

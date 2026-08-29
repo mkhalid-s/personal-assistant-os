@@ -2,6 +2,7 @@
 
 Previously _agent_analogies had no direct test coverage.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -14,12 +15,14 @@ from personal_assistant.retrieval import _HashBackend, set_embedding_backend
 
 class _MockBackend:
     dims = 64
+
     def embed(self, text: str) -> list[float]:
         # Non-trivial: use character-position hashing so different texts get
         # different vectors, enabling meaningful cosine similarity tests.
         import math
+
         vec = [0.0] * self.dims
-        for i, ch in enumerate(text[:self.dims]):
+        for i, ch in enumerate(text[: self.dims]):
             vec[i % self.dims] += ord(ch) / 128.0
         norm = math.sqrt(sum(v * v for v in vec)) or 1.0
         return [v / norm for v in vec]
@@ -35,6 +38,7 @@ def _conn() -> sqlite3.Connection:
 # ---------------------------------------------------------------------------
 # _parse_source_key
 # ---------------------------------------------------------------------------
+
 
 class ParseSourceKeyTest(unittest.TestCase):
     def test_work_item_pattern(self) -> None:
@@ -62,6 +66,7 @@ class ParseSourceKeyTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # _agent_analogies — hash backend (existing behaviour unchanged)
 # ---------------------------------------------------------------------------
+
 
 class AgentAnalogiesHashTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -115,6 +120,7 @@ class AgentAnalogiesHashTest(unittest.TestCase):
 # _agent_analogies — real backend path (rebalanced weights, stored embed)
 # ---------------------------------------------------------------------------
 
+
 class AgentAnalogiesSemanticTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
@@ -156,6 +162,7 @@ class AgentAnalogiesSemanticTest(unittest.TestCase):
 
     def test_stored_embedding_used_when_available(self) -> None:
         from personal_assistant.embedding_backends import embed_and_cache
+
         self.conn.execute(
             "INSERT INTO work_items (title, kind, status, priority, risk_score) "
             "VALUES ('API rate limiting spike', 'task', 'open', 1, 5)"
@@ -171,17 +178,14 @@ class AgentAnalogiesSemanticTest(unittest.TestCase):
         self.assertTrue(any(f"work_item#{item_id}" in s for s in sources))
 
     def test_observations_scored_on_the_fly(self) -> None:
-        task_id = self.conn.execute(
-            "INSERT INTO agent_tasks (objective) VALUES ('test')"
-        ).lastrowid
+        task_id = self.conn.execute("INSERT INTO agent_tasks (objective) VALUES ('test')").lastrowid
         self.conn.execute(
             "INSERT INTO agent_observations (agent_task_id, observation_type, content) "
             "VALUES (?, 'safe_action_executed', 'Sent auth update to Jira PROJ-123')",
             (task_id,),
         )
         self.conn.commit()
-        results = _agent_analogies(self.conn, "auth jira", limit=5,
-                                   scopes={"local_memory"})
+        results = _agent_analogies(self.conn, "auth jira", limit=5, scopes={"local_memory"})
         # Observations use on-the-fly scoring via seam — no error expected
         self.assertIsInstance(results, list)
 

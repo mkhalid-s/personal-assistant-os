@@ -16,9 +16,7 @@ def _conn() -> sqlite3.Connection:
 
 
 def _seed_task(conn: sqlite3.Connection, objective: str = "test goal") -> int:
-    task_id = conn.execute(
-        "INSERT INTO agent_tasks (objective) VALUES (?)", (objective,)
-    ).lastrowid
+    task_id = conn.execute("INSERT INTO agent_tasks (objective) VALUES (?)", (objective,)).lastrowid
     conn.commit()
     return task_id
 
@@ -54,9 +52,7 @@ class RecordDigestTest(unittest.TestCase):
         task_id = _seed_task(self.conn)
         record_digest(self.conn, task_id, "Digest", "Deployed auth service successfully.")
         self.conn.commit()
-        chunk = self.conn.execute(
-            "SELECT content FROM text_chunks WHERE source_type='digest'"
-        ).fetchone()
+        chunk = self.conn.execute("SELECT content FROM text_chunks WHERE source_type='digest'").fetchone()
         self.assertIsNotNone(chunk)
         self.assertIn("auth", chunk["content"].lower())
 

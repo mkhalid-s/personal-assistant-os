@@ -50,9 +50,7 @@ class AcquireLockBasicTest(unittest.TestCase):
 
     def test_lock_name_is_stored(self) -> None:
         acquire_lock(self.conn, "my-lock", "owner-a")
-        row = self.conn.execute(
-            "SELECT owner FROM pipeline_locks WHERE name = ?", ("my-lock",)
-        ).fetchone()
+        row = self.conn.execute("SELECT owner FROM pipeline_locks WHERE name = ?", ("my-lock",)).fetchone()
         self.assertIsNotNone(row)
         self.assertEqual(row["owner"], "owner-a")
 
@@ -67,17 +65,13 @@ class ReleaseLockTest(unittest.TestCase):
     def test_release_removes_own_lock(self) -> None:
         acquire_lock(self.conn, "autopilot", "worker-1")
         release_lock(self.conn, "autopilot", "worker-1")
-        row = self.conn.execute(
-            "SELECT 1 FROM pipeline_locks WHERE name = ?", ("autopilot",)
-        ).fetchone()
+        row = self.conn.execute("SELECT 1 FROM pipeline_locks WHERE name = ?", ("autopilot",)).fetchone()
         self.assertIsNone(row)
 
     def test_release_by_wrong_owner_is_noop(self) -> None:
         acquire_lock(self.conn, "autopilot", "worker-1")
         release_lock(self.conn, "autopilot", "worker-2")  # different owner
-        row = self.conn.execute(
-            "SELECT owner FROM pipeline_locks WHERE name = ?", ("autopilot",)
-        ).fetchone()
+        row = self.conn.execute("SELECT owner FROM pipeline_locks WHERE name = ?", ("autopilot",)).fetchone()
         self.assertIsNotNone(row)
         self.assertEqual(row["owner"], "worker-1")
 
@@ -114,9 +108,7 @@ class StaleReclaimTest(unittest.TestCase):
         self.conn.commit()
         # A new owner should reclaim it.
         self.assertTrue(acquire_lock(self.conn, "autopilot", "new-worker"))
-        row = self.conn.execute(
-            "SELECT owner FROM pipeline_locks WHERE name = ?", ("autopilot",)
-        ).fetchone()
+        row = self.conn.execute("SELECT owner FROM pipeline_locks WHERE name = ?", ("autopilot",)).fetchone()
         self.assertEqual(row["owner"], "new-worker")
 
 
@@ -200,9 +192,7 @@ class ConcurrentAcquireTest(unittest.TestCase):
         winner = next(owner for ok, owner in results if ok)
         verify_conn = _file_conn(self._db_path)
         try:
-            row = verify_conn.execute(
-                "SELECT owner FROM pipeline_locks WHERE name = ?", ("shared-lock",)
-            ).fetchone()
+            row = verify_conn.execute("SELECT owner FROM pipeline_locks WHERE name = ?", ("shared-lock",)).fetchone()
             self.assertIsNotNone(row)
             self.assertEqual(row["owner"], winner)
         finally:

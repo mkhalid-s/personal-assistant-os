@@ -779,7 +779,9 @@ def _post_confluence_comment(page_id: str, body: str) -> str:
     email = os.getenv("CONFLUENCE_USER_EMAIL", "")
     token = os.getenv("CONFLUENCE_API_TOKEN", "")
     if not (base_url and email and token and page_id):
-        raise ValueError("missing Confluence target or credentials (CONFLUENCE_BASE_URL / CONFLUENCE_USER_EMAIL / CONFLUENCE_API_TOKEN)")
+        raise ValueError(
+            "missing Confluence target or credentials (CONFLUENCE_BASE_URL / CONFLUENCE_USER_EMAIL / CONFLUENCE_API_TOKEN)"
+        )
     auth = base64.b64encode(f"{email}:{token}".encode()).decode("ascii")
     payload = {
         "type": "comment",
@@ -877,8 +879,7 @@ def approve_and_execute(
                     )
                     if rejected:
                         block_msg = (
-                            f"blocked: persona '{persona_name}' does not allow "
-                            f"action_type='{row['action_type']}'"
+                            f"blocked: persona '{persona_name}' does not allow action_type='{row['action_type']}'"
                         )
                         conn.execute(
                             "UPDATE agent_actions SET status='blocked', result=? WHERE id=?",

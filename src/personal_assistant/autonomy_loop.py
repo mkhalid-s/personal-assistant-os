@@ -89,6 +89,7 @@ def _reason(
     # Prepend catalog service context when relevant services exist.
     try:
         from .catalog import get_service_context
+
         svc_ctx = get_service_context(conn, objective)
         if svc_ctx:
             context = f"{svc_ctx}\n\n{context}".strip()
@@ -101,6 +102,7 @@ def _reason(
     # X1: multi-provider fan-out when MYOS_MULTI_PROVIDER is configured.
     try:
         from .multi_provider import configured_backends, multi_reason
+
         multi_backends = configured_backends()
         if multi_backends and len(multi_backends) > 1:
             request = {
@@ -120,7 +122,10 @@ def _reason(
                 reply = str(result.get("reply") or "")[:2000]
                 if plan or actions:
                     append_event(
-                        conn, "multi_provider_winner", "system", 0,
+                        conn,
+                        "multi_provider_winner",
+                        "system",
+                        0,
                         json.dumps({"winner": winning_name, "backends": multi_backends}, ensure_ascii=True),
                     )
                     return plan, actions, f"multi:{winning_name}", reply
@@ -300,6 +305,7 @@ def _finish_cycle(
     # X3: distil cycle observations into a searchable digest (never blocks).
     try:
         from .digest import maybe_generate_and_record
+
         task_row = conn.execute(
             "SELECT objective, constraints_json FROM agent_tasks WHERE id=?", (int(task_id),)
         ).fetchone()
