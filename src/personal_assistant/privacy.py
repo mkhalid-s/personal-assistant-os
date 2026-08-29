@@ -46,6 +46,21 @@ _SECRET_PATTERNS = (
     r"\b(?:sk|pk|rk)-[A-Za-z0-9]{16,}\b",  # provider secret/publishable keys
     r"\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\b",  # JWT
     r"(?i)\b(?:api[_-]?key|secret|token|password|passwd|bearer)\b\s*[:=]\s*['\"]?[A-Za-z0-9._\-]{6,}",
+    # PEM private-key header (catches truncated pastes and inline occurrences).
+    # The full multi-line block is handled by _PEM_BLOCK_RE below.
+    r"(?i)-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----",
+)
+
+# PEM private-key block — matches the full -----BEGIN...-----END envelope including
+# the base64 body across newlines. Separate from _SECRET_PATTERNS because it needs
+# [\s\S] to span lines without a DOTALL compile flag on the other patterns.
+# Covers: PRIVATE KEY (PKCS#8), RSA PRIVATE KEY, EC PRIVATE KEY, DSA PRIVATE KEY,
+# OPENSSH PRIVATE KEY, ENCRYPTED PRIVATE KEY.
+_PEM_BLOCK_RE = re.compile(
+    r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----"
+    r"[\s\S]*?"
+    r"-----END (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----",
+    re.IGNORECASE,
 )
 _SSN_PATTERN = r"\b\d{3}-\d{2}-\d{4}\b"
 # 13–19 digits with optional single separators BETWEEN digits only — the final atom is a
@@ -108,6 +123,13 @@ def apply_privacy_filters(conn: sqlite3.Connection, text: str) -> str:
     # Specific secret/SSN/card patterns run BEFORE the broad phone regex so a card or SSN
     # gets its correct label rather than being swallowed as a phone number.
     if _policy_bool(policy.get("redact_secrets", "1"), True):
+        # PEM block must run FIRST: it matches the full BEGIN...END envelope
+        # including the multi-line base64 body. If the header-only pattern in
+        # _SECRET_PATTERNS ran first it would consume the BEGIN marker, leaving
+        # the body and END footer orphaned and unredacted.
+        cleaned = _PEM_BLOCK_RE.sub("[REDACTED_SECRET]", cleaned)
+        # Single-line patterns run second: the header-only variant catches
+        # truncated pastes where the END footer is absent (no full block match).
         for pat in _SECRET_PATTERNS:
             cleaned = re.sub(pat, "[REDACTED_SECRET]", cleaned)
         cleaned = re.sub(_SSN_PATTERN, "[REDACTED_SSN]", cleaned)

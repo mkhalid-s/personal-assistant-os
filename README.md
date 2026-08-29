@@ -118,6 +118,8 @@ curl -fsSL https://raw.githubusercontent.com/mkhalid-s/personal-assistant-os/mai
 
 Preview without changing anything: append `-s -- --dry-run`.
 
+> **Packaging note:** MYOS is packaged as a Python console application installed via `pip`/`pipx` — not a standalone signed binary. A Homebrew tap and a signed `.pkg` / `.exe` are deferred to a later release; there is no plan to ship them in the current phase.
+
 ### Development install
 
 ```bash
@@ -244,6 +246,11 @@ mypy --strict src/personal_assistant/execution.py   # + the other safety-critica
 - Multi-machine sync
 
 See `ARCHITECTURE.md` and `ROADMAP.md` for the detailed staged plan, and `docs/BOUNDED_AUTONOMY.md` for the safety-hardening history.
+
+### Examples
+
+- `examples/demo-local.md` — end-to-end walkthrough using only the local reasoner (no API key required)
+- `examples/demo-zero-proof.md` — proves the MYOS control-plane loop with Zero as the coding executor; shows `myos factory start --executor zero`, approval via `myos act`, and the full audit trail
 
 ## License
 
