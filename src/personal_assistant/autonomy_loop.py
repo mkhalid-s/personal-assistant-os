@@ -97,6 +97,36 @@ def _reason(
     analogies = _agent_analogies(conn, f"{objective} {context}", limit=5)
     provider = "local_loop"
     reply = ""
+
+    # X1: multi-provider fan-out when MYOS_MULTI_PROVIDER is configured.
+    try:
+        from .multi_provider import configured_backends, multi_reason
+        multi_backends = configured_backends()
+        if multi_backends and len(multi_backends) > 1:
+            request = {
+                "purpose": purpose,
+                "objective": objective,
+                "context": context,
+                "analogies": [
+                    {"score": score, "source": source, "content": apply_privacy_filters(conn, content)}
+                    for score, source, content in analogies
+                ],
+            }
+            best = multi_reason(request, multi_backends)
+            if best:
+                winning_name, result = best
+                plan = _normalize_ai_plan(result.get("plan"))
+                actions = _normalize_ai_actions(result.get("actions"))
+                reply = str(result.get("reply") or "")[:2000]
+                if plan or actions:
+                    append_event(
+                        conn, "multi_provider_winner", "agent_task", 0,
+                        json.dumps({"winner": winning_name, "backends": multi_backends}, ensure_ascii=True),
+                    )
+                    return plan, actions, f"multi:{winning_name}", reply
+    except Exception:  # noqa: BLE001
+        pass
+
     if backend_name:
         try:
             backend = providers.get_backend(backend_name)
