@@ -144,7 +144,7 @@ def _reason(
                         "objective": objective,
                         "context": context,
                         "analogies": [
-                            {"score": score, "source": source, "content": apply_privacy_filters(conn, content)}
+                            {"score": score, "source": source, "content": apply_privacy_filters(conn, content)[:500]}
                             for score, source, content in analogies
                         ],
                     },

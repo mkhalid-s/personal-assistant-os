@@ -15,8 +15,39 @@ import os
 from collections.abc import Callable
 
 from . import assistant, autonomy, cli_autonomy, personas, providers, router
+from .context_budget import trim_history
 from .db import connection
 from .execution import _handle_proposals
+
+# Sliding window: keep only the last N messages in the in-memory history so a
+# long session never exceeds the model's context window. Configurable via env.
+_MAX_HISTORY_TURNS = int(os.getenv("MYOS_CHAT_HISTORY_TURNS", "40"))
+
+
+def _load_recent_history(conn, conversation_id: int, limit: int = 10) -> list[dict]:
+    """Reconstruct the last N turns from the DB as plain text messages.
+
+    Used to restore context when the user re-enters a session. Tool-use
+    sequences are not reconstructed (they're in the DB as plain text already)
+    — the model gets general context, not the exact API message format.
+    """
+    rows = conn.execute(
+        """
+        SELECT user_text, assistant_text
+        FROM conversation_turns
+        WHERE conversation_id = ?
+        ORDER BY turn_index DESC
+        LIMIT ?
+        """,
+        (int(conversation_id), int(limit)),
+    ).fetchall()
+    history: list[dict] = []
+    for row in reversed(rows):  # oldest first
+        if row["user_text"]:
+            history.append({"role": "user", "content": str(row["user_text"])})
+        if row["assistant_text"]:
+            history.append({"role": "assistant", "content": str(row["assistant_text"])})
+    return history
 
 
 def cmd_do(args: argparse.Namespace) -> None:
@@ -81,6 +112,20 @@ def cmd_chat(args: argparse.Namespace, *, load_env_file: Callable[[str], int]) -
         print("Type 'exit' to quit.")
         history: list[dict] = []
         conversation_id: int | None = None
+
+        # Restore context from the most recent conversation on startup so the
+        # model has continuity across session restarts (F2 context management).
+        try:
+            recent_conv = conn.execute("SELECT id FROM conversations ORDER BY started_at DESC LIMIT 1").fetchone()
+            if recent_conv:
+                conversation_id = int(recent_conv["id"])
+                restored = _load_recent_history(conn, conversation_id, limit=6)
+                if restored:
+                    history = restored
+                    print(f"(Restored {len(restored) // 2} turn(s) from previous session)")
+        except Exception:  # noqa: BLE001 — never block startup on history restore
+            pass
+
         while True:
             try:
                 user = input("\nyou> ").strip()
@@ -102,6 +147,9 @@ def cmd_chat(args: argparse.Namespace, *, load_env_file: Callable[[str], int]) -
             )
             conversation_id = result.get("conversation_id", conversation_id)
             history = result.get("history", history)
+            # Sliding window: keep only the last N messages so a long session
+            # never silently overflows the model's context window (F1 fix).
+            history = trim_history(history, keep_last=_MAX_HISTORY_TURNS)
             reply = (result.get("reply") or "").strip()
             if reply:
                 print(f"\nmyos> {reply}")

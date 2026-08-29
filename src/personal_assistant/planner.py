@@ -18,6 +18,10 @@ from .inbox import infer_kind
 from .privacy import apply_privacy_filters, get_policy_map, redact_obj
 from .retrieval import hybrid_score
 
+# Max chars of a single analogy item's content sent to the planning prompt.
+# Long PR bodies and Confluence pages would otherwise inflate context unboundedly.
+_MAX_ANALOGY_CONTENT = 500
+
 
 def _parse_source_key(source: str) -> tuple[str, str] | None:
     """Parse 'source_type#source_id' strings into (source_type, source_id).
@@ -60,7 +64,7 @@ def _agent_analogies(conn, query: str, limit: int = 5, scopes: set[str] | None =
             """
         ).fetchall()
         for row in obs_rows:
-            candidates.append((f"observation:{row['observation_type']}", row["content"]))
+            candidates.append((f"observation:{row['observation_type']}", row["content"][:_MAX_ANALOGY_CONTENT]))
     if "intents" in active_scopes:
         for row in conn.execute(
             "SELECT id, objective, context, status FROM intents ORDER BY updated_at DESC LIMIT 100"
@@ -75,7 +79,7 @@ def _agent_analogies(conn, query: str, limit: int = 5, scopes: set[str] | None =
             candidates.append(
                 (
                     f"external_item#{row['id']}",
-                    f"{row['connector']} {row['title']} {row['body'] or ''} status={row['status'] or ''}",
+                    f"{row['connector']} {row['title']} {(row['body'] or '')[:_MAX_ANALOGY_CONTENT]} status={row['status'] or ''}",
                 )
             )
     if "people" in active_scopes:
