@@ -37,6 +37,55 @@ class GraphRAGEvalFixtureTest(unittest.TestCase):
     def _load_cases(self) -> list[dict[str, Any]]:
         return json.loads(FIXTURE_PATH.read_text())
 
+    def _recall_at_k(
+        self,
+        conn: sqlite3.Connection,
+        case: dict,
+        ids_by_key: dict[str, int],
+        k: int = 5,
+    ) -> float:
+        """Return recall@k for a single eval case."""
+        hits = graphrag.retrieve(conn, case["query"], limit=k)
+        citations = {hit["citation"] for hit in hits}
+        expected = {f"work_item#{ids_by_key[key]}" for key in case["expected_citations"]}
+        found = len(expected & citations)
+        return found / max(len(expected), 1)
+
+    def test_recall_at_5_meets_threshold(self) -> None:
+        """Aggregate recall@5 across all eval cases must be >= 0.75.
+
+        This is an advisory CI gate (set continue-on-error in ci.yml until
+        validated against a real embedding backend). The threshold is
+        achievable with FTS5 candidate selection + hash backend for these
+        graph-expansion cases.
+        """
+        cases = self._load_cases()
+        recalls: list[float] = []
+        for case in cases:
+            conn = self._conn()
+            try:
+                ids_by_key = {item["key"]: self._work_item(conn, item["title"]) for item in case["work_items"]}
+                for link in case["links"]:
+                    connect_work_items(
+                        conn,
+                        ids_by_key[link["from"]],
+                        ids_by_key[link["to"]],
+                        link["relation"],
+                        float(link["weight"]),
+                    )
+                conn.commit()
+                recalls.append(self._recall_at_k(conn, case, ids_by_key, k=5))
+            finally:
+                conn.close()
+
+        mean_recall = sum(recalls) / max(len(recalls), 1)
+        self.assertGreaterEqual(
+            mean_recall,
+            0.75,
+            f"Mean recall@5 = {mean_recall:.2f} across {len(recalls)} cases "
+            f"(per-case: {[f'{r:.2f}' for r in recalls]})",
+        )
+
     def test_fixture_cases_retrieve_expected_sources_and_graph_paths(self) -> None:
         cases = self._load_cases()
         self.assertGreaterEqual(len(cases), 3)
