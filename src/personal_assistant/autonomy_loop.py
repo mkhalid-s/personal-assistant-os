@@ -120,7 +120,7 @@ def _reason(
                 reply = str(result.get("reply") or "")[:2000]
                 if plan or actions:
                     append_event(
-                        conn, "multi_provider_winner", "agent_task", 0,
+                        conn, "multi_provider_winner", "system", 0,
                         json.dumps({"winner": winning_name, "backends": multi_backends}, ensure_ascii=True),
                     )
                     return plan, actions, f"multi:{winning_name}", reply
