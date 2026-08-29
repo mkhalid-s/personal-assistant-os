@@ -1,5 +1,6 @@
 """PEM private-key redaction tests — closes the gap identified in the
 block-completeness audit (Aug 2026). Runs apply_privacy_filters directly."""
+
 from __future__ import annotations
 
 import sqlite3
@@ -113,9 +114,7 @@ class PemBlockRedactionTest(unittest.TestCase):
     # ── policy gate ────────────────────────────────────────────────────────
 
     def test_pem_not_redacted_when_secrets_disabled(self) -> None:
-        self.conn.execute(
-            "INSERT INTO assistant_policies (key, value) VALUES ('redact_secrets','false')"
-        )
+        self.conn.execute("INSERT INTO assistant_policies (key, value) VALUES ('redact_secrets','false')")
         self.conn.commit()
         result = self._redact(_FAKE_RSA_KEY)
         self.assertIn("BEGIN RSA PRIVATE KEY", result)

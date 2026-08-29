@@ -2,6 +2,7 @@
 
 All tests use mock backends; fastembed is NOT required to run the suite.
 """
+
 from __future__ import annotations
 
 import json
@@ -34,7 +35,9 @@ def _conn() -> sqlite3.Connection:
 
 class _MockBackend:
     """Minimal EmbeddingBackend for testing — returns fixed-dim zero vector."""
+
     dims = 384
+
     def embed(self, text: str) -> list[float]:
         return [0.1] * self.dims
 
@@ -42,6 +45,7 @@ class _MockBackend:
 # ---------------------------------------------------------------------------
 # load_best_available
 # ---------------------------------------------------------------------------
+
 
 class LoadBestAvailableTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -90,6 +94,7 @@ class LoadBestAvailableTest(unittest.TestCase):
 # embedding_doctor_check
 # ---------------------------------------------------------------------------
 
+
 class EmbeddingDoctorCheckTest(unittest.TestCase):
     def setUp(self) -> None:
         set_embedding_backend(_HashBackend())
@@ -113,6 +118,7 @@ class EmbeddingDoctorCheckTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # embed_and_cache
 # ---------------------------------------------------------------------------
+
 
 class EmbedAndCacheTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -149,19 +155,16 @@ class EmbedAndCacheTest(unittest.TestCase):
         set_embedding_backend(_HashBackend())
         result = embed_and_cache(self.conn, "work_item", "99", "some content")
         self.assertFalse(result)
-        row = self.conn.execute(
-            "SELECT 1 FROM embedding_cache WHERE source_id='99'"
-        ).fetchone()
+        row = self.conn.execute("SELECT 1 FROM embedding_cache WHERE source_id='99'").fetchone()
         self.assertIsNone(row)
 
     def test_stores_correct_content_hash(self) -> None:
         import hashlib
+
         content = "The build is blocked"
         embed_and_cache(self.conn, "note", "1", content)
         self.conn.commit()
-        row = self.conn.execute(
-            "SELECT content_hash FROM embedding_cache WHERE source_id='1'"
-        ).fetchone()
+        row = self.conn.execute("SELECT content_hash FROM embedding_cache WHERE source_id='1'").fetchone()
         expected = hashlib.sha256(content.encode()).hexdigest()
         self.assertEqual(row["content_hash"], expected)
 
@@ -179,6 +182,7 @@ class EmbedAndCacheTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # load_cached_embedding / load_cached_embeddings_bulk
 # ---------------------------------------------------------------------------
+
 
 class LoadCachedEmbeddingTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -203,9 +207,7 @@ class LoadCachedEmbeddingTest(unittest.TestCase):
         embed_and_cache(self.conn, "work_item", "10", "first")
         embed_and_cache(self.conn, "work_item", "11", "second")
         self.conn.commit()
-        result = load_cached_embeddings_bulk(
-            self.conn, [("work_item", "10"), ("work_item", "11"), ("work_item", "99")]
-        )
+        result = load_cached_embeddings_bulk(self.conn, [("work_item", "10"), ("work_item", "11"), ("work_item", "99")])
         self.assertIn(("work_item", "10"), result)
         self.assertIn(("work_item", "11"), result)
         self.assertNotIn(("work_item", "99"), result)

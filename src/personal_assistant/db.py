@@ -1784,9 +1784,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             )
             """
         )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_embedding_cache_model ON embedding_cache(model_name)"
-        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_embedding_cache_model ON embedding_cache(model_name)")
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
             (44, "add_embedding_cache"),
@@ -1800,9 +1798,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE assistant_digests ADD COLUMN source_type TEXT")
         with contextlib.suppress(Exception):
             conn.execute("ALTER TABLE assistant_digests ADD COLUMN source_id INTEGER")
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_digests_source ON assistant_digests(source_type, source_id)"
-        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_digests_source ON assistant_digests(source_type, source_id)")
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
             (45, "generalize_assistant_digests"),

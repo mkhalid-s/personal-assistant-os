@@ -301,7 +301,9 @@ def cmd_embed(args: argparse.Namespace) -> None:
             print(f"Embedding backend : {'semantic' if ok else 'hash fallback'}")
             print(f"Backend detail    : {detail}")
             print(f"text_chunks rows  : {total_chunks}")
-            print(f"embedding_cache   : {cached} / {total_chunks} ({int(cached/total_chunks*100) if total_chunks else 0}%)")
+            print(
+                f"embedding_cache   : {cached} / {total_chunks} ({int(cached / total_chunks * 100) if total_chunks else 0}%)"
+            )
             return
 
         if sub == "backfill":
@@ -1987,8 +1989,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     digest = sub.add_parser("digest", help="List or show auto-generated cycle digests.")
     digest.add_argument("--id", type=int, default=0)
-    digest.add_argument("--limit", type=int, default=1,
-                        help="Number of digests to list (default 1 = show latest; >1 = list mode)")
+    digest.add_argument(
+        "--limit", type=int, default=1, help="Number of digests to list (default 1 = show latest; >1 = list mode)"
+    )
     digest.add_argument("--title-only", action="store_true")
     digest.add_argument("--json", action="store_true", help="Emit a single JSON object instead of formatted text.")
     digest.set_defaults(func=cmd_digest)

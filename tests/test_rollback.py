@@ -28,6 +28,7 @@ def _conn() -> sqlite3.Connection:
 # derive_compensation — the pure derivation logic, no DB needed
 # ---------------------------------------------------------------------------
 
+
 class DeriveCompensationNoOpTest(unittest.TestCase):
     """Non-executed or non-compensable actions always produce no_op."""
 
@@ -165,6 +166,7 @@ class DeriveCompensationConnectorTest(unittest.TestCase):
     def test_unknown_strategy_coerced_to_no_op(self) -> None:
         # _base_envelope should coerce any unknown strategy string to no_op.
         from personal_assistant.rollback import _base_envelope
+
         env = _base_envelope(
             strategy="fly_away",
             action_type="some_action",
@@ -179,8 +181,8 @@ class DeriveCompensationConnectorTest(unittest.TestCase):
 # parse_compensation — tolerant deserialization
 # ---------------------------------------------------------------------------
 
-class ParseCompensationTest(unittest.TestCase):
 
+class ParseCompensationTest(unittest.TestCase):
     def _row_with(self, json_val):
         return {"compensating_action_json": json_val}
 
@@ -212,8 +214,8 @@ class ParseCompensationTest(unittest.TestCase):
 # record_compensation — DB persistence
 # ---------------------------------------------------------------------------
 
-class RecordCompensationTest(unittest.TestCase):
 
+class RecordCompensationTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
 
@@ -221,12 +223,9 @@ class RecordCompensationTest(unittest.TestCase):
         self.conn.close()
 
     def _insert_receipt(self) -> int:
-        task_id = self.conn.execute(
-            "INSERT INTO agent_tasks (objective) VALUES ('test')"
-        ).lastrowid
+        task_id = self.conn.execute("INSERT INTO agent_tasks (objective) VALUES ('test')").lastrowid
         action_id = self.conn.execute(
-            "INSERT INTO agent_actions (agent_task_id, action_type, title) "
-            "VALUES (?, 'local_note', 'test action')",
+            "INSERT INTO agent_actions (agent_task_id, action_type, title) VALUES (?, 'local_note', 'test action')",
             (task_id,),
         ).lastrowid
         receipt_id = self.conn.execute(
@@ -271,9 +270,7 @@ class RecordCompensationTest(unittest.TestCase):
             "CREATE TABLE action_execution_receipts "
             "(id INTEGER PRIMARY KEY, action_type TEXT, final_status TEXT, approved INTEGER)"
         )
-        old_conn.execute(
-            "INSERT INTO action_execution_receipts VALUES (1, 'local_note', 'executed', 1)"
-        )
+        old_conn.execute("INSERT INTO action_execution_receipts VALUES (1, 'local_note', 'executed', 1)")
         old_conn.commit()
         try:
             # Should not raise even though compensating_action_json column absent.
@@ -286,8 +283,8 @@ class RecordCompensationTest(unittest.TestCase):
 # RollbackError
 # ---------------------------------------------------------------------------
 
-class RollbackErrorTest(unittest.TestCase):
 
+class RollbackErrorTest(unittest.TestCase):
     def test_code_and_message_attributes(self) -> None:
         err = RollbackError("not_found", "Receipt not found.")
         self.assertEqual(err.code, "not_found")

@@ -407,6 +407,7 @@ def cmd_digest(args: argparse.Namespace) -> None:
     with connection() as conn:
         if listing:
             from .digest import list_digests
+
             rows = list_digests(conn, limit=limit)
             if not rows:
                 if json_mode:
