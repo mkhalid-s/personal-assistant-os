@@ -338,6 +338,45 @@ def cmd_embed(args: argparse.Namespace) -> None:
         print(f"Unknown subcommand: {sub!r}. Use: myos embed backfill | status")
 
 
+def cmd_catalog(args: argparse.Namespace) -> None:
+    """myos catalog add|list|remove — personal service catalog for planning context."""
+    from .catalog import add_service, list_services, remove_service
+
+    sub = getattr(args, "catalog_subcommand", None)
+
+    with connection() as conn:
+        if sub == "add":
+            deps = [d.strip() for d in (args.deps or "").split(",") if d.strip()]
+            node_id = add_service(
+                conn,
+                args.name,
+                owner=args.owner or "",
+                description=args.description or "",
+                deps=deps,
+            )
+            conn.commit()
+            dep_str = f" → depends on: {', '.join(deps)}" if deps else ""
+            print(f"Added service '{args.name}' (node #{node_id}){dep_str}")
+            return
+
+        if sub == "remove":
+            found = remove_service(conn, args.name)
+            conn.commit()
+            print(f"Removed '{args.name}'." if found else f"Service '{args.name}' not found.")
+            return
+
+        # default: list
+        services = list_services(conn)
+        if not services:
+            print("Catalog is empty. Add services with: myos catalog add <name> [--owner] [--description] [--deps]")
+            return
+        print(f"{'Service':<30} {'Deps'}")
+        print("-" * 60)
+        for svc in services:
+            dep_str = ", ".join(svc["deps"]) if svc["deps"] else "—"
+            print(f"{svc['name']:<30} {dep_str}")
+
+
 def cmd_sync(args: argparse.Namespace) -> None:
     cli_workflow.cmd_sync(args, load_env_file)
 
@@ -1169,6 +1208,18 @@ def build_parser() -> argparse.ArgumentParser:
     embed_sub.add_parser("backfill", help="Compute embeddings for all unembedded text_chunks.")
     embed_sub.add_parser("status", help="Show embedding cache coverage statistics.")
     embed_p.set_defaults(func=cmd_embed)
+
+    catalog_p = sub.add_parser("catalog", help="Manage the personal service catalog for planning context.")
+    catalog_sub = catalog_p.add_subparsers(dest="catalog_subcommand")
+    cat_add = catalog_sub.add_parser("add", help="Add a service to the catalog.")
+    cat_add.add_argument("name", help="Service name")
+    cat_add.add_argument("--owner", default="", help="Team or person owning this service")
+    cat_add.add_argument("--description", default="", help="One-line description")
+    cat_add.add_argument("--deps", default="", help="Comma-separated dependency service names")
+    cat_rem = catalog_sub.add_parser("remove", help="Remove a service from the catalog.")
+    cat_rem.add_argument("name", help="Service name to remove")
+    catalog_sub.add_parser("list", help="List all catalog services.")
+    catalog_p.set_defaults(func=cmd_catalog)
 
     sync = sub.add_parser("sync", help="Sync external connectors.")
     sync.add_argument("--connector", choices=["all", "jira", "github", "confluence", "aha"], default="all")

@@ -86,6 +86,14 @@ def _task(conn: sqlite3.Connection, task_id: int):
 def _reason(
     conn: sqlite3.Connection, *, objective: str, context: str, backend_name: str, purpose: str
 ) -> tuple[list[dict], list[dict], str, str]:
+    # Prepend catalog service context when relevant services exist.
+    try:
+        from .catalog import get_service_context
+        svc_ctx = get_service_context(conn, objective)
+        if svc_ctx:
+            context = f"{svc_ctx}\n\n{context}".strip()
+    except Exception:  # noqa: BLE001
+        pass
     analogies = _agent_analogies(conn, f"{objective} {context}", limit=5)
     provider = "local_loop"
     reply = ""
