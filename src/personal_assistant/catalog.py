@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import sqlite3
+import zlib
 
 from .graph import upsert_node
 from .inbox import index_chunk
@@ -18,8 +19,13 @@ from .retrieval import hybrid_score
 
 
 def _service_ref_id(name: str) -> int:
-    """Stable integer ref_id for a service name (positive, fits SQLite INTEGER)."""
-    return abs(hash(name.lower().strip())) % (10**9)
+    """Stable integer ref_id for a service name (positive, fits SQLite INTEGER).
+
+    Uses zlib.crc32 — NOT hash() — because Python's hash() is randomized per
+    process (PYTHONHASHSEED). A ref_id written by one myos invocation must be
+    readable by the next invocation, so it must be deterministic across processes.
+    """
+    return zlib.crc32(name.lower().strip().encode("utf-8")) % (10**9)
 
 
 def add_service(

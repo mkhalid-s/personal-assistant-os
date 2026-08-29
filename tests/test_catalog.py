@@ -14,6 +14,33 @@ def _conn() -> sqlite3.Connection:
     return conn
 
 
+class ServiceRefIdTest(unittest.TestCase):
+    """_service_ref_id must be deterministic across Python processes.
+
+    hash() is randomized by PYTHONHASHSEED — if used, the ref_id written by one
+    myos invocation cannot be found by the next invocation. zlib.crc32 is stable.
+    """
+
+    def test_same_name_same_id(self) -> None:
+        from personal_assistant.catalog import _service_ref_id
+        self.assertEqual(_service_ref_id("auth-service"), _service_ref_id("auth-service"))
+
+    def test_different_names_different_ids(self) -> None:
+        from personal_assistant.catalog import _service_ref_id
+        self.assertNotEqual(_service_ref_id("auth"), _service_ref_id("billing"))
+
+    def test_case_insensitive(self) -> None:
+        from personal_assistant.catalog import _service_ref_id
+        self.assertEqual(_service_ref_id("Auth-Service"), _service_ref_id("auth-service"))
+
+    def test_known_stable_value(self) -> None:
+        # Pin a known crc32 result — if this fails, someone swapped hash() back in.
+        import zlib
+        from personal_assistant.catalog import _service_ref_id
+        expected = zlib.crc32(b"auth-service") % (10**9)
+        self.assertEqual(_service_ref_id("auth-service"), expected)
+
+
 class AddServiceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()

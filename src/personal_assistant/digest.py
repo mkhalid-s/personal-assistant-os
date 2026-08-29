@@ -100,7 +100,8 @@ def record_digest(
         (source_type, int(task_id), title, body),
     )
     digest_id = cur.lastrowid
-    assert digest_id is not None
+    if digest_id is None:
+        raise RuntimeError("INSERT into assistant_digests returned no lastrowid")
     remember(conn, body, source_type="digest", source_id=int(digest_id))
     return int(digest_id)
 
