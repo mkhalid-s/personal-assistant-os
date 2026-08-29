@@ -15,6 +15,7 @@ warning (non-fatal — the system works, just with hash-based similarity).
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import sqlite3
@@ -23,8 +24,6 @@ from typing import Any
 from .db import append_event
 from .retrieval import (
     EmbeddingBackend,
-    _HashBackend,
-    embed_text,
     get_embedding_backend,
     is_semantic_backend,
     set_embedding_backend,
@@ -185,8 +184,6 @@ def load_cached_embeddings_bulk(
     ).fetchall()
     result: dict[tuple[str, str], list[float]] = {}
     for row in rows:
-        try:
+        with contextlib.suppress(TypeError, ValueError):
             result[(row["source_type"], row["source_id"])] = json.loads(row["embedding_blob"])
-        except (TypeError, ValueError):
-            pass
     return result
