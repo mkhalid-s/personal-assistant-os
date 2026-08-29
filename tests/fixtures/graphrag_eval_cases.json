@@ -3,90 +3,96 @@
     "name": "blocked_launch_dependency",
     "query": "what is blocking the launch dashboard",
     "work_items": [
-      {
-        "key": "launch",
-        "title": "Launch dashboard needs customer escalation visibility"
-      },
-      {
-        "key": "ingestion",
-        "title": "Backend ingestion dependency is blocking dashboard launch"
-      },
-      {
-        "key": "agenda",
-        "title": "Prepare weekly team agenda"
-      }
+      {"key": "launch",    "title": "Launch dashboard needs customer escalation visibility"},
+      {"key": "ingestion", "title": "Backend ingestion dependency is blocking dashboard launch"},
+      {"key": "agenda",    "title": "Prepare weekly team agenda"}
     ],
-    "links": [
-      {
-        "from": "launch",
-        "to": "ingestion",
-        "relation": "blocked_by",
-        "weight": 0.95
-      }
-    ],
-    "expected_citations": ["launch", "ingestion"],
-    "expected_graph_paths": [
-      ["launch", "blocked_by:0.95", "ingestion"]
-    ]
+    "links": [{"from": "launch", "to": "ingestion", "relation": "blocked_by", "weight": 0.95}],
+    "expected_citations":   ["launch", "ingestion"],
+    "expected_graph_paths": [["launch", "blocked_by:0.95", "ingestion"]]
   },
   {
     "name": "production_risk_mitigation",
     "query": "show mitigation for production dashboard risk",
     "work_items": [
-      {
-        "key": "risk",
-        "title": "Production dashboard has release risk from missing smoke checks"
-      },
-      {
-        "key": "mitigation",
-        "title": "Mitigation plan adds smoke checks and rollback owner"
-      },
-      {
-        "key": "notes",
-        "title": "Summarize notes from design reading group"
-      }
+      {"key": "risk",       "title": "Production dashboard has release risk from missing smoke checks"},
+      {"key": "mitigation", "title": "Mitigation plan adds smoke checks and rollback owner"},
+      {"key": "notes",      "title": "Summarize notes from design reading group"}
     ],
-    "links": [
-      {
-        "from": "risk",
-        "to": "mitigation",
-        "relation": "mitigated_by",
-        "weight": 0.9
-      }
-    ],
-    "expected_citations": ["risk", "mitigation"],
-    "expected_graph_paths": [
-      ["risk", "mitigated_by:0.90", "mitigation"]
-    ]
+    "links": [{"from": "risk", "to": "mitigation", "relation": "mitigated_by", "weight": 0.9}],
+    "expected_citations":   ["risk", "mitigation"],
+    "expected_graph_paths": [["risk", "mitigated_by:0.90", "mitigation"]]
   },
   {
     "name": "approval_evidence",
     "query": "which evidence supports approval readiness",
     "work_items": [
-      {
-        "key": "approval",
-        "title": "Approval readiness requires cited validation evidence"
-      },
-      {
-        "key": "validation",
-        "title": "Validation evidence confirms smoke tests and owner signoff"
-      },
-      {
-        "key": "cleanup",
-        "title": "Clean obsolete dashboard filters"
-      }
+      {"key": "approval",   "title": "Approval readiness requires cited validation evidence"},
+      {"key": "validation", "title": "Validation evidence confirms smoke tests and owner signoff"},
+      {"key": "cleanup",    "title": "Clean obsolete dashboard filters"}
     ],
-    "links": [
-      {
-        "from": "approval",
-        "to": "validation",
-        "relation": "supported_by",
-        "weight": 0.85
-      }
+    "links": [{"from": "approval", "to": "validation", "relation": "supported_by", "weight": 0.85}],
+    "expected_citations":   ["approval", "validation"],
+    "expected_graph_paths": [["approval", "supported_by:0.85", "validation"]]
+  },
+  {
+    "name": "auth_service_dependency",
+    "query": "auth service blocking payment processing",
+    "work_items": [
+      {"key": "auth",    "title": "Auth service upgrade is required for payment processing"},
+      {"key": "payment", "title": "Payment processing pipeline depends on auth service completion"},
+      {"key": "unrelated", "title": "Update team wiki with onboarding steps"}
     ],
-    "expected_citations": ["approval", "validation"],
-    "expected_graph_paths": [
-      ["approval", "supported_by:0.85", "validation"]
-    ]
+    "links": [{"from": "payment", "to": "auth", "relation": "depends_on", "weight": 0.9}],
+    "expected_citations":   ["auth", "payment"],
+    "expected_graph_paths": [["payment", "depends_on:0.90", "auth"]]
+  },
+  {
+    "name": "deployment_risk_chain",
+    "query": "deployment risk and rollback plan",
+    "work_items": [
+      {"key": "deploy",   "title": "Deployment pipeline carries rollback risk if smoke tests fail"},
+      {"key": "rollback", "title": "Rollback plan requires snapshot before deploy window"},
+      {"key": "other",    "title": "Schedule performance review for engineering team"}
+    ],
+    "links": [{"from": "deploy", "to": "rollback", "relation": "requires", "weight": 0.8}],
+    "expected_citations":   ["deploy", "rollback"],
+    "expected_graph_paths": [["deploy", "requires:0.80", "rollback"]]
+  },
+  {
+    "name": "data_pipeline_dependency",
+    "query": "data pipeline feeding the analytics dashboard",
+    "work_items": [
+      {"key": "pipeline",   "title": "Data ingestion pipeline supplies analytics dashboard metrics"},
+      {"key": "dashboard",  "title": "Analytics dashboard depends on nightly pipeline job"},
+      {"key": "irrelevant", "title": "Fix typo in employee handbook"}
+    ],
+    "links": [{"from": "dashboard", "to": "pipeline", "relation": "depends_on", "weight": 0.85}],
+    "expected_citations":   ["pipeline", "dashboard"],
+    "expected_graph_paths": [["dashboard", "depends_on:0.85", "pipeline"]]
+  },
+  {
+    "name": "security_review_blocker",
+    "query": "security review blocking release",
+    "work_items": [
+      {"key": "security", "title": "Security review must complete before release is approved"},
+      {"key": "release",  "title": "Release approval is blocked pending security sign-off"},
+      {"key": "noise",    "title": "Organise quarterly all-hands meeting logistics"}
+    ],
+    "links": [{"from": "release", "to": "security", "relation": "blocked_by", "weight": 0.95}],
+    "expected_citations":   ["security", "release"],
+    "expected_graph_paths": [["release", "blocked_by:0.95", "security"]]
+  },
+  {
+    "name": "api_versioning_decision",
+    "query": "api versioning strategy and deprecation plan",
+    "work_items": [
+      {"key": "versioning",   "title": "API versioning strategy requires deprecation timeline"},
+      {"key": "deprecation",  "title": "Deprecation plan for legacy API endpoints by end of quarter"},
+      {"key": "unrelated2",   "title": "Book rooms for engineering team offsite"}
+    ],
+    "links": [{"from": "versioning", "to": "deprecation", "relation": "requires", "weight": 0.8}],
+    "expected_citations":   ["versioning", "deprecation"],
+    "expected_graph_paths": [["versioning", "requires:0.80", "deprecation"]]
   }
 ]
