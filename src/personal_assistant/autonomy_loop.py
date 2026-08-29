@@ -266,6 +266,26 @@ def _finish_cycle(
         "summary": summary,
     }
     conn.commit()
+
+    # X3: distil cycle observations into a searchable digest (never blocks).
+    try:
+        from .digest import maybe_generate_and_record
+        task_row = conn.execute(
+            "SELECT objective, constraints_json FROM agent_tasks WHERE id=?", (int(task_id),)
+        ).fetchone()
+        if task_row:
+            task_meta = json.loads(task_row["constraints_json"] or "{}")
+            _digest_backend = str(task_meta.get("backend") or "claude")
+            maybe_generate_and_record(
+                conn,
+                int(task_id),
+                str(task_row["objective"] or ""),
+                backend_name=_digest_backend,
+            )
+            conn.commit()
+    except Exception:  # noqa: BLE001
+        pass
+
     return result
 
 

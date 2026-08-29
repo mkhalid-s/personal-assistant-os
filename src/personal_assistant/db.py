@@ -7,7 +7,7 @@ import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 
-EXPECTED_SCHEMA_VERSION = 44
+EXPECTED_SCHEMA_VERSION = 45
 PRIVATE_DB_MODE = 0o600
 
 
@@ -1790,6 +1790,26 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
             (44, "add_embedding_cache"),
+        )
+
+    if current < 45:
+        # Generalize assistant_digests beyond autopilot: add source_type/source_id
+        # so autonomy_loop tasks, factory runs, and manual sessions can each produce
+        # digests that get indexed in FTS5 + embedding store for future retrieval.
+        try:
+            conn.execute("ALTER TABLE assistant_digests ADD COLUMN source_type TEXT")
+        except Exception:  # column may already exist on partial migration
+            pass
+        try:
+            conn.execute("ALTER TABLE assistant_digests ADD COLUMN source_id INTEGER")
+        except Exception:
+            pass
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_digests_source ON assistant_digests(source_type, source_id)"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (45, "generalize_assistant_digests"),
         )
 
     _ensure_fts5(conn)  # self-heal: build the FTS index if a no-FTS5 run stranded migration 17
