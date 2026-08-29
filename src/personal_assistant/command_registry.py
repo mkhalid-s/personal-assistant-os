@@ -398,7 +398,14 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Show autopilot run state.",
         examples=("myos autopilot-status", "myos autopilot-status --json"),
     ),
-    CommandSpec("digest", "expert", "read_only", "daily_brief", "Show assistant digests.", examples=("myos digest",)),
+    CommandSpec(
+        "digest",
+        "expert",
+        "read_only",
+        "daily_brief",
+        "List or show auto-generated cycle digests indexed for semantic retrieval.",
+        examples=("myos digest", "myos digest --id 3", "myos digest --limit 10"),
+    ),
     CommandSpec(
         "goal",
         "expert",
