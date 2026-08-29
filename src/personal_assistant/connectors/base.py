@@ -119,6 +119,109 @@ class BaseConnector:
         assert last_exc is not None
         raise last_exc
 
+    def _page_size(self) -> int:
+        return int(os.getenv("MYOS_CONNECTOR_PAGE_SIZE", "50"))
+
+    def _max_pages(self) -> int:
+        return int(os.getenv("MYOS_CONNECTOR_MAX_PAGES", "20"))
+
+    def json_get_offset(
+        self,
+        url: str,
+        headers: dict[str, str],
+        *,
+        result_key: str,
+        offset_param: str = "startAt",
+        size_param: str = "maxResults",
+        total_key: str = "total",
+    ) -> list[Any]:
+        """Offset-based pagination (Jira-style).
+
+        Reads ``total`` from the first response and loops, incrementing the
+        offset by page_size, until all items are fetched or max_pages is hit.
+        """
+        page_size = self._page_size()
+        sep = "&" if "?" in url else "?"
+        all_items: list[Any] = []
+        for page in range(self._max_pages()):
+            offset = page * page_size
+            paged = f"{url}{sep}{offset_param}={offset}&{size_param}={page_size}"
+            data = self.json_get(paged, headers)
+            items = data.get(result_key, []) if isinstance(data, dict) else []
+            if not isinstance(items, list) or not items:
+                break
+            all_items.extend(items)
+            total = int(data.get(total_key, 0)) if isinstance(data, dict) else 0
+            if offset + page_size >= total:
+                break
+        return all_items
+
+    def json_get_paged(
+        self,
+        url: str,
+        headers: dict[str, str],
+        *,
+        result_key: str = "",
+        page_param: str = "page",
+        size_param: str = "per_page",
+    ) -> list[Any]:
+        """Page-number pagination (GitHub / Aha-style).
+
+        Starts at page 1 and increments until a page returns fewer items than
+        page_size (indicating the last page) or an empty list. The response may
+        be a bare list (GitHub) or a dict with a result_key (Aha).
+        """
+        page_size = self._page_size()
+        sep = "&" if "?" in url else "?"
+        all_items: list[Any] = []
+        for page in range(1, self._max_pages() + 1):
+            paged = f"{url}{sep}{page_param}={page}&{size_param}={page_size}"
+            data = self.json_get(paged, headers)
+            if isinstance(data, list):
+                items = data
+            elif isinstance(data, dict) and result_key:
+                items = data.get(result_key, [])
+            else:
+                break
+            if not isinstance(items, list) or not items:
+                break
+            all_items.extend(items)
+            if len(items) < page_size:
+                break
+        return all_items
+
+    def json_get_linked(
+        self,
+        url: str,
+        headers: dict[str, str],
+        *,
+        result_key: str,
+        next_path: str = "_links.next",
+        base_url: str = "",
+    ) -> list[Any]:
+        """Link-following pagination (Confluence-style).
+
+        Reads ``next_path`` (dot-separated key path into the response JSON)
+        to find the next page URL. Stops when the key is absent or empty.
+        """
+        all_items: list[Any] = []
+        current = url
+        for _ in range(self._max_pages()):
+            data = self.json_get(current, headers)
+            items = data.get(result_key, []) if isinstance(data, dict) else []
+            if not isinstance(items, list):
+                break
+            all_items.extend(items)
+            # Walk the dot-separated key path to find the next URL.
+            node: Any = data
+            for part in next_path.split("."):
+                node = node.get(part, {}) if isinstance(node, dict) else {}
+            next_href = node if isinstance(node, str) else ""
+            if not next_href:
+                break
+            current = (base_url + next_href) if next_href.startswith("/") else next_href
+        return all_items
+
     def sync(self) -> ConnectorResult:
         ok, reason = self.validate_env()
         if not ok:

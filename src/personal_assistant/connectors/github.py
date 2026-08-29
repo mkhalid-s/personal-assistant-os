@@ -22,9 +22,14 @@ class GitHubConnector(BaseConnector):
             "Authorization": f"Bearer {token}",
             "X-GitHub-Api-Version": "2022-11-28",
         }
-        prs = self.json_get(
-            f"https://api.github.com/repos/{owner}/{repo}/pulls?state=open&per_page=30",
+        # GitHub returns a bare list; json_get_paged handles that when result_key="".
+        # per_page is controlled by MYOS_CONNECTOR_PAGE_SIZE (default 50, max 100 for GitHub).
+        prs = self.json_get_paged(
+            f"https://api.github.com/repos/{owner}/{repo}/pulls?state=open",
             headers,
+            result_key="",
+            page_param="page",
+            size_param="per_page",
         )
         items: list[ExternalItem] = []
         for pr in prs:

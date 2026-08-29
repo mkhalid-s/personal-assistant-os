@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 import urllib.parse
 
@@ -19,17 +20,23 @@ class JiraConnector(BaseConnector):
         email = os.environ["JIRA_USER_EMAIL"]
         token = os.environ["JIRA_API_TOKEN"]
         jql = urllib.parse.quote("assignee = currentUser() ORDER BY updated DESC")
-        url = f"{base}/rest/api/3/search?jql={jql}&maxResults=30"
-        auth = (f"{email}:{token}").encode()
-        import base64
-
+        # No maxResults here — json_get_offset controls page size and offset.
+        url = f"{base}/rest/api/3/search?jql={jql}"
+        auth = f"{email}:{token}".encode()
         headers = {
             "Accept": "application/json",
             "Authorization": f"Basic {base64.b64encode(auth).decode('utf-8')}",
         }
-        data = self.json_get(url, headers)
+        issues = self.json_get_offset(
+            url,
+            headers,
+            result_key="issues",
+            offset_param="startAt",
+            size_param="maxResults",
+            total_key="total",
+        )
         items: list[ExternalItem] = []
-        for issue in data.get("issues", []):
+        for issue in issues:
             fields = issue.get("fields", {})
             assignee = fields.get("assignee") or {}
             status = (fields.get("status") or {}).get("name")

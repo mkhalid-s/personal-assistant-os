@@ -11,18 +11,26 @@ class AhaConnector(BaseConnector):
     name = "aha"
 
     def required_env(self) -> list[str]:
-        return ["AHA_BASE_URL", "AHA_API_TOKEN"]
+        # AHA_API_KEY matches the env var used by the write adapter in execution.py.
+        return ["AHA_BASE_URL", "AHA_API_KEY"]
 
     def fetch_items(self) -> list[ExternalItem]:
         base = os.environ["AHA_BASE_URL"].rstrip("/")
-        token = os.environ["AHA_API_TOKEN"]
+        token = os.environ["AHA_API_KEY"]
         headers = {
             "Accept": "application/json",
             "Authorization": f"Bearer {token}",
         }
-        data = self.json_get(f"{base}/api/v1/features?per_page=30", headers)
+        # json_get_paged handles dict response with result_key="features".
+        features = self.json_get_paged(
+            f"{base}/api/v1/features",
+            headers,
+            result_key="features",
+            page_param="page",
+            size_param="per_page",
+        )
         items: list[ExternalItem] = []
-        for f in data.get("features", []):
+        for f in features:
             items.append(
                 ExternalItem(
                     connector=self.name,
