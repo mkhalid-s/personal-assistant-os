@@ -15,7 +15,21 @@ import time
 from . import providers
 from .inbox import infer_kind
 from .privacy import apply_privacy_filters, get_policy_map, redact_obj
+import re as _re
+
 from .retrieval import hybrid_score
+
+
+def _parse_source_key(source: str) -> tuple[str, str] | None:
+    """Parse 'source_type#source_id' strings into (source_type, source_id).
+
+    Returns None for sources that don't follow the pattern (e.g. observations).
+    Used to look up stored embeddings from embedding_cache.
+    """
+    m = _re.match(r"^([a-z_]+)#(\d+)$", source)
+    if m:
+        return m.group(1), m.group(2)
+    return None
 
 
 def _agent_analogies(conn, query: str, limit: int = 5, scopes: set[str] | None = None) -> list[tuple[float, str, str]]:
@@ -73,9 +87,38 @@ def _agent_analogies(conn, query: str, limit: int = 5, scopes: set[str] | None =
                 (f"person#{row['id']}", f"{row['name']} role={row['role'] or ''} relation={row['relation'] or ''}")
             )
 
+    # Load stored embeddings for candidates that follow the source_type#id pattern
+    # (work_items, intents, external_items, people — all indexed via embed_and_cache
+    # at write time). Observations don't follow this pattern and get on-the-fly scoring.
+    try:
+        from .embedding_backends import load_cached_embeddings_bulk
+        from .retrieval import cosine_similarity, get_embedding_backend, is_semantic_backend, lexical_score
+        if is_semantic_backend():
+            keys = [k for k in (_parse_source_key(s) for s, _ in candidates) if k is not None]
+            cached_vecs = load_cached_embeddings_bulk(conn, keys) if keys else {}
+            q_vec = get_embedding_backend().embed(query)
+            _sem = True
+        else:
+            cached_vecs, q_vec, _sem = {}, [], False
+    except Exception:  # noqa: BLE001
+        cached_vecs, q_vec, _sem = {}, [], False
+
     scored: list[tuple[float, str, str]] = []
     for source, content in candidates:
-        score = hybrid_score(query, content)
+        if _sem:
+            key = _parse_source_key(source)
+            cached = cached_vecs.get(key) if key else None
+            if cached is not None and q_vec:
+                sem = cosine_similarity(q_vec, cached)
+                lex = lexical_score(query, content)
+                score = 0.30 * lex + 0.70 * sem
+            else:
+                # On-the-fly real embedding via seam (no stored cache yet for
+                # this source type, or observations without an id pattern).
+                score = hybrid_score(query, content, lexical_w=0.30, semantic_w=0.70)
+        else:
+            score = hybrid_score(query, content)
+
         if score > 0:
             scored.append((score, source, content))
     scored.sort(key=lambda x: x[0], reverse=True)
