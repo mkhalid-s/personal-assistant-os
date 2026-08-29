@@ -130,4 +130,9 @@ def remember(conn: sqlite3.Connection, text: str, *, source_type: str = "memory"
         "INSERT INTO text_chunks (source_type, source_id, content) VALUES (?, ?, ?)",
         (source_type, source_id, text),
     )
+    try:
+        from .embedding_backends import embed_and_cache
+        embed_and_cache(conn, source_type, str(source_id), text)
+    except Exception:  # noqa: BLE001
+        pass
     return int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])

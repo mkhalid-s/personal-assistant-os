@@ -279,6 +279,65 @@ def cmd_reindex(_: argparse.Namespace) -> None:
     print(f"Reindex complete. Added {nodes_added} nodes and {chunks_added} chunks for existing work items.")
 
 
+def cmd_embed(args: argparse.Namespace) -> None:
+    """myos embed backfill — compute embeddings for all unembedded text_chunks.
+    myos embed status  — show embedding cache coverage stats.
+    """
+    from .embedding_backends import (
+        embed_and_cache,
+        embedding_doctor_check,
+        is_semantic_backend as _is_sem,
+    )
+
+    sub = getattr(args, "embed_subcommand", None) or getattr(args, "subcommand", None)
+
+    with connection() as conn:
+        if sub == "status" or sub is None:
+            total_chunks = conn.execute("SELECT COUNT(*) AS c FROM text_chunks").fetchone()["c"]
+            cached = conn.execute("SELECT COUNT(*) AS c FROM embedding_cache").fetchone()["c"]
+            ok, detail = embedding_doctor_check()
+            print(f"Embedding backend : {'semantic' if ok else 'hash fallback'}")
+            print(f"Backend detail    : {detail}")
+            print(f"text_chunks rows  : {total_chunks}")
+            print(f"embedding_cache   : {cached} / {total_chunks} ({int(cached/total_chunks*100) if total_chunks else 0}%)")
+            return
+
+        if sub == "backfill":
+            if not _is_sem():
+                print("Hash backend active — backfill skipped.")
+                print("Install the embed extra first: pip install personal-assistant-os[embed]")
+                return
+
+            rows = conn.execute(
+                """
+                SELECT tc.source_type, tc.source_id, tc.content
+                FROM text_chunks tc
+                LEFT JOIN embedding_cache ec
+                    ON ec.source_type = tc.source_type AND ec.source_id = CAST(tc.source_id AS TEXT)
+                WHERE ec.source_type IS NULL
+                ORDER BY tc.id ASC
+                """
+            ).fetchall()
+
+            total = len(rows)
+            if total == 0:
+                print("Embedding cache is up to date — nothing to backfill.")
+                return
+
+            print(f"Backfilling {total} rows …")
+            done = 0
+            for row in rows:
+                embed_and_cache(conn, row["source_type"], str(row["source_id"]), row["content"])
+                done += 1
+                if done % 50 == 0 or done == total:
+                    print(f"  {done}/{total}", flush=True)
+            conn.commit()
+            print(f"Done. {done} embeddings written.")
+            return
+
+        print(f"Unknown subcommand: {sub!r}. Use: myos embed backfill | status")
+
+
 def cmd_sync(args: argparse.Namespace) -> None:
     cli_workflow.cmd_sync(args, load_env_file)
 
@@ -1104,6 +1163,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     reindex = sub.add_parser("reindex", help="Backfill graph nodes and chunks for existing data.")
     reindex.set_defaults(func=cmd_reindex)
+
+    embed_p = sub.add_parser("embed", help="Manage the embedding cache for semantic retrieval.")
+    embed_sub = embed_p.add_subparsers(dest="embed_subcommand")
+    embed_sub.add_parser("backfill", help="Compute embeddings for all unembedded text_chunks.")
+    embed_sub.add_parser("status", help="Show embedding cache coverage statistics.")
+    embed_p.set_defaults(func=cmd_embed)
 
     sync = sub.add_parser("sync", help="Sync external connectors.")
     sync.add_argument("--connector", choices=["all", "jira", "github", "confluence", "aha"], default="all")
