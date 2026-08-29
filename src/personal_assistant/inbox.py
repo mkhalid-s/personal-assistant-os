@@ -30,6 +30,13 @@ def index_chunk(
         "INSERT INTO text_chunks (source_type, source_id, content, provenance_id) VALUES (?, ?, ?, ?)",
         (source_type, source_id, content.strip(), provenance_id),
     )
+    # Best-effort: persist embedding for semantic retrieval. Skips silently
+    # when the hash backend is active or the embed extra is not installed.
+    try:
+        from .embedding_backends import embed_and_cache
+        embed_and_cache(conn, source_type, str(source_id), content.strip())
+    except Exception:  # noqa: BLE001
+        pass
     return True
 
 

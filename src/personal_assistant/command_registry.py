@@ -643,6 +643,16 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("myos reindex",),
     ),
     CommandSpec(
+        "embed",
+        "expert",
+        "local_write",
+        "retrieve_context",
+        "Manage the embedding cache for semantic retrieval.",
+        subcommands=("backfill", "status"),
+        examples=("myos embed backfill", "myos embed status"),
+        long_running=True,
+    ),
+    CommandSpec(
         "model",
         "diagnostic",
         "local_write",
