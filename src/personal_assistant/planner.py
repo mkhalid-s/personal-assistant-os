@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re as _re
 import shlex
 import subprocess
 import time
@@ -15,8 +16,6 @@ import time
 from . import providers
 from .inbox import infer_kind
 from .privacy import apply_privacy_filters, get_policy_map, redact_obj
-import re as _re
-
 from .retrieval import hybrid_score
 
 

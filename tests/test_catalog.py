@@ -36,6 +36,7 @@ class ServiceRefIdTest(unittest.TestCase):
     def test_known_stable_value(self) -> None:
         # Pin a known crc32 result — if this fails, someone swapped hash() back in.
         import zlib
+
         from personal_assistant.catalog import _service_ref_id
         expected = zlib.crc32(b"auth-service") % (10**9)
         self.assertEqual(_service_ref_id("auth-service"), expected)
@@ -184,7 +185,7 @@ class GetServiceContextTest(unittest.TestCase):
             add_service(self.conn, f"service-{i}")
         self.conn.commit()
         ctx = get_service_context(self.conn, "service", limit=3)
-        lines = [l for l in ctx.split("\n") if l.strip().startswith("-")]
+        lines = [ln for ln in ctx.split("\n") if ln.strip().startswith("-")]
         self.assertLessEqual(len(lines), 3)
 
     def test_starts_with_header(self) -> None:

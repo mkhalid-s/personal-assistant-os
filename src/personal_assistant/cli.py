@@ -286,6 +286,8 @@ def cmd_embed(args: argparse.Namespace) -> None:
     from .embedding_backends import (
         embed_and_cache,
         embedding_doctor_check,
+    )
+    from .embedding_backends import (
         is_semantic_backend as _is_sem,
     )
 
@@ -336,47 +338,6 @@ def cmd_embed(args: argparse.Namespace) -> None:
             return
 
         print(f"Unknown subcommand: {sub!r}. Use: myos embed backfill | status")
-
-
-def cmd_digest(args: argparse.Namespace) -> None:
-    """myos digest [--id N] — list recent digests or show a specific one by id."""
-    import json as _json
-    from .digest import list_digests
-
-    digest_id = getattr(args, "id", 0)
-    emit_json = getattr(args, "json", False)
-    title_only = getattr(args, "title_only", False)
-    limit = getattr(args, "limit", 20)
-
-    with connection() as conn:
-        if digest_id:
-            row = conn.execute(
-                "SELECT * FROM assistant_digests WHERE id=?", (digest_id,)
-            ).fetchone()
-            if not row:
-                print(f"Digest #{digest_id} not found.")
-                return
-            d = dict(row)
-            if emit_json:
-                print(_json.dumps(d, ensure_ascii=False, indent=2))
-            elif title_only:
-                print(d["title"])
-            else:
-                print(f"[#{d['id']}] {d['title']}")
-                print(f"Source: {d.get('source_type','?')} #{d.get('source_id','?')}  Created: {d['created_at']}")
-                print()
-                print(d["body"])
-            return
-
-        digests = list_digests(conn, limit=limit)
-        if not digests:
-            print("No digests yet — generated automatically after each autonomy cycle.")
-            return
-        if emit_json:
-            print(_json.dumps(digests, ensure_ascii=False, indent=2))
-            return
-        for d in digests:
-            print(f"#{d['id']:3}  {d['created_at'][:16]}  {d['title'][:70]}")
 
 
 def cmd_catalog(args: argparse.Namespace) -> None:
@@ -2026,7 +1987,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     digest = sub.add_parser("digest", help="List or show auto-generated cycle digests.")
     digest.add_argument("--id", type=int, default=0)
-    digest.add_argument("--limit", type=int, default=20)
+    digest.add_argument("--limit", type=int, default=1,
+                        help="Number of digests to list (default 1 = show latest; >1 = list mode)")
     digest.add_argument("--title-only", action="store_true")
     digest.add_argument("--json", action="store_true", help="Emit a single JSON object instead of formatted text.")
     digest.set_defaults(func=cmd_digest)

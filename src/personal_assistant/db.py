@@ -1796,14 +1796,10 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         # Generalize assistant_digests beyond autopilot: add source_type/source_id
         # so autonomy_loop tasks, factory runs, and manual sessions can each produce
         # digests that get indexed in FTS5 + embedding store for future retrieval.
-        try:
+        with contextlib.suppress(Exception):  # column may already exist on partial migration
             conn.execute("ALTER TABLE assistant_digests ADD COLUMN source_type TEXT")
-        except Exception:  # column may already exist on partial migration
-            pass
-        try:
+        with contextlib.suppress(Exception):
             conn.execute("ALTER TABLE assistant_digests ADD COLUMN source_id INTEGER")
-        except Exception:
-            pass
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_digests_source ON assistant_digests(source_type, source_id)"
         )

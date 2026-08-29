@@ -115,7 +115,8 @@ class JsonGetPagedTest(unittest.TestCase):
         pages = [[{"n": i} for i in range(5)], [{"n": 5}, {"n": 6}]]
         calls = [0]
         def side_effect(url, headers):  # noqa: ANN001
-            page = calls[0]; calls[0] += 1
+            page = calls[0]
+            calls[0] += 1
             return pages[page] if page < len(pages) else []
         with patch.dict("os.environ", {"MYOS_CONNECTOR_PAGE_SIZE": "5"}), \
              patch.object(self.c, "json_get", side_effect=side_effect):
@@ -128,7 +129,8 @@ class JsonGetPagedTest(unittest.TestCase):
         p2 = {"features": [{"id": 3}]}
         calls = [0]
         def side_effect(url, headers):  # noqa: ANN001
-            page = calls[0]; calls[0] += 1
+            page = calls[0]
+            calls[0] += 1
             return [p1, p2][page] if page < 2 else {"features": []}
         with patch.dict("os.environ", {"MYOS_CONNECTOR_PAGE_SIZE": "3"}), \
              patch.object(self.c, "json_get", side_effect=side_effect):
@@ -141,7 +143,8 @@ class JsonGetPagedTest(unittest.TestCase):
         p2 = [{"id": 5}]
         calls = [0]
         def side_effect(url, headers):  # noqa: ANN001
-            page = calls[0]; calls[0] += 1
+            page = calls[0]
+            calls[0] += 1
             return [p1, p2][page] if page < 2 else []
         with patch.dict("os.environ", {"MYOS_CONNECTOR_PAGE_SIZE": "5"}), \
              patch.object(self.c, "json_get", side_effect=side_effect):
@@ -156,7 +159,8 @@ class JsonGetPagedTest(unittest.TestCase):
         p1 = [{"id": 0}, {"id": 1}]
         calls = [0]
         def side_effect(url, headers):  # noqa: ANN001
-            page = calls[0]; calls[0] += 1
+            page = calls[0]
+            calls[0] += 1
             return p1 if page == 0 else []
         with patch.dict("os.environ", {"MYOS_CONNECTOR_PAGE_SIZE": "2"}), \
              patch.object(self.c, "json_get", side_effect=side_effect):
@@ -222,7 +226,9 @@ class JsonGetLinkedTest(unittest.TestCase):
         ]
         calls = [0]
         def side_effect(url, headers):  # noqa: ANN001
-            r = responses[calls[0]]; calls[0] += 1; return r
+            r = responses[calls[0]]
+            calls[0] += 1
+            return r
         with patch.object(self.c, "json_get", side_effect=side_effect):
             result = self.c.json_get_linked(
                 "http://base/wiki", {}, result_key="results",
