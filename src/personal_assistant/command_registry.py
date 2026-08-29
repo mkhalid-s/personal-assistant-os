@@ -653,6 +653,15 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         long_running=True,
     ),
     CommandSpec(
+        "catalog",
+        "expert",
+        "local_write",
+        "retrieve_context",
+        "Manage the personal service catalog injected into planning context.",
+        subcommands=("add", "list", "remove"),
+        examples=("myos catalog add auth-service --owner platform", "myos catalog list"),
+    ),
+    CommandSpec(
         "model",
         "diagnostic",
         "local_write",
