@@ -391,12 +391,51 @@ class ClaudeBackend(BaseBackend):
             stream_kwargs["cache_control"] = {"type": "ephemeral"}  # #10: cache the growing prefix
 
         for _ in range(12):  # hard cap on tool-loop iterations
-            with client.messages.stream(messages=messages, **stream_kwargs) as stream:
-                if on_text is not None:
-                    for event in stream:
-                        if event.type == "content_block_delta" and getattr(event.delta, "type", "") == "text_delta":
-                            on_text(event.delta.text)
-                response = stream.get_final_message()
+            try:
+                with client.messages.stream(messages=messages, **stream_kwargs) as stream:
+                    if on_text is not None:
+                        for event in stream:
+                            if event.type == "content_block_delta" and getattr(event.delta, "type", "") == "text_delta":
+                                on_text(event.delta.text)
+                    response = stream.get_final_message()
+            except Exception as _exc:  # noqa: BLE001
+                import anthropic as _anthropic
+
+                _exc_str = str(_exc).lower()
+                if (
+                    isinstance(_exc, _anthropic.BadRequestError)
+                    or "prompt is too long" in _exc_str
+                    or "context_length_exceeded" in _exc_str
+                ):
+                    # Context window exceeded — trim the oldest turns and retry once.
+                    from ..context_budget import trim_history
+
+                    trimmed = trim_history(messages, keep_last=10, model=model)
+                    if len(trimmed) < len(messages):
+                        messages = trimmed
+                        try:
+                            with client.messages.stream(messages=messages, **stream_kwargs) as stream:
+                                if on_text is not None:
+                                    for event in stream:
+                                        if (
+                                            event.type == "content_block_delta"
+                                            and getattr(event.delta, "type", "") == "text_delta"
+                                        ):
+                                            on_text(event.delta.text)
+                                response = stream.get_final_message()
+                        except Exception as _retry_exc:  # noqa: BLE001
+                            reply_parts.append(
+                                f"\n[Context too long to process even after trimming. "
+                                f"Please start a new session. Error: {str(_retry_exc)[:200]}]"
+                            )
+                            break
+                    else:
+                        reply_parts.append(
+                            "\n[Context too long and cannot be trimmed further. Please start a new session.]"
+                        )
+                        break
+                else:
+                    raise
 
             messages.append({"role": "assistant", "content": response.content})
 
