@@ -1,366 +1,132 @@
-# Personal Assistant OS
+# Personal Assistant OS (MYOS)
 
 [![CI](https://github.com/mkhalid-s/personal-assistant-os/actions/workflows/ci.yml/badge.svg)](https://github.com/mkhalid-s/personal-assistant-os/actions/workflows/ci.yml)
 
-Local-first CLI assistant for planning work, remembering context, triaging tasks, and safely proposing agentic actions. It keeps the user's working memory in a local SQLite store, retrieves relevant context on demand, and gates external mutations behind explicit approval.
-
-## Current Status
-
-This repository is an MVP public baseline. It is useful as a local CLI assistant with reliability checks, durable plans, review packets, retrieval traces, policy-aware factory runs, and daily operating loops, but it is not yet a production-stable application or a graph database application.
-
-The current graph support is SQLite-based and lightweight: `knowledge_nodes`, `knowledge_edges`, deterministic `entities`/`entity_aliases`, typed `relationships`, `claims`, manual links, conversation-derived relationship hints, persisted retrieval traces for cited graph expansion, entity-aware retrieval expansion, bounded multi-hop work-item traversal, claim-backed retrieval, and fixture-based retrieval evals. See `ARCHITECTURE.md` and `ROADMAP.md`.
-
-## Project Direction
-
-The long-term direction is a local-first AI control plane:
+**MYOS is a local-first CLI AI control plane** — a personal engineer that captures your work, retrieves relevant context, plans and proposes actions, and executes only what you explicitly approve. It runs entirely on your machine against a local SQLite database; external services (Jira, GitHub, Confluence, Aha, a hosted reasoning model) are opt-in and skipped safely when unconfigured.
 
 ```text
-Intent -> Context -> Plan -> Agent Work -> Review -> Approval -> Execution -> Audit -> Learning
+Capture -> Triage -> Plan -> Agent Work -> Review -> Approval -> Execution -> Audit -> Learning
 ```
 
-The design is inspired by AI-native software-factory ideas: intent-first workflows, living documentation, graph-backed context, approval-gated agents, and full audit trails. This project applies those ideas to a personal, open-source, local-first assistant OS.
+Every stage leaves durable, queryable evidence. Every external mutation is approval-gated with payload-hash pinning and TTL expiry — MYOS proposes, you decide, MYOS executes exactly what you approved.
 
-## What It Does
+## Why MYOS Exists
 
-- Captures notes, tasks, commitments, decisions, risks, and daily logs.
-- Syncs optional external context from configured connectors such as Jira, GitHub, Confluence, and Aha.
-- Ingests text, audio transcripts, images, meeting notes, and watched folders.
-- Builds searchable memory with provenance, deterministic entity and relationship extraction, graph links, hybrid retrieval, persisted retrieval traces, retrieval eval fixtures, and graph-aware "why" explanations.
-- Runs assistant workflows through chat, voice, autopilot, one-shot smart routing, morning briefs, durable plans, review packets, policy-aware factory runs, provider-backed role runs with local fallback, risk scans, delegation, approvals, connector dry-run outbox workflows, and weekly reviews.
-- Provides built-in and custom personas with explicit instructions, retrieval scopes, backend preferences, and action allowlists; persona actions remain subject to the global approval and execution policy.
-- Redacts common PII and secrets before persistence and keeps private runtime data out of git.
+Most "AI assistant" tools are either fully autonomous (opaque, risky, hard to trust with real systems) or fully manual (you still do all the work, the model just chats). MYOS is built on a different premise: **an assistant should act like a disciplined team member, not a black box or a toy.**
 
-## Design Docs
+That means:
 
-- `ARCHITECTURE.md`: current architecture, target operating loop, and GraphRAG direction.
-- `ROADMAP.md`: surgical roadmap from MVP to stable app, intent layer, GraphRAG, and product hardening.
-- `docs/BOUNDED_AUTONOMY.md`: bounded autonomy direction, router feedback application, command registry, and lightweight observability plans.
-- `CHANGELOG.md`: release notes for the current checkpoint and future tagged releases.
-- `CONTRIBUTING.md`: contribution flow, PR expectations, commit hygiene, and the local dev loop.
-- `DEVELOPING.md`: internals guide — module map, layering, bounded-autonomy invariants, and how to add a new CLI command, schema migration, or executor backend.
+- It **remembers** — durable local memory across sessions, not a fresh context window every time.
+- It **plans before acting** — every proposed action is reviewable before it touches anything external.
+- It **never surprises you** — approval integrity is enforced with a pinned payload hash and a TTL, so an approved action can't silently change or run stale days later.
+- It **explains itself** — every retrieved fact has a citation; every executed action has a receipt; every autonomy decision prints its reasoning.
+- It **degrades safely** — no configured connector, no problem; no API key, local reasoning fallback; no embedding model installed, hash-based retrieval still works.
 
-## Open Source Stack
+## Architecture
 
-Core runtime:
+MYOS is organized in layers, each with a narrow, well-tested responsibility:
 
-- Python 3.10+
-- SQLite via the Python standard library
-- `setuptools` packaging
-- `unittest` test suite
-- `anthropic` Python SDK for the default hosted reasoning backend
+```text
+┌──────────────────────────────────────────────────────────────────┐
+│ Interfaces          CLI (myos), chat, voice, dashboard            │
+├──────────────────────────────────────────────────────────────────┤
+│ Autonomy Loop       capture -> triage -> plan -> propose          │
+│                     -> approve -> execute -> audit -> learn       │
+├──────────────────────────────────────────────────────────────────┤
+│ Personas            role-scoped retrieval + action policies       │
+│                     (chief-of-staff, researcher, coach,           │
+│                      reviewer, operator, engineer)                │
+├──────────────────────────────────────────────────────────────────┤
+│ Providers           pluggable reasoning backends                  │
+│                     (claude, claude-sdk, claude-code, cursor,     │
+│                      copilot, zero, command)                      │
+├──────────────────────────────────────────────────────────────────┤
+│ Retrieval           GraphRAG (graphrag.py) + planner analogies    │
+│                     FTS5 candidate selection, entity/graph        │
+│                     expansion, embedding-backed reranking         │
+├──────────────────────────────────────────────────────────────────┤
+│ Execution Safety    approval integrity, payload-hash pinning,     │
+│ Core                TTL expiry, destructive-action guards,        │
+│                     persona-scoped approval gate                  │
+├──────────────────────────────────────────────────────────────────┤
+│ Connectors          Jira, GitHub, Confluence, Aha                 │
+│                     (read sync; Jira/GitHub/Confluence/Aha        │
+│                      write via approval-gated comments)           │
+├──────────────────────────────────────────────────────────────────┤
+│ Data Layer          SQLite, migration-based schema (44+           │
+│                     migrations), FTS5 index, embedding cache,     │
+│                     event log, knowledge graph tables             │
+└──────────────────────────────────────────────────────────────────┘
+```
 
-Optional local tools:
+### Data layer
 
-- `sounddevice` and `faster-whisper` for voice/audio transcription workflows
-- `tesseract` for OCR if you use image ingestion
-- macOS `launchd` for always-on local scheduling
+SQLite is the canonical store (`db.py`). Every schema change is a numbered, idempotent migration applied on connect — there is no separate "migrate" step to forget. The schema holds work items, external items, media metadata, text chunks (FTS5-indexed), an embedding cache, knowledge graph nodes/edges, deterministic entities/aliases/relationships, claims, intents, plans, review packets, conversations, agent tasks/actions/runs, execution receipts, retrieval traces, and an append-only event log.
 
-External services are optional. Connectors only run when their environment variables are configured, and approved-action execution is off by default.
+### Retrieval layer
 
-## Safety Model
+Two retrieval paths feed different parts of the system:
 
-The assistant is designed to propose before it mutates external systems.
+- **`graphrag.retrieve()`** — the factory/intent path. FTS5 candidate selection (BM25-ranked, OR-token semantics) followed by hybrid lexical+semantic reranking, entity-alias matching, claim scoring, and bounded multi-hop graph expansion over `knowledge_edges`. Every hit carries a citation and, when graph-expanded, an explained relationship path.
+- **`planner._agent_analogies()`** — the autonomy-loop path. Scores candidates from `work_items`, `agent_observations`, `intents`, `external_items`, and `people` directly.
 
-- Local capture and bookkeeping can run directly.
-- External updates are normalized as connector mutations and drafted into an approval queue/outbox by default.
-- Destructive or broad actions are blocked by policy.
-- Executed, failed, blocked, and no-op actions write execution receipts; failed or blocked receipts create follow-up inbox items.
-- Conversation logs, action payloads, and indexed text pass through privacy filters.
-- Runtime data lives under `data/`, which is ignored by git.
+Both paths share the same pluggable `EmbeddingBackend` seam (`retrieval.py`). By default this is a deterministic zlib-hash pseudo-embedding — zero dependencies, fully offline, useful for lexical-adjacent recall but not real semantic similarity. Install the `embed` extra (`fastembed`, ONNX-based, no torch) to get real embeddings: they're computed once at write time, persisted in `embedding_cache`, and reused for reranking without recomputing on every query.
 
-## Install
+### Execution safety core
 
-### One-shot install (recommended)
+`execution.py` is the single approve → execute path used by every caller (CLI, chat, voice, autopilot, factory). Every action passes through:
 
-macOS and Linux, assuming Python 3.10+ is present:
+1. **Approval integrity** — a payload hash is pinned at approval time and re-verified at execution time (`myos.approval_integrity.v1`). If the payload changed after approval, execution is refused.
+2. **TTL enforcement** — approvals older than `MYOS_APPROVAL_TTL_SECONDS` (default 24h) are refused; you re-approve to run them.
+3. **Destructive-action guard** — no autonomy level can run a blocked or destructive action automatically.
+4. **Persona guard** — if the owning task declares a persona, the action type must be in that persona's `allowed_actions`, checked *before* approval so a disallowed action is never even approved.
+5. **Execution receipt** — every terminal outcome (`executed`, `blocked`, `failed`, `noop`) writes an immutable receipt; failed/blocked receipts spawn a follow-up inbox item so failures never silently disappear.
+
+### Connectors
+
+Four read-sync connectors (Jira, GitHub, Confluence, Aha) share a common retry/backoff/redaction base. Write support (posting comments) is live for all four, routed through the same approval-gated outbox as every other external mutation — nothing bypasses the safety core.
+
+### Providers
+
+Reasoning backends are pluggable via `MYOS_AGENT_BACKEND`: `claude` (Anthropic API), `claude-sdk`, `claude-code` (Claude Code CLI), `cursor`, `copilot`, `zero` (GitLawb Zero coding agent, with a structured stream-JSON executor for the software-delivery factory pack), or `command` (any custom wrapper). No backend is required for local capture, triage, and retrieval — reasoning is only needed for planning, chat, and delegated work.
+
+### Personas
+
+Personas are durable, user-visible manifests (`personas.py`) — six built in (`chief-of-staff`, `researcher`, `coach`, `reviewer`, `operator`, `engineer`), and you can define your own. A persona narrows retrieval scope, reasoning backend preference, and the set of action types a workflow may propose. **A persona can only narrow — it never grants a capability the global policy denies, and it cannot approve or execute an action itself.**
+
+## Installation
+
+```bash
+# Standard install
+pip install personal-assistant-os
+
+# With real semantic embeddings (fastembed, ONNX — no torch, ~130MB model)
+pip install personal-assistant-os[embed]
+
+# With voice input (sounddevice + faster-whisper)
+pip install personal-assistant-os[voice]
+
+# Both
+pip install personal-assistant-os[embed,voice]
+```
+
+Or the one-shot installer (macOS/Linux, installs via pipx and registers a background scheduler):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mkhalid-s/personal-assistant-os/main/scripts/install.sh | bash
 ```
 
-That single line:
+Preview without changing anything: append `-s -- --dry-run`.
 
-1. Detects Python 3.10+ and installs `pipx` if missing.
-2. Installs MYOS into an isolated pipx venv (default source: `git+…@main`; override with `--source pypi` once published, or `--source local:.` to install from a checkout).
-3. Runs `myos install` — creates the platform data directory (macOS `~/Library/Application Support/myos`, Linux `$XDG_DATA_HOME/myos`), seeds `.env.myos`, and registers the background scheduler (launchd on macOS, `systemd --user` timer on Linux) so `myos scheduler tick` fires every 60 s.
-
-Preview without changing anything:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/mkhalid-s/personal-assistant-os/main/scripts/install.sh | bash -s -- --dry-run
-```
-
-Verify it worked:
-
-```bash
-myos --help
-myos doctor
-myos remind create "first reminder" --at +2m
-```
-
-### Uninstall
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/mkhalid-s/personal-assistant-os/main/scripts/uninstall.sh | bash
-```
-
-Add `--purge` to also delete the data directory (DB, logs, `.env.myos`). By default the data dir is preserved so a later reinstall keeps your local knowledge base.
-
-### Optional voice dependencies
-
-```bash
-pipx inject personal-assistant-os sounddevice faster-whisper
-```
-
-### Development install (contributors)
-
-For hacking on MYOS itself, use an editable install so code changes are picked up live and `data/` stays in the repo:
+### Development install
 
 ```bash
 git clone https://github.com/mkhalid-s/personal-assistant-os
 cd personal-assistant-os
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e '.[voice]'   # drop [voice] for a minimal install
+python3 -m venv .venv && source .venv/bin/activate
+python -m pip install -e '.[embed,voice]'
 myos doctor
-myos release-check --strict
 ```
-
-In this mode `myos launchd-install` / `myos install` detect the checkout + `.venv` and generate agents that source the venv's activate script, so the same commands work for both installed and dev workflows.
-
-CI smokes the installed `myos` command with `myos --help`, builds a wheel via `python -m pip wheel --no-deps .`, and runs `scripts/install.sh --dry-run --source local:.` on macOS and Ubuntu runners before the strict release-readiness gate.
-
-MYOS is packaged as a Python console application, not a standalone signed binary. A Homebrew tap and a signed `.pkg` are both deferred until PyPI publishing lands (see `ROADMAP.md`).
-
-## Configuration
-
-Set only what you use. Missing connectors are skipped safely.
-
-```bash
-# Start from the tracked safe template:
-cp .env.example data/.env.myos
-
-# Optional custom DB path
-export MYOS_DB_PATH="/path/to/personal-assistant-os/data/assistant.db"
-
-# Optional external connectors
-export JIRA_BASE_URL="https://example.atlassian.net"
-export JIRA_USER_EMAIL="you@example.com"
-export JIRA_API_TOKEN="<token>"
-
-export GITHUB_TOKEN="<token>"
-export GITHUB_OWNER="<org-or-user>"
-export GITHUB_REPO="<repo>"
-
-export CONFLUENCE_BASE_URL="https://example.atlassian.net"
-export CONFLUENCE_USER_EMAIL="you@example.com"
-export CONFLUENCE_API_TOKEN="<token>"
-
-export AHA_BASE_URL="https://example.aha.io"
-export AHA_API_TOKEN="<token>"
-
-# Optional connector hardening
-export MYOS_CONNECTOR_RETRIES="3"
-export MYOS_CONNECTOR_BACKOFF_SEC="1.2"
-export MYOS_CONNECTOR_TIMEOUT_SEC="25"
-
-# Optional reasoning providers.
-export MYOS_AGENT_BACKEND="cursor"  # claude|claude-sdk|claude-code-sdk|cursor|zero|claude-code|copilot|command
-export MYOS_AI_COMMAND="/path/to/your-ai-wrapper"
-export MYOS_AGENT_CMD_CURSOR="agent --print --trust --mode ask --output-format text"
-export MYOS_AGENT_CMD_ZERO="zero exec --output-format text --auto low --no-notify"
-export MYOS_AGENT_EXEC_ZERO="zero exec --output-format text --auto low --no-notify"
-export MYOS_AGENT_EXEC_ZERO_STREAM="zero exec"
-export MYOS_AGENT_CMD_CLAUDE_CODE="claude -p"
-export MYOS_CLAUDE_MODEL="claude-opus-4-8"
-export MYOS_SDK_LOAD_SETTINGS="0"
-
-# Optional tiny local router model for intent finding.
-# Dry-run first: myos model setup --router
-export MYOS_ROUTER_BACKEND="ollama"
-export MYOS_ROUTER_MODEL="qwen2.5:0.5b"
-export MYOS_ROUTER_COMMAND="python3 /path/to/data/router/router_ollama.py"
-export MYOS_ROUTER_TIMEOUT_SEC="8"
-export MYOS_ROUTER_MIN_CONFIDENCE="0.70"
-
-# Optional notification hook. Command receives assistant digest JSON on stdin.
-export MYOS_NOTIFY_COMMAND="/path/to/notify-wrapper"
-
-# Built-in safe default: write approved external actions into data/outbox.
-export MYOS_ACTION_PROVIDER="builtin"
-export MYOS_ACTION_COMMAND="myos action-provider"
-
-# Optional live connector mutations. Keep unset for dry-run outbox behavior.
-export MYOS_CONNECTOR_LIVE="0"
-```
-
-Do not commit local `.env` files, SQLite databases, logs, generated reports, or agent/tool settings. The repository `.gitignore` is configured to keep those local artifacts out of source control.
-
-For a no-network first run, follow `examples/demo-local.md`. For a disposable coding-agent proof loop with GitLawb Zero, follow `examples/demo-zero-proof.md`.
-
-## Local Production Checklist
-
-MYOS is local-first and operator-driven. A safe daily setup is:
-
-```bash
-myos setup-live --check
-myos setup-live --apply
-myos doctor --strict
-myos migrations verify --strict
-myos backup
-myos router eval
-myos autonomy eval
-myos autopilot --once --no-sync
-myos approve --list
-myos execution-receipt list
-myos trace cleanup --retention-days 30 --max-rows 5000
-```
-
-Keep launch agents optional until the one-shot path is healthy:
-
-```bash
-myos launchd-install --autopilot
-myos launchd-status
-```
-
-The launchd install command is a dry run until `--apply` is supplied.
-
-## Smart Daily Surface
-
-Most daily use should start with one of these surfaces instead of memorizing the full command catalog:
-
-- `myos chat`: interactive assistant with routed intent awareness and approval-gated actions.
-- `myos voice`: voice-first assistant using the same routed chat loop.
-- `myos autopilot --factory`: proactive loop that selects a factory workflow pack from detected signals.
-- `myos do "plan my day and draft follow-ups"`: one-shot natural-language router for CLI users.
-- `myos factory start --pack software_delivery --executor zero`: auditable coding proof path that binds Zero output to intent, retrieval, review packets, approvals, receipts, and learning.
-- `myos code "fix the failing tests" --backend zero`: quick coding-agent handoff that runs in an isolated worktree and proposes a patch for approval.
-- `myos approve --list`: review anything that could mutate your local repo or external systems.
-
-The `zero` backend here refers to [GitLawb Zero](https://github.com/gitlawb/zero), the coding agent CLI. It is distinct from the [Agent Zero framework](https://github.com/agent0ai/agent-zero). Use the factory path when you need the full MYOS loop; use `myos code` for a direct one-off patch proposal. `myos doctor` reports `zero_stream_executor` as an optional preflight for the structured factory path.
-
-Use `myos help daily`, `myos help workflows`, `myos help expert`, or `myos help diagnostic` to see a smaller tiered command list.
-
-Personas provide a narrower working style without creating a second permission system:
-
-```bash
-myos persona list
-myos persona show chief-of-staff
-myos chat --persona researcher
-myos voice --persona coach
-myos delegate "Prepare my weekly priorities" --persona chief-of-staff
-myos factory start --intent 1 --pack software_delivery --persona engineer
-myos persona create focus-guide \
-  --instructions "Help me choose one concrete next step" \
-  --allow-action create_inbox_item \
-  --retrieval-scope work_items
-```
-
-A persona can only narrow retrieval, tools, and proposed action types. It cannot make an action safer, bypass approval, or authorize execution. Interactive scoped personas currently use structured backends such as `claude`; the open-ended `claude-sdk` tool surface is rejected until every SDK tool can be mapped reliably to persona actions.
-
-## Tiny Local Router Model
-
-MYOS can use a very small local model as a fallback for intent routing when deterministic confidence is low. This is optional and never downloaded during `pip install`.
-
-Recommended first setup:
-
-```bash
-myos model recommend --purpose router
-myos model setup --router
-myos model setup --router --runtime ollama --model qwen2.5:0.5b --apply
-```
-
-Lower-memory fallback:
-
-```bash
-myos model setup --router --runtime ollama --model smollm2:360m --apply
-```
-
-The setup command keeps MYOS runtime-agnostic by writing a local JSON command wrapper under `data/router/` and printing env vars such as `MYOS_ROUTER_COMMAND`. The router still falls back to deterministic rules if the model runtime is unavailable, times out, or returns invalid JSON.
-
-Router quality can be measured locally:
-
-```bash
-myos router eval
-myos router eval --model-shadow
-myos router feedback --event 123 --expected-intent daily_brief --note "Expected daily planning"
-myos router overrides
-myos router commands --tier workflow
-```
-
-`myos router eval` uses packaged, non-private fixtures and records only route metadata, confidence, and text hashes. Feedback records correction metadata against a `smart_route` event and stores note hashes/lengths, not raw request text.
-Exact feedback corrections are applied only to the same future request hash, so unrelated phrasing still uses deterministic routing and optional model fallback.
-`myos router commands` shows the static command registry that the router and tiny local model use for bounded tool awareness, including tier and safety metadata. Internally, the router also passes a local-model-safe command mapper with command names, subcommands, required args, examples, and safety metadata whenever a configured router model is asked to route a request.
-
-### Execution traces stay lightweight
-
-```bash
-myos trace list
-myos trace cleanup --retention-days 30 --max-rows 5000
-myos trace rollups
-```
-
-MYOS records small execution trace rows for CLI commands and links them to route events, factory runs, agent tasks, or execution receipts when those records exist. Traces store correlation IDs, command path, status, duration, safety metadata, linked IDs, capped summaries, and hashes. They do not store raw stdout/stderr or private command text by default. Cleanup rolls old detailed rows into aggregate counts before deleting them.
-
-### Autonomy decisions are explicit
-
-`myos do "..."` and `myos factory start ...` print an autonomy decision before doing work:
-
-```bash
-Autonomy: decision=needs_approval tier=confirm safety=approval_gated reason=...
-```
-
-The decision uses command registry safety metadata and the existing `autonomy_level` policy. Local/read-only work can proceed, approval-gated and external-write work stays review-first, and destructive/unknown classifications remain blocked by the hard autonomy guards.
-
-Local router models receive a metadata-only command map. Inspect the same privacy-safe surface with:
-
-```bash
-myos router commands
-```
-
-The command map includes command names, subcommands, required arguments, examples, tiers, intents, safety levels, side-effect classes, dry-run defaults, and long-running flags. It does not include raw user text.
-
-Autonomy decisions can be calibrated locally:
-
-```bash
-myos autonomy eval
-myos autonomy feedback --trace 123 --expected-decision needs_approval --note "Keep external sync approval-gated"
-```
-
-`myos autonomy eval` uses packaged, non-private safety fixtures. Feedback stores the trace link, expected/actual decision metadata, note hash, and note length, not raw notes or command arguments.
-
-When a decision needs review, MYOS also prints deterministic recommendations such as `myos approve --list` or `myos factory review --id <run_id>`. These are suggestions only; MYOS never executes the recommended command automatically.
-
-### Daily Recommendation Feedback
-
-`myos next-action` and `myos now` print stable feedback labels on their selected daily recommendation:
-
-```bash
-myos next-action --meeting-hours 7
-myos now
-```
-
-Copy the `label` and `command` values from the bracketed output, for example `[label=daily_reduce_risk command="myos next-action"]`.
-
-If the recommendation was useful, record that locally:
-
-```bash
-myos autonomy recommendation-feedback \
-  --label daily_reduce_risk \
-  --command "myos next-action" \
-  --useful yes \
-  --note "Risk reduction was the better daily recommendation."
-```
-
-Use `--useful no` when the selected daily recommendation was not useful. Feedback is command-specific, so feedback for `myos next-action` does not tune `myos now` unless you submit feedback with `--command "myos now"`.
-
-Daily ranking uses only a bounded 30-day score window, clamped to `-3..+3`. Raw feedback notes are not stored; MYOS stores note hashes and lengths for audit/privacy. To inspect learning without exposing notes:
-
-```bash
-myos autonomy recommendations
-```
-
-Daily rows show `surface=daily`, `recent_score_30d`, signed useful/not-useful counts, and `mixed_recent=yes` when recent useful and not-useful feedback offset each other. If feedback changes a daily winner, MYOS prints a compact ranking context with the selected and baseline bounded scores.
 
 ## Quick Start
 
@@ -369,217 +135,115 @@ myos capture "Follow up with platform team about auth token expiry by Friday"
 myos do "what should I work on today?"
 myos autopilot --once --factory
 myos triage
-myos today --meeting-hours 4
-myos sync --connector all
-myos transcribe /path/to/meeting.m4a --text "Decision: move freeze to Wednesday. Follow up by Friday."
-myos ingest-image /path/to/whiteboard.png --text "Task: add canary checks. Risk: platform dependency."
-myos inbox-process
-myos at-risk
-myos why --item 1 --graph
-myos close-day --mode hybrid --note "Meeting-heavy coordination day"
-```
-
-## Expert Command Catalog
-
-The commands below remain available for scripting, debugging, and precise control. For day-to-day use, prefer the smart surface above.
-
-Common daily commands:
-
-- `myos capture <text> [--kind note|task|commitment|decision|risk] [--due YYYY-MM-DD] [--owner NAME]`
-- `myos triage`
-- `myos morning [--limit N] [--risk-threshold N]`
-- `myos today [--meeting-hours FLOAT]`
-- `myos brief [--meeting-hours FLOAT] [--top N] [--risk-threshold N]`
-- `myos risk-radar`
-- `myos at-risk [--threshold N] [--limit N]`
-- `myos waiting-on [--limit N]`
-- `myos next-action [--meeting-hours FLOAT] [--risk-threshold N]`
-- `myos close-day [--mode maker|hybrid|meeting-heavy|recovery] [--note TEXT]`
-- `myos weekly-review [--days N] [--risk-threshold N] [--risk-alert N]`
-
-Ingestion and context:
-
-- `myos sync [--connector all|jira|github|confluence|aha]`
-- `myos ingest-external [--limit N] [--min-risk N]`
-- `myos transcribe <audio_file> [--text TRANSCRIPT]`
-- `myos ingest-image <image_file> [--text OCR_TEXT]`
-- `myos watch-dir add <path> [--label TEXT]`
-- `myos watch-scan [--limit N]`
-- `myos context <query> [--limit N] [--graph]`
-- `myos retrieval-run [list|show --id N]`
-- `myos claim extract --text TEXT [--source-type TYPE] [--source-id ID]`
-- `myos claim list [--source-type TYPE] [--limit N]`
-- `myos related --item N [--limit N]`
-- `myos why --item N [--graph]`
-- `myos reindex`
-
-Assistant and automation:
-
-- `myos chat`
-- `myos voice [--text-reply]`
-- `myos delegate <objective> [--context TEXT] [--constraint TEXT] [--mode safe|balanced|aggressive]`
-- `myos plan create --intent N [--title TEXT] [--assumption TEXT]`
-- `myos plan show --id N`
-- `myos evidence attach --intent N --retrieval-run N`
-- `myos evidence sync-external --intent N [--connector all|jira|github|confluence|aha]`
-- `myos review-packet --plan N [--retrieval-run N]`
-- `myos agent-run --intent N --role planner|researcher|executor|reviewer|critic|summarizer [--plan N]`
-- `myos factory start --intent N [--mode review_first|semi_autonomous|full_autonomous] [--pack intent_execution|daily_ops|software_delivery|connector_ops]`
-- `myos factory status --id N`
-- `myos factory review --id N`
-- `myos factory approve --id N [--execute]`
-- `myos factory learn --id N --outcome success|partial|failed [--notes TEXT]`
-- `myos factory insights [--intent N] [--pack intent_execution|daily_ops|software_delivery|connector_ops]`
-- `myos factory policy set --mode review_first|semi_autonomous|full_autonomous [--scope-type global|intent|goal] [--scope-id ID] [--connector NAME] [--action-type TYPE]`
-- `myos act [--task N] [--action N] [--list] [--approve] [--execute]`
-- `myos approve [--list] [--action N] [--execute]`
-- `myos execution-receipt [list|show --id N]`
-- `myos action-provider [--execute]` for explicit connector adapters; without `--execute`, it writes `data/outbox` drafts.
-- `myos model recommend|setup|status` for optional tiny local router model setup.
-- `myos router eval|feedback|overrides|commands` for privacy-safe router quality, learned exact-match corrections, and command awareness.
-- `myos autonomy recommendation-feedback|recommendations` for privacy-safe recommendation usefulness feedback and summaries.
-- `myos trace list|cleanup|rollups` for lightweight execution observability with retention budgets.
-- `myos autopilot [--env-file PATH] [--once] [--interval-sec N] [--factory]`
-- `myos autopilot-status [--limit N]`
-- `myos digest [--id N] [--title-only]`
-- `myos self-review`
-
-Setup and operations:
-
-- `myos config-init [--path ./.env.myos] [--force]`
-- `myos setup-live [--apply] [--check] [--data-dir PATH] [--env-file PATH] [--db-path PATH] [--watch-dir PATH] [--force] [--install-launchd] [--load-launchd] [--autopilot-interval-sec N]`
-- `myos doctor [--strict]`
-- `myos backup [--output PATH]`
-- `myos restore --from PATH`
-- `myos migrations [verify|list] [--strict]`
-- `myos dependency-check [--strict]`
-- `myos performance-baseline [--query TEXT] [--limit N]`
-- `myos release-check [--strict] [--verbose]`
-- `myos health`
-- `myos dashboard [--host 127.0.0.1] [--port 8787] [--report-dir PATH]`
-- `myos sanity [--strict] [--report-dir PATH]`
-- `myos cleanup [--days N] [--limit N]`
-- `myos policy [--set KEY=VALUE]`
-- `myos launchd-install [--apply] [--load] [--env-file PATH] [--interval-sec N] [--meeting-hours FLOAT]`
-- `myos launchd-uninstall [--apply]`
-- `myos launchd-status`
-
-## Agentic Workflows
-
-### Conversational Assistant
-
-```bash
-myos chat
-myos chat --backend cursor
-myos chat --backend claude-code
-myos chat --backend claude-code-sdk
-myos voice
-myos voice --text-reply
-myos doctor
-```
-
-The assistant can answer from local memory, retrieve relevant context, capture new tasks, and draft external updates for approval. Cursor chat defaults to read-only ask mode; Claude Code CLI and SDK backends are explicit opt-ins and still preserve MYOS approval gates.
-
-### Durable Autonomy Loop
-
-```bash
-myos loop start "Handle the blocked launch dependency" --backend cursor
-myos loop status
-myos loop resume --task 1
-myos loop goals
-myos loop run-goal --goal 1 --backend cursor
-myos loop ledger --goal 1
 myos approve --list
 ```
 
-The loop runs one bounded cycle at a time. It stores durable task state in the existing agent task/run/action tables, executes only safe local actions, links execution traces, and pauses on approval-gated work until you explicitly review it. Goal-driven runs pick one due active goal, start or resume its loop, and skip cleanly when that goal is waiting on approvals. `myos loop goals` prints the next `run-goal` or approval-review command for each eligible goal with stable feedback labels; when no goals are eligible, review standing goals with `myos goal list`. The ledger gives a compact history of why each autonomy decision ran, paused, skipped, or no-oped, and pending approval rows point back to `myos approve --list`; use `myos loop ledger --status waiting_approval` to focus review work.
+That's capture → routed intent → one autonomy cycle → triage view → review anything awaiting your approval. Nothing external is touched until you approve it.
 
-### Delegation and Approval
+## Key Commands
 
-```bash
-myos delegate "Handle a blocked launch dependency" \
-  --context "Need owner confirmation and timeline renegotiation"
-myos act --task 1 --list
-myos act --action 1 --execute
-myos learn --task 1 --outcome success --notes "Owner confirmed reduced scope"
-myos coach "blocked launch dependency"
-myos agent-status --task 1
-```
+| Command | What it does |
+|---|---|
+| `myos capture <text>` | Record a note, task, commitment, decision, or risk |
+| `myos triage` | Review what needs attention right now |
+| `myos today` / `myos brief` / `myos morning` | Daily planning surfaces |
+| `myos do "<natural language>"` | One-shot router — turns free text into the right command |
+| `myos chat` / `myos voice` | Interactive assistant with routed intent + approval-gated actions |
+| `myos delegate <objective>` | Hand off a durable task to the autonomy loop |
+| `myos loop start "<objective>"` | Start a bounded, resumable autonomy cycle |
+| `myos autopilot --once --factory` | One proactive cycle: detect signals, propose, execute safe actions |
+| `myos approve --list` | Review everything awaiting your explicit approval |
+| `myos act --action N --execute` | Approve and execute a specific proposed action |
+| `myos execution-receipt list` | Audit trail of every executed/blocked/failed action |
+| `myos rollback --receipt N` | Propose the compensating (inverse) action for a past execution |
+| `myos context <query> --graph` | Retrieve relevant memory with graph-expanded citations |
+| `myos why --item N --graph` | Explain why an item matters via its relationship graph |
+| `myos embed backfill` / `myos embed status` | Compute/inspect semantic embeddings for existing memory |
+| `myos persona list` / `myos persona show <name>` | Inspect role-scoped action policies |
+| `myos sync --connector all` | Pull from configured Jira/GitHub/Confluence/Aha |
+| `myos doctor --strict` | Full local health check |
+| `myos backup` / `myos restore --from <path>` | Database backup and restore |
 
-### Recommendation Feedback
+Run `myos help daily`, `myos help workflows`, `myos help expert`, or `myos help diagnostic` for a scoped command list — there are 35+ top-level commands, most of which you'll never need day-to-day.
 
-```bash
-myos autonomy recommendation-feedback \
-  --label inspect_recent_traces \
-  --command "myos trace list" \
-  --useful yes
-myos autonomy recommendations
-```
+## Safety Model
 
-Recommendation feedback is privacy-safe calibration only. MYOS stores labels, command text, usefulness, and note hashes to rank already-deterministic guidance; it never executes a recommendation automatically or weakens approval gates.
+**Nothing external happens without your explicit approval.** The full guarantee:
 
-Approval handoffs use the stable `review_approvals` label. If `myos loop`, `myos autopilot`, or a ledger row points you to `myos approve --list`, you can submit feedback with `--label review_approvals --command "myos approve --list"`.
+- Local capture and read-only retrieval run directly — no gate needed.
+- Any action that would mutate an external system (Jira comment, GitHub comment, etc.) is drafted into an approval queue by default (`MYOS_CONNECTOR_LIVE=0`).
+- Approving an action **pins its payload hash**. If the payload is mutated afterward (accidentally or otherwise), execution is refused — you're always executing exactly what you approved.
+- Approvals expire after a configurable TTL (default 24h) so a stale approval can't fire on an old, possibly-outdated payload without a fresh review.
+- Personas can narrow which action types a workflow is allowed to propose, enforced at both proposal time (autonomy loop) and approval time (`approve_and_execute`) — closing the gap where a manual `myos act` call could bypass persona scoping.
+- Every terminal execution outcome writes an immutable receipt; failures and blocks automatically create a follow-up inbox item.
+- A structured compensating-action contract (`myos.action.compensation.v1`) lets you propose the inverse of a past execution through the same approval queue — rollback is never a silent, unreviewed operation.
+- Privacy filters redact common PII/secret patterns before anything is persisted or indexed.
 
-Goal scheduler handoffs use `run_goal_cycle` for `myos loop run-goal --goal N` and `review_goals` for `myos goal list`, so scheduler guidance can be calibrated without changing approval gates.
+See `ARCHITECTURE.md` for the full JSON schema contracts (`myos.approval_integrity.v1`, `myos.execution_receipt.v1`, `myos.action.compensation.v1`) that make this auditable end-to-end.
 
-`myos autonomy recommendations` shows these labels as `surface=goal_scheduler` with their command context, compact scores, and advisory side-effect context while keeping raw feedback notes hidden.
-
-### Autopilot
-
-```bash
-myos autopilot --env-file ./data/.env.myos --once
-myos autopilot --once --loop-goal
-myos autopilot --once --loop-goal --loop-goal-id 1
-myos autopilot --env-file ./data/.env.myos --interval-sec 900
-myos approve --list
-myos digest
-```
-
-Autopilot runs the pipeline, detects important changes, creates delegated assistant tasks, executes safe local actions, and leaves risky or external actions in the approval queue. The `--loop-goal` option is one-shot only: it routes an explicit autopilot invocation into the goal scheduler, reports the latest ledger row, and stops.
-
-## Privacy and Retention
+## Configuration
 
 ```bash
-myos policy
-myos policy --set retention_media_days=45
-myos cleanup
+cp .env.example data/.env.myos
 ```
 
-Useful policy keys include:
-
-- `retention_media_days`
-- `retention_evidence_days`
-- `retention_conversation_days`
-- `redact_emails`
-- `redact_phones`
-- `redact_secrets`
-- `redact_cards`
-- `log_conversations`
-- `autonomy_level`
-
-## Launchd Auto-Start on macOS
-
-Template plist files are in `deploy/launchd/`.
-
-Before loading them, replace `/path/to/personal-assistant-os` with your local checkout path, then run:
+Key environment variables (all optional — missing connectors/providers are skipped safely):
 
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.myos.sync.plist 2>/dev/null || true
-launchctl unload ~/Library/LaunchAgents/com.myos.pulse.plist 2>/dev/null || true
-cp deploy/launchd/com.myos.sync.plist ~/Library/LaunchAgents/
-cp deploy/launchd/com.myos.pulse.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.myos.sync.plist
-launchctl load ~/Library/LaunchAgents/com.myos.pulse.plist
+# Connectors
+JIRA_BASE_URL / JIRA_USER_EMAIL / JIRA_API_TOKEN
+GITHUB_TOKEN / GITHUB_OWNER / GITHUB_REPO
+CONFLUENCE_BASE_URL / CONFLUENCE_USER_EMAIL / CONFLUENCE_API_TOKEN
+AHA_BASE_URL / AHA_API_KEY
+
+# Reasoning backend
+MYOS_AGENT_BACKEND=claude   # claude|claude-sdk|claude-code|cursor|zero|copilot|command
+
+# Live connector mutations — keep 0 for dry-run outbox behavior
+MYOS_CONNECTOR_LIVE=0
+
+# Approval TTL (seconds)
+MYOS_APPROVAL_TTL_SECONDS=86400
 ```
 
-The CLI setup commands can also generate and install launchd configuration for a local checkout.
+See the full list in `.env.example`.
 
-## Testing
+## Development
 
 ```bash
 source .venv/bin/activate
-python -m unittest discover -s tests -p "test_*.py" -v
+PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py" -v
 ```
+
+558 tests across the suite. `db.py`, `command_registry.py`, `privacy.py`, `approval_context.py`, `autonomy.py`, `inbox.py`, `agentcore.py`, `zero_executor.py`, and `execution.py` are held to `mypy --strict` in CI — these are the modules where a type regression could silently corrupt state or mis-classify an approval.
+
+```bash
+ruff check src/personal_assistant tests
+ruff format --check src/personal_assistant tests
+mypy --strict src/personal_assistant/execution.py   # + the other safety-critical modules
+```
+
+## Roadmap
+
+**Done:**
+- Core SQLite schema, migrations, backup/restore, and CI release gates
+- Approval/execution safety core with hash pinning, TTL, and persona-scoped guards
+- Live write adapters for all four connectors (Jira, GitHub, Confluence, Aha)
+- FTS5-backed retrieval candidate selection (`graphrag._direct_hits`)
+- Pluggable embedding backend seam with a real `fastembed` implementation, persisted embedding cache, write-time embedding hooks, and semantic reranking in both retrieval paths
+- Compensating-action (rollback) contract and CLI
+
+**Next — the learning loop:**
+- Outcome feedback written on every execution receipt, feeding a pattern detector for recurring failure modes
+- Self-adjusting persona `allowed_actions` and goal priority based on observed outcomes
+- Semantic recall of past decisions injected into the planning prompt
+
+**Deferred:**
+- Graph database backend (Kuzu/DuckDB) for relationship traversal beyond the current SQLite-first graph tables
+- Standalone binary packaging
+- Multi-machine sync
+
+See `ARCHITECTURE.md` and `ROADMAP.md` for the detailed staged plan, and `docs/BOUNDED_AUTONOMY.md` for the safety-hardening history.
 
 ## License
 
