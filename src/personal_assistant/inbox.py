@@ -34,6 +34,7 @@ def index_chunk(
     # when the hash backend is active or the embed extra is not installed.
     try:
         from .embedding_backends import embed_and_cache
+
         embed_and_cache(conn, source_type, str(source_id), content.strip())
     except Exception:  # noqa: BLE001
         pass

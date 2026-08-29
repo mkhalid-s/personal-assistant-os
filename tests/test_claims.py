@@ -15,7 +15,6 @@ def _conn() -> sqlite3.Connection:
 
 
 class ExtractClaimsTest(unittest.TestCase):
-
     def test_sentence_with_cue_is_extracted(self) -> None:
         # _SENTENCE_RE = r"[^.!?\n]+" excludes the terminal punctuation, so
         # claim_text never includes the trailing period.
@@ -91,7 +90,6 @@ class ExtractClaimsTest(unittest.TestCase):
 
 
 class RecordClaimsTest(unittest.TestCase):
-
     def setUp(self) -> None:
         self.conn = _conn()
 
@@ -139,7 +137,6 @@ class RecordClaimsTest(unittest.TestCase):
 
 
 class ListClaimsTest(unittest.TestCase):
-
     def setUp(self) -> None:
         self.conn = _conn()
 

@@ -88,6 +88,7 @@ def _fts_query(query: str) -> str:
     low-relevance candidates after candidate selection.
     """
     import re as _re
+
     tokens = _re.findall(r"[a-zA-Z0-9_]+", query)
     if not tokens:
         return ""
@@ -109,9 +110,7 @@ def _direct_hits(conn: sqlite3.Connection, query: str, *, candidate_limit: int) 
     rows = None
     if fts_q:
         # Check that the FTS5 table exists before querying it.
-        has_fts = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='text_chunks_fts'"
-        ).fetchone()
+        has_fts = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='text_chunks_fts'").fetchone()
         if has_fts:
             try:
                 rows = conn.execute(
@@ -146,6 +145,7 @@ def _direct_hits(conn: sqlite3.Connection, query: str, *, candidate_limit: int) 
     try:
         from .embedding_backends import load_cached_embeddings_bulk
         from .retrieval import cosine_similarity, get_embedding_backend, is_semantic_backend, lexical_score
+
         if is_semantic_backend():
             keys = [(str(row["source_type"]), str(row["source_id"])) for row in rows]
             cached_vecs = load_cached_embeddings_bulk(conn, keys)

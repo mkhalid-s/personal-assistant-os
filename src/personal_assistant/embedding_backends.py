@@ -13,6 +13,7 @@ Install the embed extra for real semantic embeddings:
 Without it the hash fallback remains active and the doctor check reports a
 warning (non-fatal — the system works, just with hash-based similarity).
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -98,10 +99,7 @@ def embedding_doctor_check() -> tuple[bool, str]:
         return True, f"fastembed active — model={_FASTEMBED_MODEL} dims={b.dims}"
     return (
         False,
-        (
-            "hash fallback active — semantic retrieval is non-meaningful. "
-            "Run: pip install personal-assistant-os[embed]"
-        ),
+        ("hash fallback active — semantic retrieval is non-meaningful. Run: pip install personal-assistant-os[embed]"),
     )
 
 

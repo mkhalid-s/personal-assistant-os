@@ -11,6 +11,7 @@ Usage:
 When only one or zero backends respond within the timeout, the result is
 equivalent to single-backend reasoning — no degradation.
 """
+
 from __future__ import annotations
 
 import os
@@ -84,10 +85,7 @@ def fan_out_reason(
     results: list[tuple[str, dict[str, Any]]] = []
 
     with ThreadPoolExecutor(max_workers=len(backend_names)) as pool:
-        futures = {
-            pool.submit(_call_backend, name, request, timeout_sec, _db_path): name
-            for name in backend_names
-        }
+        futures = {pool.submit(_call_backend, name, request, timeout_sec, _db_path): name for name in backend_names}
         try:
             for future in as_completed(futures, timeout=timeout_sec + 5):
                 try:
