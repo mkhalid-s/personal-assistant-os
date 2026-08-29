@@ -90,7 +90,6 @@ def fan_out_reason(
         }
         try:
             for future in as_completed(futures, timeout=timeout_sec + 5):
-                name = futures[future]
                 try:
                     backend_name, response = future.result(timeout=1)
                     results.append((backend_name, response))
