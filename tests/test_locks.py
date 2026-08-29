@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 import tempfile
 import threading
-import time
 import unittest
 from pathlib import Path
 
@@ -127,10 +127,8 @@ class OpenTransactionErrorTest(unittest.TestCase):
         self.conn = _mem_conn()
 
     def tearDown(self) -> None:
-        try:
+        with contextlib.suppress(Exception):
             self.conn.rollback()
-        except Exception:
-            pass
         self.conn.close()
 
     def test_raises_on_nested_transaction(self) -> None:

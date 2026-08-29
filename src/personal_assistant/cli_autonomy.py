@@ -396,13 +396,35 @@ def cmd_autopilot_status(args: argparse.Namespace) -> None:
 
 
 def cmd_digest(args: argparse.Namespace) -> None:
-    """Show the latest (or a specific) assistant digest, or an empty JSON envelope."""
+    """Show digests. With --id: show a specific digest. Without --id: list recent ones."""
     json_mode = bool(getattr(args, "json", False))
+    limit = int(getattr(args, "limit", 1))
+    digest_id = int(getattr(args, "id", 0))
+
+    # --limit > 1 explicitly → listing mode; otherwise single-digest mode (backward compat).
+    listing = (limit > 1) and not digest_id
+
     with connection() as conn:
-        if args.id:
+        if listing:
+            from .digest import list_digests
+            rows = list_digests(conn, limit=limit)
+            if not rows:
+                if json_mode:
+                    print(json.dumps({"schema": "myos.digest.v1", "items": []}, ensure_ascii=True))
+                else:
+                    print("No digests yet. They are generated automatically after each autonomy cycle.")
+                return
+            if json_mode:
+                print(json.dumps({"schema": "myos.digest.v1", "items": rows}, ensure_ascii=True))
+                return
+            for d in rows:
+                print(f"#{d['id']:3}  {d['created_at'][:16]}  {d['title'][:70]}")
+            return
+
+        if digest_id:
             row = conn.execute(
                 "SELECT id, title, body, created_at FROM assistant_digests WHERE id = ?",
-                (args.id,),
+                (digest_id,),
             ).fetchone()
         else:
             row = conn.execute(
@@ -413,6 +435,7 @@ def cmd_digest(args: argparse.Namespace) -> None:
                 LIMIT 1
                 """
             ).fetchone()
+
     if not row:
         if json_mode:
             print(json.dumps({"schema": "myos.digest.v1", "error": "not_found"}, ensure_ascii=True))

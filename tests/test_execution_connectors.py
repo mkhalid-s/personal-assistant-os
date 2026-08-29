@@ -129,7 +129,7 @@ class PostAhaCommentTest(unittest.TestCase):
             }),
             patch("urllib.request.urlopen", return_value=mock_resp) as mock_open,
         ):
-            result = _post_aha_comment({"target_ref": "MYOS-42"}, "Feature comment")
+            _post_aha_comment({"target_ref": "MYOS-42"}, "Feature comment")
 
         req = mock_open.call_args[0][0]
         self.assertIn("/features/MYOS-42/comments", req.full_url)

@@ -5,7 +5,6 @@ and that the CLI backfill command fills the cache for pre-existing rows.
 """
 from __future__ import annotations
 
-import json
 import sqlite3
 import unittest
 
