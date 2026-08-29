@@ -211,6 +211,8 @@ class BaseConnector:
             items = data.get(result_key, []) if isinstance(data, dict) else []
             if not isinstance(items, list):
                 break
+            if not items:
+                break
             all_items.extend(items)
             # Walk the dot-separated key path to find the next URL.
             node: Any = data

@@ -88,13 +88,16 @@ def fan_out_reason(
             pool.submit(_call_backend, name, request, timeout_sec, _db_path): name
             for name in backend_names
         }
-        for future in as_completed(futures, timeout=timeout_sec + 5):
-            name = futures[future]
-            try:
-                backend_name, response = future.result(timeout=1)
-                results.append((backend_name, response))
-            except Exception:  # noqa: BLE001
-                pass  # backend timed out or failed — excluded from pick
+        try:
+            for future in as_completed(futures, timeout=timeout_sec + 5):
+                name = futures[future]
+                try:
+                    backend_name, response = future.result(timeout=1)
+                    results.append((backend_name, response))
+                except Exception:  # noqa: BLE001
+                    pass  # backend failed — excluded from pick
+        except TimeoutError:
+            pass  # outer timeout: return whatever completed so far
 
     return results
 
