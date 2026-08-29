@@ -140,19 +140,54 @@ def _direct_hits(conn: sqlite3.Connection, query: str, *, candidate_limit: int) 
             (int(candidate_limit),),
         ).fetchall()
 
+    # Rerank: use stored embeddings when available (B6 of P4 plan).
+    # Load all cached embeddings for the candidate set in one query so
+    # we make a single DB round-trip rather than one per row.
+    try:
+        from .embedding_backends import load_cached_embeddings_bulk
+        from .retrieval import cosine_similarity, get_embedding_backend, is_semantic_backend, lexical_score
+        if is_semantic_backend():
+            keys = [(str(row["source_type"]), str(row["source_id"])) for row in rows]
+            cached_vecs = load_cached_embeddings_bulk(conn, keys)
+            q_vec = get_embedding_backend().embed(query)
+            _use_stored = True
+        else:
+            cached_vecs = {}
+            q_vec = []
+            _use_stored = False
+    except Exception:  # noqa: BLE001
+        cached_vecs = {}
+        q_vec = []
+        _use_stored = False
+
     hits: list[RetrievalHit] = []
     for row in rows:
-        score = hybrid_score(query, row["content"])
-        if score <= 0:
-            continue
         source_type = str(row["source_type"])
         source_id = int(row["source_id"])
+        content = str(row["content"])
+
+        if _use_stored:
+            cached = cached_vecs.get((source_type, str(source_id)))
+            if cached is not None and q_vec:
+                # Real stored embedding available: weighted 0.30 lexical + 0.70 semantic.
+                sem = cosine_similarity(q_vec, cached)
+                lex = lexical_score(query, content)
+                score = 0.30 * lex + 0.70 * sem
+            else:
+                # Cache miss (e.g. row pre-dates backfill): fall back to on-the-fly
+                # hybrid_score with real backend via the seam (slightly slower).
+                score = hybrid_score(query, content)
+        else:
+            score = hybrid_score(query, content)
+
+        if score <= 0:
+            continue
         provenance = f" provenance#{row['provenance_id']}" if row["provenance_id"] is not None else ""
         hits.append(
             RetrievalHit(
                 source_type=source_type,
                 source_id=source_id,
-                content=str(row["content"]),
+                content=content,
                 score=score,
                 citation=_citation(source_type, source_id),
                 reason=f"direct hybrid retrieval{provenance}",
