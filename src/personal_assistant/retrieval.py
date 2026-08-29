@@ -36,7 +36,7 @@ def embed_text(text: str, dims: int = 64) -> list[float]:
 def cosine_similarity(a: list[float], b: list[float]) -> float:
     if len(a) != len(b):
         raise ValueError(f"vector dimension mismatch: {len(a)} vs {len(b)}")
-    return sum(x * y for x, y in zip(a, b))
+    return sum(x * y for x, y in zip(a, b, strict=False))
 
 
 # ---------------------------------------------------------------------------

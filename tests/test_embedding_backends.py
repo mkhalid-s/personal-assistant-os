@@ -13,9 +13,9 @@ from personal_assistant.db import initialize_schema
 from personal_assistant.embedding_backends import (
     embed_and_cache,
     embedding_doctor_check,
+    load_best_available,
     load_cached_embedding,
     load_cached_embeddings_bulk,
-    load_best_available,
 )
 from personal_assistant.retrieval import (
     _HashBackend,
