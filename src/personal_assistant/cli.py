@@ -342,6 +342,46 @@ def cmd_embed(args: argparse.Namespace) -> None:
         print(f"Unknown subcommand: {sub!r}. Use: myos embed backfill | status")
 
 
+def cmd_rule(args: argparse.Namespace) -> None:
+    """myos rule add|list|remove — manage standing approval rules."""
+    from .approval_rules import add_rule, list_rules, remove_rule
+
+    sub = getattr(args, "rule_subcommand", None)
+
+    with connection() as conn:
+        if sub == "add":
+            tier = getattr(args, "tier", "allow")
+            match = getattr(args, "match", None)
+            rule_id = add_rule(
+                conn,
+                args.name or args.action_type,
+                action_type=args.action_type,
+                payload_match=match,
+                tier=tier,
+            )
+            conn.commit()
+            match_str = f" match={match}" if match else ""
+            print(f"Rule #{rule_id} added: {tier} {args.action_type}{match_str}")
+            return
+
+        if sub == "remove":
+            found = remove_rule(conn, args.id)
+            conn.commit()
+            print(f"Rule #{args.id} removed." if found else f"Rule #{args.id} not found.")
+            return
+
+        # list (default)
+        rules = list_rules(conn)
+        if not rules:
+            print("No approval rules. Add one with: myos rule add <action_type> [--tier allow|block] [--match '{...}']")
+            return
+        print(f"{'#':<4} {'Tier':<8} {'Action type':<30} {'Match'}")
+        print("-" * 70)
+        for r in rules:
+            match_str = r["payload_match"] or ""
+            print(f"{r['id']:<4} {r['tier']:<8} {r['action_type']:<30} {match_str[:30]}")
+
+
 def cmd_catalog(args: argparse.Namespace) -> None:
     """myos catalog add|list|remove — personal service catalog for planning context."""
     from .catalog import add_service, list_services, remove_service
@@ -1212,6 +1252,18 @@ def build_parser() -> argparse.ArgumentParser:
     embed_sub.add_parser("backfill", help="Compute embeddings for all unembedded text_chunks.")
     embed_sub.add_parser("status", help="Show embedding cache coverage statistics.")
     embed_p.set_defaults(func=cmd_embed)
+
+    rule_p = sub.add_parser("rule", help="Manage standing approval rules (auto-allow or block action types).")
+    rule_sub = rule_p.add_subparsers(dest="rule_subcommand")
+    rule_add = rule_sub.add_parser("add", help="Add a standing approval rule.")
+    rule_add.add_argument("action_type", help="Action type to match (e.g. create_inbox_item) or '*' for any")
+    rule_add.add_argument("--name", default="", help="Human-readable rule name (defaults to action_type)")
+    rule_add.add_argument("--tier", choices=["allow", "block"], default="allow")
+    rule_add.add_argument("--match", default=None, help="Optional JSON payload subset; rule fires only when payload contains these keys")
+    rule_rem = rule_sub.add_parser("remove", help="Remove a rule by id.")
+    rule_rem.add_argument("id", type=int)
+    rule_sub.add_parser("list", help="List all standing rules.")
+    rule_p.set_defaults(func=cmd_rule)
 
     catalog_p = sub.add_parser("catalog", help="Manage the personal service catalog for planning context.")
     catalog_sub = catalog_p.add_subparsers(dest="catalog_subcommand")
