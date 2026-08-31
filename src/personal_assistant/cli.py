@@ -739,6 +739,7 @@ def cmd_live(args: argparse.Namespace) -> None:
 
 cmd_health = cli_runtime.cmd_health
 
+cmd_status_live = cli_runtime.cmd_status_live
 
 cmd_ui = cli_runtime.cmd_ui
 
@@ -1161,6 +1162,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Filter by ledger status.",
     )
     loop_ledger.add_argument("--json", action="store_true", help="Emit a single JSON object instead of formatted text.")
+    loop_ledger.add_argument("--live", action="store_true", help="Live-refresh ledger (requires [tui] extra).")
+    loop_ledger.add_argument("--interval", type=int, default=5, help="Refresh interval in seconds for --live.")
     loop_ledger.set_defaults(func=cmd_loop)
 
     capture = sub.add_parser("capture", help="Capture an inbox item.")
@@ -2136,6 +2139,11 @@ def build_parser() -> argparse.ArgumentParser:
     ui.add_argument("--port", type=int, default=8787)
     ui.set_defaults(func=cmd_ui)
 
+    status_p = sub.add_parser("status", help="Live terminal status dashboard (requires [tui] extra).")
+    status_p.add_argument("--interval", type=int, default=5, help="Refresh interval in seconds.")
+    status_p.add_argument("--once", action="store_true", help="Print once and exit (no live loop).")
+    status_p.set_defaults(func=cmd_status_live)
+
     pulse = sub.add_parser("pulse", help="Run continuous orchestration loop.")
     pulse.add_argument("--env-file", default="")
     pulse.add_argument("--interval-sec", type=int, default=1800)
@@ -2209,6 +2217,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    # No-args intercept: build_parser uses required=True subparsers, so
+    # parse_args([]) would exit before we could check args.func. Intercept
+    # sys.argv here before building the parser.
+    if len(sys.argv) == 1:
+        cmd_status_live(argparse.Namespace(interval=5, once=False))
+        return
+
     parser = build_parser()
     args = parser.parse_args()
     if not _trace_enabled_for(args):

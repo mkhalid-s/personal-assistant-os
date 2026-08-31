@@ -7,7 +7,7 @@ from pathlib import Path
 
 from . import cli_health
 from .dashboard import render_dashboard_html, serve_dashboard
-from .db import get_connection
+from .db import connection, get_connection
 
 
 def cmd_launchd_status(_: argparse.Namespace) -> None:
@@ -92,6 +92,23 @@ def cmd_health(_: argparse.Namespace) -> None:
     cli_health.cmd_sanity(argparse.Namespace(strict=False, report_dir=""))
     print()
     cli_health.cmd_doctor(argparse.Namespace(strict=False))
+
+
+def cmd_status_live(args: argparse.Namespace) -> None:
+    """Live terminal status dashboard (L3). Blocks until 'q' or Ctrl-C.
+
+    Requires the [tui] extra (rich>=13). Falls back to a one-shot plain-text
+    print when rich is not installed or --once is passed.
+    """
+    from .tui_dashboard import live_status, status_plain
+
+    once = bool(getattr(args, "once", False))
+    interval = int(getattr(args, "interval", 5))
+    with connection() as conn:
+        if once:
+            status_plain(conn)
+        else:
+            live_status(conn, interval=interval)
 
 
 def cmd_ui(args: argparse.Namespace) -> None:

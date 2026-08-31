@@ -767,6 +767,15 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("myos ui --port 8787",),
     ),
     CommandSpec(
+        "status",
+        "diagnostic",
+        "read_only",
+        "system_health",
+        "Live terminal status dashboard (requires [tui] extra: pip install personal-assistant-os[tui]).",
+        subcommands=("--interval", "--once"),
+        examples=("myos status", "myos status --once", "myos status --interval 10"),
+    ),
+    CommandSpec(
         "metrics",
         "diagnostic",
         "read_only",
