@@ -167,6 +167,19 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     from .embedding_backends import embedding_doctor_check
 
     optional_checks.append(("embedding_backend", *embedding_doctor_check()))
+    from .reviewer import reviewer_backend_name
+
+    _rev = reviewer_backend_name()
+    if _rev:
+        try:
+            from . import providers as _prov
+
+            ok, detail = _prov.get_backend(_rev).available()
+            optional_checks.append(("reviewer_model", ok, f"{_rev}: {detail}"))
+        except Exception as exc:  # noqa: BLE001
+            optional_checks.append(("reviewer_model", False, f"{_rev}: {exc}"))
+    else:
+        optional_checks.append(("reviewer_model", True, "disabled (set MYOS_AUTO_REVIEWER to enable)"))
     router_status = model_setup.router_status()
     optional_checks.append(
         (
