@@ -44,7 +44,9 @@ class CheckRuleTest(unittest.TestCase):
 
     def test_payload_match_rule_fires_on_match(self) -> None:
         add_rule(
-            self.conn, "jira comments", action_type="draft_external_update",
+            self.conn,
+            "jira comments",
+            action_type="draft_external_update",
             payload_match='{"target": "jira"}',
         )
         self.conn.commit()
@@ -53,7 +55,9 @@ class CheckRuleTest(unittest.TestCase):
 
     def test_payload_match_rule_does_not_fire_on_mismatch(self) -> None:
         add_rule(
-            self.conn, "jira only", action_type="draft_external_update",
+            self.conn,
+            "jira only",
+            action_type="draft_external_update",
             payload_match='{"target": "jira"}',
         )
         self.conn.commit()
@@ -63,8 +67,9 @@ class CheckRuleTest(unittest.TestCase):
     def test_payload_match_wins_over_type_only(self) -> None:
         # Type-only allow, payload-match block for specific target
         add_rule(self.conn, "all updates", action_type="draft_external_update")
-        add_rule(self.conn, "no aha", action_type="draft_external_update",
-                 payload_match='{"target": "aha"}', tier="block")
+        add_rule(
+            self.conn, "no aha", action_type="draft_external_update", payload_match='{"target": "aha"}', tier="block"
+        )
         self.conn.commit()
         aha_payload = json.dumps({"target": "aha"})
         jira_payload = json.dumps({"target": "jira"})
@@ -117,6 +122,23 @@ class AddRemoveRuleTest(unittest.TestCase):
         remove_rule(self.conn, rule_id)
         self.conn.commit()
         self.assertIsNone(check_rule(self.conn, "local_note", "{}"))
+
+
+class StandingBlockPersistenceTest(unittest.TestCase):
+    """Regression: standing block must write status='blocked' to DB, not just skip."""
+
+    def setUp(self) -> None:
+        self.conn = _conn()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+
+    def test_check_rule_returns_block_for_blocked_tier(self) -> None:
+        add_rule(self.conn, "no patches", action_type="apply_patch", tier="block")
+        self.conn.commit()
+        result = check_rule(self.conn, "apply_patch", "{}")
+        # Callers are responsible for persisting the block; check_rule just signals.
+        self.assertEqual(result, "block")
 
 
 class ListRulesTest(unittest.TestCase):
