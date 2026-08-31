@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from personal_assistant.providers import BaseBackend, _discover_plugin_backend, get_backend
+from personal_assistant.providers import BaseBackend, _discover_plugin_backend, _plugin_cache, get_backend
 
 _VALID_BACKEND_SRC = """\
 from personal_assistant.providers import BaseBackend
@@ -33,6 +33,8 @@ class DiscoverPluginBackendTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self._tmpdir.cleanup()
+        # Clear the plugin class cache so tests don't bleed into each other.
+        _plugin_cache.clear()
         # Clean up any injected sys.modules entries.
         for key in list(sys.modules):
             if "_plugin_" in key:
