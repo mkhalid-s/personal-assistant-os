@@ -30,7 +30,7 @@ import sqlite3
 
 from .privacy import redact_obj
 
-_REVIEWER_PROMPT = """\
+_REVIEWER_PROMPT_PREFIX = """\
 You are a safety reviewer for an autonomous agent system.
 Classify the proposed action below as exactly one of: allow / escalate / block.
 
@@ -41,9 +41,14 @@ Classify the proposed action below as exactly one of: allow / escalate / block.
 Reply with exactly one word on a single line: allow, escalate, or block.
 Do not explain your reasoning.
 
-Action type: {action_type}
-Payload (redacted): {payload_summary}
 """
+
+
+def _build_prompt(action_type: str, payload_summary: str) -> str:
+    # Concatenate rather than str.format() — payload_summary is JSON and
+    # contains { } characters that would trigger a KeyError with .format().
+    return _REVIEWER_PROMPT_PREFIX + f"Action type: {action_type}\n" + f"Payload (redacted): {payload_summary}\n"
+
 
 _VALID_VERDICTS = frozenset({"allow", "escalate", "block"})
 
@@ -73,10 +78,7 @@ def classify_action_safety(
             return "allow"
 
         payload_summary = json.dumps(redact_obj(conn, payload), ensure_ascii=True)[:400]
-        prompt = _REVIEWER_PROMPT.format(
-            action_type=action_type,
-            payload_summary=payload_summary,
-        )
+        prompt = _build_prompt(action_type, payload_summary)
         result = backend.reason(
             conn,
             {

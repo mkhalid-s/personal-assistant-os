@@ -92,15 +92,14 @@ def add_rule(
         """,
         (name.strip(), action_type.strip(), payload_match, tier),
     )
-    assert cur.lastrowid is not None
+    if cur.lastrowid is None:
+        raise RuntimeError("INSERT into approval_rules returned no lastrowid")
     return int(cur.lastrowid)
 
 
 def remove_rule(conn: sqlite3.Connection, rule_id: int) -> bool:
     """Remove a rule by id. Returns True if a row was deleted."""
-    rows = conn.execute(
-        "DELETE FROM approval_rules WHERE id = ?", (int(rule_id),)
-    ).rowcount
+    rows = conn.execute("DELETE FROM approval_rules WHERE id = ?", (int(rule_id),)).rowcount
     return rows > 0
 
 

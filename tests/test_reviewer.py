@@ -94,6 +94,14 @@ class ClassifyActionSafetyTest(unittest.TestCase):
             result = classify_action_safety(self.conn, "local_note", {}, "claude-haiku")
         self.assertEqual(result, "allow")
 
+    def test_json_braces_in_payload_do_not_raise(self) -> None:
+        # Regression: payload_summary contains { and } from JSON serialisation.
+        # Using str.format() on the prompt caused KeyError; now uses concatenation.
+        payload_with_braces = {"target": "jira", "body": "{some content with braces}"}
+        with patch("personal_assistant.providers.get_backend", return_value=self._mock_backend("allow")):
+            result = classify_action_safety(self.conn, "draft_external_update", payload_with_braces, "claude-haiku")
+        self.assertEqual(result, "allow")
+
 
 if __name__ == "__main__":
     unittest.main()
