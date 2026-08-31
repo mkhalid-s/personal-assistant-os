@@ -1259,7 +1259,9 @@ def build_parser() -> argparse.ArgumentParser:
     rule_add.add_argument("action_type", help="Action type to match (e.g. create_inbox_item) or '*' for any")
     rule_add.add_argument("--name", default="", help="Human-readable rule name (defaults to action_type)")
     rule_add.add_argument("--tier", choices=["allow", "block"], default="allow")
-    rule_add.add_argument("--match", default=None, help="Optional JSON payload subset; rule fires only when payload contains these keys")
+    rule_add.add_argument(
+        "--match", default=None, help="Optional JSON payload subset; rule fires only when payload contains these keys"
+    )
     rule_rem = rule_sub.add_parser("remove", help="Remove a rule by id.")
     rule_rem.add_argument("id", type=int)
     rule_sub.add_parser("list", help="List all standing rules.")

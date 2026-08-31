@@ -677,7 +677,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         subcommands=("add", "list", "remove"),
         examples=(
             "myos rule add create_inbox_item",
-            "myos rule add draft_external_update --match '{\"target\":\"jira\"}'",
+            'myos rule add draft_external_update --match \'{"target":"jira"}\'',
             "myos rule add apply_patch --tier block",
             "myos rule list",
         ),

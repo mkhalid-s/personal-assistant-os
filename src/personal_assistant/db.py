@@ -1822,9 +1822,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             )
             """
         )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_approval_rules_type ON approval_rules(action_type)"
-        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_approval_rules_type ON approval_rules(action_type)")
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
             (46, "add_approval_rules"),

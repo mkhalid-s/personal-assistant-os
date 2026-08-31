@@ -53,12 +53,34 @@ def _load_recent_history(conn, conversation_id: int, limit: int = 10) -> list[di
 def cmd_do(args: argparse.Namespace) -> None:
     """Route a natural-language request to the best MYOS workflow.
 
-    Mirrors the prior in-line body from ``cli.py``: consults the router with
-    autonomy-decision context, records the decision, and only then executes
-    the routed workflow (or raises ``SystemExit(1)`` when the decision is
-    ``BLOCKED``).
+    Before routing to the AI, checks whether the text is a configuration
+    command (approval rules, catalog) via nl_config.extract_config_intent().
+    If matched, executes the config operation directly with a confirmation
+    prompt — no AI reasoning call needed for config operations.
     """
     with connection() as conn:
+        # NL-Config: intercept config operations before the router.
+        try:
+            from .nl_config import describe_intent, execute_intent, extract_config_intent
+
+            intent = extract_config_intent(conn, args.text)
+            if intent is not None:
+                description = describe_intent(intent)
+                print(f"\nUnderstood: {description}")
+                try:
+                    answer = input("Confirm? [Y/n] ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    answer = "n"
+                if answer in ("", "y", "yes"):
+                    result_msg = execute_intent(conn, intent)
+                    print(f"Done: {result_msg}")
+                else:
+                    print("Cancelled.")
+                return
+        except Exception:  # noqa: BLE001 — never block normal routing
+            pass
+
         route_decision = router.route_with_feedback(conn, args.text, surface="do")
         autonomy_decision = router.autonomy_decision_for_route(conn, route_decision)
         cli_autonomy.print_autonomy_decision(autonomy_decision)
