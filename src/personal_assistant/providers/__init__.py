@@ -17,6 +17,7 @@ routes them through ``agentcore.enqueue_proposal`` into the existing approval qu
 from __future__ import annotations
 
 import os
+import threading
 
 from .. import agentcore, personas
 
@@ -179,6 +180,7 @@ def get_backend(name: str | None = None):
 # Avoids re-executing the plugin file on every get_backend() call.
 # Maps name → (class | None) where None means "file exists but no valid class".
 _plugin_cache: dict[str, type | None] = {}
+_plugin_cache_lock = threading.Lock()
 
 
 def _discover_plugin_backend(name: str):
@@ -194,30 +196,31 @@ def _discover_plugin_backend(name: str):
     import importlib.util
     from pathlib import Path
 
-    if name in _plugin_cache:
-        cls = _plugin_cache[name]
-        return cls() if cls is not None else None
+    with _plugin_cache_lock:
+        if name in _plugin_cache:
+            cls = _plugin_cache[name]
+            return cls() if cls is not None else None
 
-    path = Path(__file__).parent / f"{name}_backend.py"
-    if not path.exists():
-        _plugin_cache[name] = None
-        return None
-    try:
-        spec = importlib.util.spec_from_file_location(f"_plugin_{name}", path)
-        if spec is None or spec.loader is None:
+        path = Path(__file__).parent / f"{name}_backend.py"
+        if not path.exists():
             _plugin_cache[name] = None
             return None
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)  # type: ignore[union-attr]
-        for attr_name in dir(mod):
-            obj = getattr(mod, attr_name)
-            if isinstance(obj, type) and issubclass(obj, BaseBackend) and obj is not BaseBackend:
-                _plugin_cache[name] = obj
-                return obj()
-    except Exception:  # noqa: BLE001 — plugin errors must never crash the host
-        pass
-    _plugin_cache[name] = None
-    return None
+        try:
+            spec = importlib.util.spec_from_file_location(f"_plugin_{name}", path)
+            if spec is None or spec.loader is None:
+                _plugin_cache[name] = None
+                return None
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)  # type: ignore[union-attr]
+            for attr_name in dir(mod):
+                obj = getattr(mod, attr_name)
+                if isinstance(obj, type) and issubclass(obj, BaseBackend) and obj is not BaseBackend:
+                    _plugin_cache[name] = obj
+                    return obj()
+        except Exception:  # noqa: BLE001 — plugin errors must never crash the host
+            pass
+        _plugin_cache[name] = None
+        return None
 
 
 def available_backends() -> list[dict]:
