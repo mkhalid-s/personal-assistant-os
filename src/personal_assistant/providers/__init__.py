@@ -158,6 +158,12 @@ def get_backend(name: str | None = None):
         from .agent_cli import AgentCliBackend
 
         return AgentCliBackend(name="command")
+    # Auto-discovery: scan providers/ for {resolved}_backend.py containing a
+    # BaseBackend subclass. Inspired by aisuite's plugin convention — drop a file,
+    # get a backend, no registry edit needed.
+    plugin = _discover_plugin_backend(resolved)
+    if plugin is not None:
+        return plugin
     # Unknown name: prefer the generic command backend if one is configured,
     # otherwise fall back to Claude.
     if os.getenv("MYOS_AI_COMMAND", "").strip():
@@ -169,8 +175,46 @@ def get_backend(name: str | None = None):
     return ClaudeBackend()
 
 
+def _discover_plugin_backend(name: str):
+    """Scan providers/ for {name}_backend.py with a BaseBackend subclass.
+
+    Convention: a file named ``mybackend_backend.py`` containing a class that
+    inherits BaseBackend is automatically available as ``get_backend("mybackend")``.
+    Returns None when no matching file or class is found.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).parent / f"{name}_backend.py"
+    if not path.exists():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location(f"_plugin_{name}", path)
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        for attr_name in dir(mod):
+            obj = getattr(mod, attr_name)
+            if (
+                isinstance(obj, type)
+                and issubclass(obj, BaseBackend)
+                and obj is not BaseBackend
+            ):
+                return obj()
+    except Exception:  # noqa: BLE001 — plugin errors must never crash the host
+        pass
+    return None
+
+
 def available_backends() -> list[dict]:
-    """Best-effort availability probe for ``myos doctor``."""
+    """Best-effort availability probe for ``myos doctor``.
+
+    Includes built-in backends and any auto-discovered plugin backends
+    found in providers/*_backend.py.
+    """
+    from pathlib import Path
+
     out = []
     for name in ("claude", "claude-sdk", "claude-code-sdk", "cursor", "zero", "claude-code", "copilot", "command"):
         try:
@@ -178,4 +222,18 @@ def available_backends() -> list[dict]:
         except Exception as exc:  # pragma: no cover - defensive
             ok, detail = False, str(exc)[:200]
         out.append({"name": name, "available": ok, "detail": detail})
+
+    # Surface auto-discovered plugin backends.
+    providers_dir = Path(__file__).parent
+    for path in sorted(providers_dir.glob("*_backend.py")):
+        plugin_name = path.stem.replace("_backend", "")
+        if any(b["name"] == plugin_name for b in out):
+            continue  # already listed above
+        try:
+            plugin = _discover_plugin_backend(plugin_name)
+            if plugin is not None:
+                ok, detail = plugin.available()
+                out.append({"name": plugin_name, "available": ok, "detail": detail, "plugin": True})
+        except Exception:  # noqa: BLE001
+            pass
     return out
