@@ -8,6 +8,98 @@ import sqlite3
 from . import autonomy, autonomy_loop, command_registry
 from .db import connection
 from .privacy import apply_privacy_filters, get_policy_map
+from .tui_utils import format_age, truncate
+
+_LEDGER_STATUS_STYLE: dict[str, str] = {
+    "completed": "green",
+    "running": "bold yellow",
+    "sleeping": "dim",
+    "blocked": "red",
+    "failed": "bold red",
+    "skipped": "dim",
+    "waiting_approval": "yellow",
+}
+
+
+def _ledger_live(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 20,
+    goal_id: int | None = None,
+    task_id: int | None = None,
+    status: str = "",
+    interval: int = 5,
+) -> None:
+    """Live-refreshing autonomy run ledger (L4). Requires rich>=13 ([tui] extra)."""
+    try:
+        import select
+        import sys
+        import threading
+
+        from rich.console import Console
+        from rich.live import Live
+        from rich.table import Table
+        from rich.text import Text
+    except ImportError:
+        print("Live ledger requires: pip install 'personal-assistant-os[tui]'")
+        return
+
+    def _build_table(rows: list[dict]) -> Table:
+        t = Table(title="Autonomy Loop Ledger — live  [q to quit]")
+        t.add_column("ID", style="dim", width=6)
+        t.add_column("Decision", width=20)
+        t.add_column("Status", width=16)
+        t.add_column("Proposed", justify="right", width=9)
+        t.add_column("Executed", justify="right", width=9)
+        t.add_column("Pending", justify="right", width=9)
+        t.add_column("Blocked", justify="right", width=9)
+        t.add_column("Age", width=8)
+        for row in rows:
+            row_status = str(row.get("status") or "")
+            style = _LEDGER_STATUS_STYLE.get(row_status, "")
+            t.add_row(
+                str(row.get("id") or ""),
+                truncate(str(row.get("decision_type") or ""), 20),
+                Text(row_status, style=style),
+                str(row.get("actions_proposed") or 0),
+                str(row.get("safe_actions_executed") or 0),
+                str(row.get("pending_approvals") or 0),
+                str(row.get("blocked_or_failed") or 0),
+                format_age(str(row.get("created_at") or "")),
+            )
+        if not rows:
+            t.add_row("", Text("No ledger entries", style="dim"), "", "", "", "", "", "")
+        return t
+
+    console = Console()
+    quit_event = threading.Event()
+
+    def _watcher() -> None:
+        try:
+            if not sys.stdin.isatty():
+                return
+            while not quit_event.is_set():
+                try:
+                    r, _, _ = select.select([sys.stdin], [], [], 0.1)
+                    if r and sys.stdin.read(1) in ("q", "Q"):
+                        quit_event.set()
+                except OSError:
+                    break
+        except Exception:  # noqa: BLE001
+            pass
+
+    threading.Thread(target=_watcher, daemon=True).start()
+
+    try:
+        with Live(console=console, refresh_per_second=4, screen=True) as live:
+            while not quit_event.is_set():
+                rows = autonomy_loop.list_ledger(conn, limit=limit, goal_id=goal_id, task_id=task_id, status=status)
+                live.update(_build_table(rows))
+                quit_event.wait(interval)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        quit_event.set()
 
 
 def _loop_status_json_entry(row: dict) -> dict:
@@ -285,6 +377,16 @@ def cmd_loop(args: argparse.Namespace) -> None:
                 print_goal_cycle_result(result)
                 return
             if action == "ledger":
+                if getattr(args, "live", False):
+                    _ledger_live(
+                        conn,
+                        limit=args.limit,
+                        goal_id=args.goal,
+                        task_id=args.task,
+                        status=args.status,
+                        interval=getattr(args, "interval", 5),
+                    )
+                    return
                 rows = autonomy_loop.list_ledger(
                     conn,
                     limit=args.limit,
