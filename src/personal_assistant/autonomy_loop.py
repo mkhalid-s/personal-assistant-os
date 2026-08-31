@@ -197,8 +197,52 @@ def _execute_safe_actions(conn: sqlite3.Connection, task_id: int, action_ids: li
         """,
         (int(task_id), *[int(action_id) for action_id in action_ids]),
     ).fetchall()
+    # A3: reviewer-model escalation (opt-in via MYOS_AUTO_REVIEWER env var).
+    # Circuit breaker: stop escalating after 3 per cycle so the queue doesn't flood.
+    _MAX_ESCALATIONS = 3
+    try:
+        from .reviewer import classify_action_safety, reviewer_backend_name
+
+        _reviewer = reviewer_backend_name()
+    except Exception:  # noqa: BLE001
+        _reviewer = ""
+    _escalations = 0
+
     executed = 0
     for row in rows:
+        if _reviewer and _escalations < _MAX_ESCALATIONS:
+            try:
+                payload = json.loads(row["payload_json"] or "{}")
+                verdict = classify_action_safety(conn, str(row["action_type"]), payload, _reviewer)
+            except Exception:  # noqa: BLE001
+                verdict = "allow"
+
+            if verdict == "escalate":
+                conn.execute(
+                    "UPDATE agent_actions SET requires_approval = 1 WHERE id = ?",
+                    (int(row["id"]),),
+                )
+                _record_observation(
+                    conn,
+                    task_id,
+                    "reviewer_escalation",
+                    f"action #{row['id']} ({row['action_type']}) escalated by reviewer to approval queue",
+                )
+                _escalations += 1
+                continue
+            if verdict == "block":
+                conn.execute(
+                    "UPDATE agent_actions SET status = 'blocked', result = ? WHERE id = ?",
+                    ("blocked by reviewer model", int(row["id"])),
+                )
+                _record_observation(
+                    conn,
+                    task_id,
+                    "reviewer_block",
+                    f"action #{row['id']} ({row['action_type']}) blocked by reviewer model",
+                )
+                continue
+
         result = _execute_agent_action(conn, row)
         status = _status_from_result(result)
         conn.execute(
