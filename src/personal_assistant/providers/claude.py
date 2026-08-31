@@ -603,6 +603,18 @@ class ClaudeBackend(BaseBackend):
         objective = str(request.get("objective", ""))
         context = str(request.get("context", ""))
         analogies = request.get("analogies") or []
+        # Only append the plan/action-authoring instruction for the default reasoning
+        # purpose. Other purposes (e.g. reviewer.py's "safety_review") give the model
+        # their own precise instructions (e.g. "reply with exactly one word") that this
+        # suffix would otherwise contradict, silently corrupting the model's reply.
+        action_instruction = (
+            "\n\nProduce a short plan and concrete proposed actions. Use action_type "
+            '"create_inbox_item" only for safe local notes (requires_approval 0); use '
+            '"draft_external_update" for anything that touches Jira/GitHub/Slack '
+            "(requires_approval 1)."
+            if request.get("purpose", "chat") not in ("safety_review",)
+            else ""
+        )
         prompt = (
             f"Objective: {objective}\n\nContext: {context}\n\n"
             + (
@@ -610,10 +622,7 @@ class ClaudeBackend(BaseBackend):
                 if analogies
                 else ""
             )
-            + "\n\nProduce a short plan and concrete proposed actions. Use action_type "
-            '"create_inbox_item" only for safe local notes (requires_approval 0); use '
-            '"draft_external_update" for anything that touches Jira/GitHub/Slack '
-            "(requires_approval 1)."
+            + action_instruction
         )
         schema = {
             "type": "object",
