@@ -7,7 +7,7 @@ import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 
-EXPECTED_SCHEMA_VERSION = 45
+EXPECTED_SCHEMA_VERSION = 46
 PRIVATE_DB_MODE = 0o600
 
 
@@ -1802,6 +1802,32 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
             (45, "generalize_assistant_digests"),
+        )
+
+    if current < 46:
+        # Graduated approval ladder (A2 — inspired by openworker).
+        # Stores standing allow/block rules checked before the approval prompt.
+        # payload_match is an optional JSON subset: rule fires only when the
+        # action's payload contains all the key-value pairs in payload_match.
+        # NULL payload_match = type-only rule (matches any payload for that type).
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS approval_rules (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                name          TEXT NOT NULL,
+                action_type   TEXT NOT NULL,
+                payload_match TEXT,
+                tier          TEXT NOT NULL DEFAULT 'allow',
+                created_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_approval_rules_type ON approval_rules(action_type)"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (46, "add_approval_rules"),
         )
 
     _ensure_fts5(conn)  # self-heal: build the FTS index if a no-FTS5 run stranded migration 17
