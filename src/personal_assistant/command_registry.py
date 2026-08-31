@@ -669,6 +669,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("myos catalog add auth-service --owner platform", "myos catalog list"),
     ),
     CommandSpec(
+        "rule",
+        "expert",
+        "local_write",
+        "plan_intent",
+        "Manage standing approval rules (auto-allow or block action types).",
+        subcommands=("add", "list", "remove"),
+        examples=(
+            "myos rule add create_inbox_item",
+            "myos rule add draft_external_update --match '{\"target\":\"jira\"}'",
+            "myos rule add apply_patch --tier block",
+            "myos rule list",
+        ),
+    ),
+    CommandSpec(
         "model",
         "diagnostic",
         "local_write",

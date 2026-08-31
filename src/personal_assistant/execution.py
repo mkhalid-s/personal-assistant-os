@@ -1012,6 +1012,8 @@ def _print_exec_outcome(res: dict[str, Any], action_id: int) -> None:
 
 def _handle_proposals(conn: sqlite3.Connection, action_ids: list[int]) -> None:
     """Apply graded autonomy to each proposed action: auto-run, one-tap confirm, or block."""
+    from .approval_rules import check_rule
+
     level = autonomy.level_from_policy(conn)
     for aid in action_ids:
         row = conn.execute(
@@ -1032,6 +1034,17 @@ def _handle_proposals(conn: sqlite3.Connection, action_ids: list[int]) -> None:
         if tier == autonomy.BLOCKED:
             print(f"    ⛔ blocked ({verdict['reason']}). Will not auto-execute — do this manually.")
             continue
+
+        # Graduated approval ladder (A2): check standing rules before prompting.
+        standing = check_rule(conn, str(row["action_type"]), str(row["payload_json"] or "{}"))
+        if standing == "allow":
+            print("    ▶ auto-approved by standing rule…")
+            _print_exec_outcome(approve_and_execute(conn, row["id"], do_approve=True, execute=True), row["id"])
+            continue
+        if standing == "block":
+            print("    ⛔ blocked by standing rule.")
+            continue
+
         if tier == autonomy.AUTO:
             print("    ▶ auto-executing (safe)…")
             _print_exec_outcome(approve_and_execute(conn, row["id"], do_approve=True, execute=True), row["id"])
