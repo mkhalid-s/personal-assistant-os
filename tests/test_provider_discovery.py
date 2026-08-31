@@ -6,7 +6,6 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 from personal_assistant.providers import BaseBackend, _discover_plugin_backend, get_backend
 
@@ -81,7 +80,9 @@ class DiscoverPluginBackendTest(unittest.TestCase):
             path.unlink(missing_ok=True)
 
     def test_get_backend_uses_plugin_as_fallback(self) -> None:
-        path = self._patch_providers_dir("myplugin", _VALID_BACKEND_SRC.replace("testplugin", "myplugin").replace("Testplugin", "Myplugin"))
+        path = self._patch_providers_dir(
+            "myplugin", _VALID_BACKEND_SRC.replace("testplugin", "myplugin").replace("Testplugin", "Myplugin")
+        )
         try:
             # Should not fall back to Claude when plugin exists.
             backend = get_backend("myplugin")
