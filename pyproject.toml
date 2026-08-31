@@ -19,6 +19,8 @@ classifiers = [
 [project.optional-dependencies]
 voice = ["sounddevice", "faster-whisper"]
 embed = ["fastembed>=0.3"]
+tui   = ["rich>=13", "textual>=0.52"]
+all   = ["sounddevice", "faster-whisper", "fastembed>=0.3", "rich>=13", "textual>=0.52"]
 
 [project.scripts]
 myos = "personal_assistant.cli:main"
@@ -56,3 +58,8 @@ strict = false
 warn_unused_ignores = true
 warn_redundant_casts = true
 show_error_codes = true
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
