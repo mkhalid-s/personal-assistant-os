@@ -167,6 +167,16 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     from .embedding_backends import embedding_doctor_check
 
     optional_checks.append(("embedding_backend", *embedding_doctor_check()))
+    from .nl_config import _config_backend_name as _nl_backend
+
+    _nl = _nl_backend()
+    try:
+        from . import providers as _prov2
+
+        _nl_ok, _nl_detail = _prov2.get_backend(_nl).available()
+        optional_checks.append(("nl_config_backend", _nl_ok, f"{_nl}: {_nl_detail}"))
+    except Exception as exc:  # noqa: BLE001
+        optional_checks.append(("nl_config_backend", False, f"{_nl}: {exc}"))
     from .reviewer import reviewer_backend_name
 
     _rev = reviewer_backend_name()
