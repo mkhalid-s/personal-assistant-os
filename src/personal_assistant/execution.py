@@ -1042,6 +1042,19 @@ def _handle_proposals(conn: sqlite3.Connection, action_ids: list[int]) -> None:
             _print_exec_outcome(approve_and_execute(conn, row["id"], do_approve=True, execute=True), row["id"])
             continue
         if standing == "block":
+            # Mark as blocked in the DB so it doesn't reappear in the approval queue.
+            conn.execute(
+                "UPDATE agent_actions SET status='blocked', result=? WHERE id=?",
+                ("blocked by standing approval rule", row["id"]),
+            )
+            append_event(
+                conn,
+                "standing_rule_block",
+                "agent_action",
+                row["id"],
+                json.dumps({"action_type": str(row["action_type"])}, ensure_ascii=True),
+            )
+            conn.commit()
             print("    ⛔ blocked by standing rule.")
             continue
 
