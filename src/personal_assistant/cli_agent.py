@@ -15,6 +15,7 @@ from .execution import (
     _read_provider_stdin,
     approve_and_execute,
     execute_connector_mutation,
+    format_diff_preview,
 )
 from .planner import _agent_analogies, _ai_reason_artifacts
 from .privacy import apply_privacy_filters
@@ -293,6 +294,15 @@ def cmd_act(args: argparse.Namespace) -> None:
                 if preview:
                     snippet = str(preview) if len(str(preview)) <= 180 else str(preview)[:177] + "..."
                     print(f"  preview: {snippet}")
+                # PAOS-007: reviewable bounded diff preview + apply location for
+                # apply_patch payloads so approval sees the actual patch.
+                diff_preview = format_diff_preview(payload)
+                if diff_preview:
+                    print("  diff preview:")
+                    for line in diff_preview.splitlines():
+                        print(f"    {line}")
+                if str(payload.get("repo_root") or "").strip():
+                    print(f"  repo_root: {payload['repo_root']}")
             return
 
         if args.action is None:
@@ -570,7 +580,7 @@ def _approval_queue_json_entry(row) -> dict:
     snippet = preview if len(preview) <= 220 else preview[:217] + "..."
     rollback = payload.get("rollback_note") or payload.get("rollback") or ""
     review_context = list(format_action_review_context(str(row["action_type"]), payload, requires_approval=True))
-    return {
+    entry = {
         "id": int(row["id"]),
         "agent_task_id": int(row["agent_task_id"]) if row["agent_task_id"] is not None else None,
         "action_type": str(row["action_type"]),
@@ -583,6 +593,15 @@ def _approval_queue_json_entry(row) -> dict:
         "review_context": review_context,
         "integrity": _approval_integrity_summary(row),
     }
+    # PAOS-007: apply_patch proposals surface a bounded diff preview (truncation
+    # counted) and the apply location so JSON consumers get the same review
+    # signal as the text surfaces. Full diff stays in the payload only.
+    diff_preview = format_diff_preview(payload)
+    if diff_preview:
+        entry["diff_preview"] = diff_preview
+    if str(payload.get("repo_root") or "").strip():
+        entry["repo_root"] = str(payload["repo_root"])
+    return entry
 
 
 def _format_integrity_text_line(integrity: dict) -> str | None:
@@ -656,6 +675,15 @@ def cmd_approve(args: argparse.Namespace) -> None:
                 if preview:
                     snippet = str(preview) if len(str(preview)) <= 220 else str(preview)[:217] + "..."
                     print(f"  preview: {snippet}")
+                # PAOS-007: reviewable bounded diff preview + apply location for
+                # apply_patch payloads so approval sees the actual patch.
+                diff_preview = format_diff_preview(payload)
+                if diff_preview:
+                    print("  diff preview:")
+                    for line in diff_preview.splitlines():
+                        print(f"    {line}")
+                if str(payload.get("repo_root") or "").strip():
+                    print(f"  repo_root: {payload['repo_root']}")
             return
         if args.action is None:
             if json_mode:
