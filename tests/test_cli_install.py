@@ -224,9 +224,10 @@ class UninstallTest(unittest.TestCase):
         self.assertTrue(Path(self._tmp.name).is_dir())
 
     def test_purge_flag_deletes_data_dir_when_applied(self) -> None:
-        # Seed a marker file so we can prove the dir went away.
-        (Path(self._tmp.name) / "marker.txt").write_text("x")
-        args = argparse.Namespace(dry_run=False, purge=True)
+        # PAOS-044: purge now requires MYOS markers AND an explicit --yes.
+        # Seed the .env.myos marker so the guard accepts this data dir.
+        (Path(self._tmp.name) / ".env.myos").write_text("MYOS_DATA_DIR=1\n")
+        args = argparse.Namespace(dry_run=False, purge=True, yes=True)
         with (
             mock.patch.object(cli_install.sys, "platform", "darwin"),
             mock.patch.object(cli_launchd, "cmd_launchd_uninstall", lambda *a, **kw: None),
@@ -236,8 +237,34 @@ class UninstallTest(unittest.TestCase):
         self.assertIn(f"Purging {self._tmp.name}", out)
         self.assertFalse(Path(self._tmp.name).exists())
 
+    def test_purge_without_yes_is_refused(self) -> None:
+        # PAOS-044: --purge alone (no --yes) must not delete anything.
+        (Path(self._tmp.name) / ".env.myos").write_text("MYOS_DATA_DIR=1\n")
+        args = argparse.Namespace(dry_run=False, purge=True, yes=False)
+        with (
+            mock.patch.object(cli_install.sys, "platform", "darwin"),
+            mock.patch.object(cli_launchd, "cmd_launchd_uninstall", lambda *a, **kw: None),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            _capture(cli_install.cmd_uninstall, args)
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertTrue(Path(self._tmp.name).is_dir())
+
+    def test_purge_refuses_dir_without_myos_markers(self) -> None:
+        # PAOS-044: a directory with no assistant.db / .env.myos is not
+        # provably a MYOS data dir — refuse rather than rmtree a guess.
+        args = argparse.Namespace(dry_run=False, purge=True, yes=True)
+        with (
+            mock.patch.object(cli_install.sys, "platform", "darwin"),
+            mock.patch.object(cli_launchd, "cmd_launchd_uninstall", lambda *a, **kw: None),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            _capture(cli_install.cmd_uninstall, args)
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertTrue(Path(self._tmp.name).is_dir())
+
     def test_purge_dry_run_still_keeps_data_dir(self) -> None:
-        args = argparse.Namespace(dry_run=True, purge=True)
+        args = argparse.Namespace(dry_run=True, purge=True, yes=True)
         with mock.patch.object(cli_install.sys, "platform", "darwin"):
             _capture(cli_install.cmd_uninstall, args)
         self.assertTrue(Path(self._tmp.name).is_dir())

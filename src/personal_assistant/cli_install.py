@@ -19,8 +19,9 @@ happens on the machine after the wheel is on disk:
     not require root.
 
 ``myos uninstall`` mirrors: unload/remove launchd or systemd units and
-leave the data dir intact by default (opt in via ``--purge`` to also
-delete state).
+leave the data dir intact by default (opt in via ``--purge --yes`` to
+also delete state; purge refuses dirs without MYOS markers, the home
+directory, and filesystem roots).
 
 Both commands are idempotent — running ``myos install`` twice must be
 a no-op the second time (existing ``.env.myos`` preserved, existing
@@ -244,15 +245,41 @@ def cmd_install(args: argparse.Namespace) -> None:
     print("  myos remind create 'first reminder' --at +2m")
 
 
+def _purge_guard_failed(data_dir: Path) -> str | None:
+    """Return a refusal reason when ``--purge`` targets a dir it must not
+    delete, else ``None`` (PAOS-044).
+
+    ``shutil.rmtree`` on a resolved-but-wrong path is unrecoverable, so
+    purge refuses unless the directory actually looks like a MYOS data
+    dir (has the DB or the env file), is not the user's home, and is not
+    a filesystem root.
+    """
+    resolved = data_dir.expanduser().resolve()
+    home = Path.home().resolve()
+    if resolved == home:
+        return f"refusing to purge: {resolved} is the user home directory"
+    if resolved.parent == resolved:
+        return f"refusing to purge: {resolved} is a filesystem root"
+    if not (resolved / "assistant.db").exists() and not (resolved / ".env.myos").exists():
+        return (
+            f"refusing to purge: {resolved} has no MYOS data "
+            "(no assistant.db and no .env.myos) — pass a data dir that contains a MYOS install"
+        )
+    return None
+
+
 def cmd_uninstall(args: argparse.Namespace) -> None:
     """Reverse ``cmd_install``: stop/remove agents, optionally purge state.
 
     ``--purge`` deletes the entire ``resolve_data_dir()`` — DB, logs,
     env file, everything. Off by default because a partial reinstall
-    should not lose the user's local knowledge base.
+    should not lose the user's local knowledge base. Purge additionally
+    requires an explicit ``--yes`` and refuses dirs that don't carry
+    MYOS markers, the user's home, or a filesystem root (PAOS-044).
     """
     apply = not bool(getattr(args, "dry_run", False))
     purge = bool(getattr(args, "purge", False))
+    confirm = bool(getattr(args, "yes", False))
     data_dir = data_dirs.resolve_data_dir()
 
     print("MYOS uninstall plan:")
@@ -264,11 +291,20 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
     if purge:
         print(f"- PURGE data dir: {data_dir}")
     else:
-        print(f"- keep data dir: {data_dir} (pass --purge to delete)")
+        print(f"- keep data dir: {data_dir} (pass --purge --yes to delete)")
 
     if not apply:
         print("(dry-run) — pass without --dry-run to execute.")
         return
+
+    if purge:
+        refusal = _purge_guard_failed(data_dir)
+        if refusal:
+            print(f"Purge refused: {refusal}")
+            raise SystemExit(1)
+        if not confirm:
+            print("Purge refused: --purge also requires --yes (irreversible delete).")
+            raise SystemExit(1)
 
     if sys.platform == "darwin":
         print()
@@ -317,13 +353,19 @@ def register_subparsers(sub: argparse._SubParsersAction) -> None:
 
     uninstall = sub.add_parser(
         "uninstall",
-        help="Reverse `myos install`: unload/remove agents. --purge also deletes the data dir.",
+        help="Reverse `myos install`: unload/remove agents. --purge --yes also deletes the data dir.",
     )
     uninstall.add_argument("--dry-run", action="store_true")
     uninstall.add_argument(
         "--purge",
         action="store_true",
         help="Also delete the entire MYOS data directory (DB, logs, env file). Not reversible.",
+    )
+    uninstall.add_argument(
+        "--yes",
+        action="store_true",
+        dest="yes",
+        help="Required with --purge to confirm the irreversible data-dir delete (PAOS-044 guard).",
     )
     uninstall.set_defaults(func=cmd_uninstall)
 
