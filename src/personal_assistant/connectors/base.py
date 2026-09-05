@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -110,12 +111,21 @@ class BaseConnector:
                 req = urllib.request.Request(url, headers=headers)
                 with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
                     return json.loads(resp.read().decode("utf-8"))
-            except Exception as exc:  # pragma: no cover
+            except urllib.error.HTTPError as exc:
+                # PAOS-046: deterministic 4xx client errors (auth failure,
+                # not-found, bad request) will not improve on retry — re-raise
+                # immediately instead of burning the backoff budget. 408/429
+                # are transient and keep the retry path, as do 5xx/URLError/
+                # timeouts below.
+                if 400 <= exc.code < 500 and exc.code not in (408, 429):
+                    raise
                 last_exc = exc
-                if attempt == retries - 1:
-                    break
-                sleep_for = backoff_sec * (2**attempt)
-                time.sleep(sleep_for)
+            except Exception as exc:  # URLError, socket timeouts, decode errors
+                last_exc = exc
+            if attempt == retries - 1:
+                break
+            sleep_for = backoff_sec * (2**attempt)
+            time.sleep(sleep_for)
         assert last_exc is not None
         raise last_exc
 
