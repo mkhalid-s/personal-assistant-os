@@ -740,6 +740,38 @@ class DelegateHarnessTest(unittest.TestCase):
         self.assertEqual(row["requires_approval"], 1)
         self.assertIn('"agent": "zero"', row["payload_json"])
 
+    def test_delegate_patch_diff_survives_enqueue_byte_identical(self):
+        """Review R2: the delegate-mode apply_patch enqueue must pass
+        skip_keys={"diff"} like factory.py, so privacy redaction cannot rewrite
+        the diff bytes between what the harness produced and what the executor
+        applies (the payload hash pins the stored bytes, not the raw output)."""
+        from personal_assistant import assistant
+
+        exec_script = _write_script(
+            Path(self.repo) / "fake_agent_contact.sh",
+            '#!/bin/sh\necho "owner alice@example.com" > contact.txt\n',
+        )
+        os.environ["MYOS_AGENT_CMD_COMMAND"] = exec_script
+        try:
+            result = assistant.delegate_to_agent(
+                self.conn, "command", "add contact for alice@example.com", cwd=self.repo
+            )
+        finally:
+            os.environ.pop("MYOS_AGENT_CMD_COMMAND", None)
+
+        self.assertNotIn("error", result, msg=result.get("error", ""))
+        row = self.conn.execute(
+            "SELECT payload_json FROM agent_actions WHERE id = ?",
+            (result["proposed_action_ids"][0],),
+        ).fetchone()
+        payload = json.loads(row["payload_json"])
+        # The diff bytes survive the chokepoint verbatim.
+        self.assertEqual(payload["diff"], result["diff"], "diff must survive enqueue byte-identical")
+        self.assertIn("alice@example.com", payload["diff"])
+        # Non-diff payload leaves are still redacted (contrast with skip_keys).
+        self.assertNotIn("alice@example.com", payload["task"])
+        self.assertIn("[REDACTED_EMAIL]", payload["task"])
+
     def test_delegate_requires_git_repo(self):
         from personal_assistant import assistant
 

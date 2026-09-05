@@ -157,6 +157,11 @@ def delegate_to_agent(conn, target: str, task_text: str, cwd: str | None = None,
         action_type="apply_patch",
         title=f"Apply {name} patch: {task_text[:80]}",
         payload={"agent": name, "task": task_text, "repo_root": root, "diff": diff[:200000]},
+        # PAOS-007: the diff must survive the chokepoint byte-identical —
+        # redaction would rewrite the bytes between what the executor produced
+        # and what apply_patch applies, breaking the payload-hash binding.
+        # Same exception factory.py's apply_patch enqueue uses.
+        skip_keys=frozenset({"diff"}),
     )
     conn.commit()
     return {
