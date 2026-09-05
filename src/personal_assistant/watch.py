@@ -130,6 +130,45 @@ def scan_project_risks(conn, *, risk_threshold: int = 60, limit: int = 25) -> li
     return sorted(dedup.values(), key=lambda f: _SEVERITY_ORDER[f["severity"]])[:limit]
 
 
+def _pending_nudge_exists(conn, *, action_type: str, target: str, ref: object) -> bool:
+    """PAOS-035: True when a proposal of the same action_type already targets
+    the same destination + reference in a non-terminal status ('proposed' or
+    'executing'). Stops autopilot cycles from re-enqueueing an identical nudge
+    every cycle while it still awaits (or is mid) approval.
+
+    payload_json is written by the enqueue chokepoint via ``json.dumps``, so
+    json_extract is preferred; rows with pre-chokepoint non-JSON payloads make
+    SQLite raise OperationalError, and the coarse LIKE fallback keeps the
+    sweep running (may over-match for corrupt legacy rows — acceptable vs.
+    crashing the cycle).
+    """
+    try:
+        row = conn.execute(
+            """
+            SELECT 1 FROM agent_actions
+            WHERE action_type = ?
+              AND status IN ('proposed', 'executing')
+              AND json_extract(payload_json, '$.target') = ?
+              AND COALESCE(json_extract(payload_json, '$.external_id'),
+                           json_extract(payload_json, '$.work_item_id')) IS ?
+            LIMIT 1
+            """,
+            (action_type, target, ref),
+        ).fetchone()
+    except Exception:  # noqa: BLE001 — malformed legacy payload_json (sqlite3.OperationalError)
+        row = conn.execute(
+            """
+            SELECT 1 FROM agent_actions
+            WHERE action_type = ?
+              AND status IN ('proposed', 'executing')
+              AND payload_json LIKE ?
+            LIMIT 1
+            """,
+            (action_type, f'%"target": "{target}"%'),
+        ).fetchone()
+    return row is not None
+
+
 def draft_nudges(conn, findings: list[dict], *, limit: int = 10) -> list[int]:
     """Enqueue a confirm-tier nudge proposal per finding. Nothing is sent here."""
     if not findings:
@@ -140,6 +179,14 @@ def draft_nudges(conn, findings: list[dict], *, limit: int = 10) -> list[int]:
         # Route to the item's actual connector (jira/github/confluence/aha), not
         # always Jira (finding #7); local work-item nudges go to the outbox.
         target = (f.get("connector") or "outbox") if f["source"] == "external_item" else "outbox"
+        work_item_id = f["ref"] if f["source"] == "work_item" else None
+        if _pending_nudge_exists(
+            conn,
+            action_type="draft_external_update",
+            target=target,
+            ref=f.get("external_id") if f["source"] == "external_item" else work_item_id,
+        ):
+            continue
         payload = {
             "target": target,
             "draft": f["suggested_nudge"],
@@ -147,7 +194,7 @@ def draft_nudges(conn, findings: list[dict], *, limit: int = 10) -> list[int]:
             "kind": f["kind"],
             "connector": f.get("connector"),
             "external_id": f.get("external_id"),
-            "work_item_id": f["ref"] if f["source"] == "work_item" else None,
+            "work_item_id": work_item_id,
         }
         if f.get("url"):
             payload["url"] = f["url"]
