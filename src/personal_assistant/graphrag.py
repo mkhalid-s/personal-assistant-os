@@ -5,6 +5,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any
 
+from .privacy import apply_privacy_filters
 from .retrieval import hybrid_score
 
 
@@ -309,13 +310,17 @@ def _record_retrieval_run(
     graph_hops: int,
     candidate_limit: int,
 ) -> int:
+    # PAOS-006: the persisted query may embed PII/secrets from user text —
+    # apply the same privacy filters used by every other persistence
+    # chokepoint before INSERT. Read paths that match on query (factory.py's
+    # exact-miss fallback) must look the row up with the filtered form.
     cur = conn.execute(
         """
         INSERT INTO retrieval_runs (
             query, mode, limit_requested, graph_hops, candidate_limit, selected_count
         ) VALUES (?, ?, ?, ?, ?, ?)
         """,
-        (query, mode, int(limit), int(graph_hops), int(candidate_limit), len(hits)),
+        (apply_privacy_filters(conn, query), mode, int(limit), int(graph_hops), int(candidate_limit), len(hits)),
     )
     assert cur.lastrowid is not None
     run_id = int(cur.lastrowid)

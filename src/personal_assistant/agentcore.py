@@ -43,6 +43,7 @@ def enqueue_proposal(
     title: str,
     payload: dict[str, Any],
     requires_approval: int = 1,
+    skip_keys: frozenset[str] = frozenset(),
 ) -> int:
     """Insert one proposed action and return its id.
 
@@ -52,11 +53,25 @@ def enqueue_proposal(
     Redacts title and payload leaf values so model/backend-proposed PII (emails,
     phones, secrets echoed from user_text or context) never lands in agent_actions
     in cleartext, consistent with every other persistence chokepoint (review R4-2).
+
+    ``skip_keys`` (PAOS-007) excludes top-level payload keys from leaf redaction so
+    content that must survive the chokepoint byte-identical (e.g. a hash-pinned
+    apply_patch diff) is not silently rewritten — redaction would change the diff
+    bytes between what the executor produced and what execution applies, breaking
+    the payload-hash binding. Only pass keys whose values are machine-generated and
+    already protected by another control (hash pinning + approval gate).
     """
     from .privacy import apply_privacy_filters, redact_obj
 
     title = apply_privacy_filters(conn, title or "")
-    payload = redact_obj(conn, payload)
+    if skip_keys:
+        passthrough = {key: value for key, value in payload.items() if key in skip_keys}
+        payload = {
+            **redact_obj(conn, {key: value for key, value in payload.items() if key not in skip_keys}),
+            **passthrough,
+        }
+    else:
+        payload = redact_obj(conn, payload)
     if action_type not in AUTO_SAFE_ACTION_TYPES:
         requires_approval = 1
     conn.execute(

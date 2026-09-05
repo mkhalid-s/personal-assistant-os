@@ -477,9 +477,13 @@ def start_review_first_run(
     if hits and hits[0].get("retrieval_run_id"):
         retrieval_run_id = int(hits[0]["retrieval_run_id"])
     else:
+        # PAOS-006: retrieval_runs.query is stored privacy-filtered (see
+        # graphrag._record_retrieval_run), so the exact-match fallback must look
+        # the run up by the filtered form or the read never matches the write
+        # when the objective contains PII/secrets.
         row = conn.execute(
             "SELECT id FROM retrieval_runs WHERE query = ? ORDER BY id DESC LIMIT 1",
-            (str(intent["objective"]),),
+            (apply_privacy_filters(conn, str(intent["objective"])),),
         ).fetchone()
         retrieval_run_id = int(row["id"]) if row else None
     if retrieval_run_id is not None:
@@ -898,6 +902,13 @@ def _prepare_zero_software_action(
             title=title,
             payload=payload,
             requires_approval=1,
+            # PAOS-007: the diff is intentionally left unredacted so the patch
+            # that executes is byte-identical to what Zero produced — redaction
+            # would rewrite the diff bytes and break the payload-hash approval
+            # binding. It is safe to persist verbatim: the payload is hash-pinned
+            # at approval, gated behind an explicit operator approval, and only
+            # ever applied locally by the guarded apply_patch executor.
+            skip_keys=frozenset({"diff"}),
         )
         follow_up_id = None
         if not result.terminal_ok():
@@ -1313,13 +1324,22 @@ def learn(
     if run is None:
         raise ValueError(f"factory run #{factory_run_id} not found")
     receipts: list[dict[str, Any]] = []
+    # PAOS-005: scope the receipt feed to THIS run's actions (via the
+    # factory_artifacts link this run recorded for its prepared actions) instead
+    # of the 20 newest receipts globally, which leaked other runs'/manual
+    # actions' outcomes into this retrospective.
     for r in conn.execute(
         """
         SELECT action_type, final_status, follow_up_required, follow_up_inbox_id, request_json
         FROM action_execution_receipts
+        WHERE agent_action_id IN (
+            SELECT artifact_id FROM factory_artifacts
+            WHERE factory_run_id = ? AND artifact_type = 'agent_action'
+        )
         ORDER BY created_at DESC
         LIMIT 20
-        """
+        """,
+        (int(factory_run_id),),
     ).fetchall():
         context = _receipt_approval_context(r["request_json"])
         side_effects = context.get("side_effects") or []
