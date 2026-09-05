@@ -12,9 +12,10 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import watch
+from . import agentcore, watch
+from .data_dirs import resolve_data_dir
 from .db import append_event
-from .execution import _execute_agent_action, _status_from_result
+from .execution import _execute_agent_action, _record_execution_receipt, _status_from_result
 from .planner import _agent_analogies, _ai_reason_artifacts
 from .privacy import apply_privacy_filters
 
@@ -71,18 +72,17 @@ def _create_agent_task(
             (task_id, f"{source}: {content}", min(0.95, max(0.55, score))),
         )
     for action in actions:
-        conn.execute(
-            """
-            INSERT INTO agent_actions (agent_task_id, action_type, title, payload_json, requires_approval)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                task_id,
-                action["action_type"],
-                action["title"],
-                json.dumps(action["payload"], ensure_ascii=True),
-                action["requires_approval"],
-            ),
+        # PAOS-012: enqueue through the shared proposal chokepoint instead of a
+        # raw INSERT — it redacts the title/payload and forces requires_approval=1
+        # for every non-AUTO action type, so an autopilot-proposed "safe" external
+        # mutation can never bypass the approval queue.
+        agentcore.enqueue_proposal(
+            conn,
+            task_id=task_id,
+            action_type=str(action["action_type"]),
+            title=str(action["title"]),
+            payload=action["payload"] if isinstance(action.get("payload"), dict) else {},
+            requires_approval=int(action["requires_approval"]),
         )
     append_event(
         conn,
@@ -284,6 +284,10 @@ def _execute_safe_autopilot_actions(conn, limit: int, task_ids: list[int]) -> in
             """,
             (row["agent_task_id"], f"action #{row['id']}: {result}"),
         )
+        # PAOS-013: safe (no-approval) autopilot executions leave the same
+        # terminal receipt trail as the approval path; the receipt redacts its
+        # own copy and derives the compensating-action envelope.
+        _record_execution_receipt(conn, row, approved=False, final_status=new_status, result=result)
         append_event(
             conn,
             "autopilot_action_executed",
@@ -409,7 +413,10 @@ def _store_autopilot_digest(conn, title: str, body: str, payload: dict[str, obje
         (payload.get("run_id"), title, body, json.dumps(payload, ensure_ascii=True)),
     )
     digest_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
-    out_dir = Path(output_dir) if output_dir else Path(__file__).resolve().parents[2] / "data" / "autopilot"
+    # PAOS-003: default to the data_dirs resolution (MYOS_DATA_DIR > dev repo
+    # data/ > platform data dir) so installed (pipx) builds stop writing to a
+    # path derived from site-packages.
+    out_dir = Path(output_dir) if output_dir else resolve_data_dir() / "autopilot"
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "latest.md").write_text(body)
     (out_dir / f"digest-{digest_id}.md").write_text(body)

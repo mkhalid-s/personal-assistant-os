@@ -13,7 +13,12 @@ from typing import Any
 
 from . import agentcore, observability, personas, providers
 from .db import append_event
-from .execution import _execute_agent_action, _status_from_result
+from .execution import (
+    _execute_agent_action,
+    _record_execution_receipt,
+    _status_from_result,
+    recover_stranded_executions,
+)
 from .planner import _agent_action_specs, _agent_analogies, _agent_plan, _normalize_ai_actions, _normalize_ai_plan
 from .privacy import apply_privacy_filters
 
@@ -166,6 +171,10 @@ def _execute_safe_actions(conn: sqlite3.Connection, task_id: int, action_ids: li
             """,
             (status, apply_privacy_filters(conn, result)[:1000], int(row["id"])),
         )
+        # PAOS-013: safe (no-approval) executions must leave the same terminal
+        # receipt trail as the approval path — the receipt redacts its own copy
+        # and derives the compensating-action envelope.
+        _record_execution_receipt(conn, row, approved=False, final_status=status, result=result)
         _record_observation(conn, task_id, f"safe_action_{status}", f"action #{row['id']}: {result}")
         if status == "executed":
             executed += 1
@@ -566,6 +575,9 @@ def run_goal_cycle(
     max_actions: int = DEFAULT_MAX_ACTIONS,
     limit: int = 5,
 ) -> dict[str, object]:
+    # PAOS-002: goal-loop tick entry point — sweep rows stranded in 'executing'
+    # by crashed runs once per cycle before the loop proposes or executes anything.
+    recover_stranded_executions(conn)
     if goal_id is not None:
         goal = _get_goal(conn, int(goal_id))
         if goal is None:

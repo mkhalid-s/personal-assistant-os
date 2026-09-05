@@ -18,7 +18,8 @@ from .autopilot import (
     _store_autopilot_digest,
 )
 from .db import append_event, get_connection
-from .locks import acquire_lock, release_lock
+from .execution import recover_stranded_executions
+from .locks import acquire_lock, release_lock, renew_lock
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,9 @@ def run_autopilot_cycle(args: argparse.Namespace, deps: AutopilotCommandDependen
         loaded = deps.load_env_file(args.env_file)
         print(f"Loaded {loaded} vars from {args.env_file}")
     conn = get_connection()
+    # PAOS-002: reset rows stranded in 'executing' by earlier crashed runs before
+    # this cycle does any work (once per cycle).
+    recover_stranded_executions(conn)
     conn.execute(
         "INSERT INTO autopilot_runs (status, mode) VALUES ('running', ?)",
         (args.mode,),
@@ -250,6 +254,7 @@ def cmd_autopilot(args: argparse.Namespace, deps: AutopilotCommandDependencies) 
             raise SystemExit(1)
         if acquire_lock(lock_conn, "autopilot", owner):
             try:
+                renew_lock(lock_conn, "autopilot", owner)  # PAOS-019: fresh lease per cycle
                 run_autopilot_goal_cycle(args, deps)
             finally:
                 release_lock(lock_conn, "autopilot", owner)
@@ -261,6 +266,7 @@ def cmd_autopilot(args: argparse.Namespace, deps: AutopilotCommandDependencies) 
     while True:
         if acquire_lock(lock_conn, "autopilot", owner):
             try:
+                renew_lock(lock_conn, "autopilot", owner)  # PAOS-019: fresh lease per cycle
                 run_autopilot_cycle(args, deps)
             finally:
                 release_lock(lock_conn, "autopilot", owner)
