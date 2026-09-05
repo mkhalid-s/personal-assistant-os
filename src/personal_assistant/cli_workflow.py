@@ -59,6 +59,28 @@ def cmd_capture(args: argparse.Namespace) -> None:
         print(f"Captured: [{kind}] {text}")
 
 
+def cmd_inbox_list(args: argparse.Namespace) -> None:
+    """List recent inbox items (PAOS-026): the read-only counterpart to
+    ``myos capture`` / ``myos triage`` that demo flows can reference."""
+    with connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, kind, status, created_at, text
+            FROM inbox_items
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (args.limit,),
+        ).fetchall()
+        if not rows:
+            print("Inbox is empty.")
+            return
+        print(f"Inbox items ({len(rows)} most recent):")
+        for row in rows:
+            text = " ".join(str(row["text"]).split())
+            print(f"- #{row['id']} [{row['kind']}/{row['status']}] {row['created_at']} {text[:100]}")
+
+
 def cmd_triage(_: argparse.Namespace) -> None:
     with connection() as conn:
         rows = conn.execute("SELECT * FROM inbox_items WHERE status = 'new' ORDER BY created_at ASC").fetchall()

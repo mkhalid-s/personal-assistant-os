@@ -556,6 +556,15 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "triage", "workflow", "local_write", "capture", "Triage inbox items into work items.", examples=("myos triage",)
     ),
     CommandSpec(
+        "inbox",
+        "workflow",
+        "read_only",
+        "capture",
+        "Inspect captured inbox items.",
+        subcommands=("list",),
+        examples=("myos inbox list",),
+    ),
+    CommandSpec(
         "inbox-process",
         "workflow",
         "local_write",
