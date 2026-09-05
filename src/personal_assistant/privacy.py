@@ -95,13 +95,17 @@ def _luhn_ok(digits: str) -> bool:
     return total % 10 == 0
 
 
-def apply_privacy_filters(conn: sqlite3.Connection, text: str) -> str:
+def apply_privacy_filters(conn: sqlite3.Connection, text: str, *, policy: dict[str, str] | None = None) -> str:
     """Redact PII/secrets from a string before it is persisted or indexed.
 
     Covers emails, phones, and (default-on) common secrets/tokens, US SSNs, and
     Luhn-valid credit-card numbers. Does NOT redact personal names by design — they are
-    core to the EM domain and the data stays local. Each class is policy-gated."""
-    policy = get_policy_map(conn)
+    core to the EM domain and the data stays local. Each class is policy-gated.
+
+    ``policy`` (PAOS-032) lets batch callers (e.g. the migration-41 scrub)
+    fetch the policy map once and reuse it across many redactions instead of
+    paying a DB lookup per field; when omitted the map is read per call."""
+    policy = get_policy_map(conn) if policy is None else policy
     cleaned = text
     if _policy_bool(policy.get("redact_emails", "1"), True):
         cleaned = re.sub(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", "[REDACTED_EMAIL]", cleaned)
@@ -121,15 +125,20 @@ def apply_privacy_filters(conn: sqlite3.Connection, text: str) -> str:
     return cleaned
 
 
-def redact_obj(conn: sqlite3.Connection, obj: Any) -> Any:
+def redact_obj(conn: sqlite3.Connection, obj: Any, *, policy: dict[str, str] | None = None) -> Any:
     """Recursively redact string leaves of a dict/list, leaving non-strings (ints,
     bools, None) intact. Use this for payloads instead of regexing a serialized JSON
     string — the phone regex would otherwise mangle integer literals (e.g. an
-    issue_number) into invalid JSON and crash json.loads (review C-3)."""
+    issue_number) into invalid JSON and crash json.loads (review C-3).
+
+    ``policy`` (PAOS-032) optionally supplies a pre-fetched policy map shared
+    by the whole recursion — same contract as :func:`apply_privacy_filters`."""
     if isinstance(obj, str):
-        return apply_privacy_filters(conn, obj)
+        return apply_privacy_filters(conn, obj, policy=policy)
     if isinstance(obj, dict):
-        redact_secrets = _policy_bool(get_policy_map(conn).get("redact_secrets", "1"), True)
+        redact_secrets = _policy_bool(
+            (policy if policy is not None else get_policy_map(conn)).get("redact_secrets", "1"), True
+        )
 
         def redact_entry(key: object, value: Any) -> Any:
             normalized = str(key).strip().lower().replace("-", "_")
@@ -146,7 +155,7 @@ def redact_obj(conn: sqlite3.Connection, obj: Any) -> Any:
             } or normalized.endswith(("_api_key", "_password", "_secret", "_token"))
             if redact_secrets and sensitive:
                 return "[REDACTED_SECRET]"
-            return redact_obj(conn, value)
+            return redact_obj(conn, value, policy=policy)
 
         return {k: redact_entry(k, v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):

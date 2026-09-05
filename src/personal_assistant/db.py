@@ -7,7 +7,7 @@ import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 
-EXPECTED_SCHEMA_VERSION = 43
+EXPECTED_SCHEMA_VERSION = 44
 PRIVATE_DB_MODE = 0o600
 
 
@@ -80,6 +80,24 @@ def connection() -> Iterator[sqlite3.Connection]:
 
 
 def initialize_schema(conn: sqlite3.Connection) -> None:
+    # PAOS-030: fast path — a DB already at the expected version (the steady
+    # state for every connect after the first) skips the entire migration
+    # chain, including the FTS5 self-heal probe and its trigger DDL. Fresh
+    # DBs (no table), behind-version DBs, and corrupt/partial states fall
+    # through to the full idempotent path below.
+    try:
+        has_migrations_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
+        ).fetchone()
+        if has_migrations_table is not None:
+            current_version = int(
+                conn.execute("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations").fetchone()["version"]
+            )
+            if current_version == EXPECTED_SCHEMA_VERSION:
+                return
+    except sqlite3.OperationalError:
+        pass  # unreadable/corrupt schema — run the full init path
+
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1714,7 +1732,12 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         # Connector payloads created before the persistence chokepoint began
         # applying privacy filters may contain PII in columns or nested raw JSON.
         # Scrub them once during upgrade so the fix protects existing stores too.
-        from .privacy import apply_privacy_filters, redact_obj
+        from .privacy import apply_privacy_filters, get_policy_map, redact_obj
+
+        # PAOS-032: the policy map is fetched once for the whole scrub instead
+        # of once per field per row (8 lookups × N rows against a policy table
+        # that cannot change mid-migration). Behavior identical.
+        policy_map = get_policy_map(conn)
 
         rows = conn.execute(
             """
@@ -1729,7 +1752,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
                 raw_payload = {}
 
             def safe(value: object) -> str | None:
-                return apply_privacy_filters(conn, str(value)) if value is not None else None
+                return apply_privacy_filters(conn, str(value), policy=policy_map) if value is not None else None
 
             conn.execute(
                 """
@@ -1745,7 +1768,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
                     safe(row["priority"]),
                     safe(row["due_date"]),
                     safe(row["url"]),
-                    json.dumps(redact_obj(conn, raw_payload), ensure_ascii=True),
+                    json.dumps(redact_obj(conn, raw_payload, policy=policy_map), ensure_ascii=True),
                     int(row["id"]),
                 ),
             )
@@ -1776,6 +1799,21 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
             (43, "add_goal_persona"),
+        )
+
+    if current < 44:
+        # PAOS-009: created_at DESC serves the "recent chunks" ordering in the
+        # retrieval paths; retrieval_runs(query) serves the evals/rollup lookups
+        # by query. Plain indexes only — no GraphRAG query-semantics change.
+        conn.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_chunks_created ON text_chunks(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_retrieval_runs_query ON retrieval_runs(query);
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (44, "add_chunks_created_and_retrieval_query_indexes"),
         )
 
     _ensure_fts5(conn)  # self-heal: build the FTS index if a no-FTS5 run stranded migration 17
@@ -1859,7 +1897,11 @@ def verify_schema(conn: sqlite3.Connection) -> dict[str, object]:
     }
     existing_tables = {
         row["name"]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'virtual table')").fetchall()
+        # PAOS-031: sqlite_master reports FTS5 (and any) virtual tables with
+        # type='table' — there is no 'virtual table' type value, so the old
+        # `type IN ('table', 'virtual table')` filter was dead code that
+        # suggested otherwise. Plain table scan only.
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
     }
     quick_check = conn.execute("PRAGMA quick_check").fetchone()[0]
     foreign_keys = conn.execute("PRAGMA foreign_key_check").fetchall()
