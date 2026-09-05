@@ -259,7 +259,22 @@ def apply_setup(plan: dict[str, Any], *, dry_run: bool = True) -> dict[str, Any]
             "stderr": "",
             "wrapper": str(wrapper) if wrapper else "",
         }
-    proc = subprocess.run(command, capture_output=True, text=True, check=False)
+    # PAOS-040: a model pull can hang indefinitely (dead mirror, interactive
+    # prompt) — bound it (default 600s, MYOS_ROUTER_PULL_TIMEOUT_SEC) so setup
+    # fails with a status envelope instead of blocking the caller forever.
+    timeout_sec = int(os.getenv("MYOS_ROUTER_PULL_TIMEOUT_SEC", "600"))
+    try:
+        proc = subprocess.run(command, capture_output=True, text=True, check=False, timeout=timeout_sec)
+    except subprocess.TimeoutExpired:
+        wrapper = write_wrapper(str(plan.get("runtime") or ""))
+        return {
+            "status": "failed",
+            "returncode": None,
+            "command": command,
+            "wrapper": str(wrapper) if wrapper else "",
+            "stdout": "",
+            "stderr": f"timed out after {timeout_sec}s",
+        }
     wrapper = write_wrapper(str(plan.get("runtime") or ""))
     return {
         "status": "ok" if proc.returncode == 0 else "failed",
