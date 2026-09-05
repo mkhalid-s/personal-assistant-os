@@ -20,7 +20,7 @@ It does not yet provide:
 - Full production GraphRAG with real embeddings, stronger reranking, and graph summaries.
 - A graph database backend.
 - Production embeddings or vector search.
-- Project-scoped persona inheritance, persona-specific curated memory, and persona use across scheduled goals. Durable personas now constrain delegated work, interactive chat/voice, and factory runs.
+- Project-scoped persona inheritance, persona-specific curated memory, and persona use across scheduled goals. Durable personas now constrain delegated work, interactive chat/voice, factory runs, and scheduled goals (`myos goal add --persona <name>` scopes a goal's evaluations and proposed actions to one persona).
 - Live connector mutation adapters beyond Jira and GitHub comments; Confluence and Aha remain reviewable drafts.
 - A focused daily surface that hides the 100+ expert commands behind a small product workflow.
 - A tagged, published release with upgrade compatibility proven across real user databases.
@@ -182,9 +182,11 @@ Research notes:
 Initial command shape:
 
 ```bash
-myos code "Fix the failing tests" --repo /path/to/repo --backend zero --worktree
+myos code "Fix the failing tests" --repo /path/to/repo --backend zero
 myos factory start --pack software_delivery --executor zero
 ```
+
+Worktree isolation is default-on for `myos code`: the delegated task runs in a throwaway `git worktree` and only the resulting diff reaches the approval queue — there is no flag to disable it.
 
 Adapter contract:
 

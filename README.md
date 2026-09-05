@@ -381,7 +381,7 @@ myos close-day --mode hybrid --note "Meeting-heavy coordination day"
 
 ## Expert Command Catalog
 
-The commands below remain available for scripting, debugging, and precise control. For day-to-day use, prefer the smart surface above.
+The commands below remain available for scripting, debugging, and precise control. For day-to-day use, prefer the smart surface above. This catalog is non-exhaustive — new subcommands land regularly and `myos --help` is the authoritative, version-current list.
 
 Common daily commands:
 
@@ -559,20 +559,24 @@ Useful policy keys include:
 
 ## Launchd Auto-Start on macOS
 
-Template plist files are in `deploy/launchd/`.
-
-Before loading them, replace `/path/to/personal-assistant-os` with your local checkout path, then run:
+Do not copy the files in `deploy/launchd/` into place — they are reference
+templates only (see the headers inside each plist). MYOS generates the real
+agents with your actual paths, data dir, and env file baked in:
 
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.myos.sync.plist 2>/dev/null || true
-launchctl unload ~/Library/LaunchAgents/com.myos.pulse.plist 2>/dev/null || true
-cp deploy/launchd/com.myos.sync.plist ~/Library/LaunchAgents/
-cp deploy/launchd/com.myos.pulse.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.myos.sync.plist
-launchctl load ~/Library/LaunchAgents/com.myos.pulse.plist
-```
+# One-shot bootstrap: installs MYOS via pipx, seeds the data dir, and
+# registers the scheduler agent (60s tick) plus sync/pulse.
+./scripts/install.sh
 
-The CLI setup commands can also generate and install launchd configuration for a local checkout.
+# From an existing checkout or pipx install: write and load all agents
+# (add --scheduler for the 60s reminder tick, --autopilot to opt in).
+myos install            # same generator as `myos launchd-install --apply --load`
+myos launchd-install --apply --load --scheduler
+
+# Runtime control: stop only unloads the agents (plists stay in place);
+# start/activate reload any installed-but-unloaded agents.
+myos launchd-status
+```
 
 ## Testing
 
