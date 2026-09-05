@@ -182,6 +182,93 @@ class StrandedExecutionRecoveryTest(unittest.TestCase):
         row = self.conn.execute("SELECT status FROM agent_actions WHERE id = ?", (fresh_id,)).fetchone()
         self.assertEqual(row["status"], "executing")
 
+    def test_freshly_claimed_row_is_not_reaped_even_when_approval_is_old(self):
+        """Review R4(a): the reaper's clock is the claim time, not the approval
+        or creation time — a row claimed just now is never stranded, no matter
+        how old its approved_at/created_at are (the old COALESCE order reaped
+        it on sight)."""
+        from personal_assistant.execution import recover_stranded_executions
+
+        fresh_id = self._insert_action(status="executing", approved_at=None)
+        self.conn.execute(
+            "UPDATE agent_actions SET approved_at = datetime('now', '-3 days'), "
+            "created_at = datetime('now', '-3 days'), claimed_at = datetime('now') WHERE id = ?",
+            (fresh_id,),
+        )
+        self.conn.commit()
+        self.assertEqual(recover_stranded_executions(self.conn), [])
+        row = self.conn.execute("SELECT status FROM agent_actions WHERE id = ?", (fresh_id,)).fetchone()
+        self.assertEqual(row["status"], "executing")
+
+    def test_stale_claimed_at_row_is_reaped_even_when_approval_is_fresh(self):
+        """Review R4(a): claimed_at is the reaper's PRIMARY clock — a stale
+        claim is reaped even with a fresh approved_at (the old clock, which
+        keyed on approved_at first, would have kept it live forever)."""
+        from personal_assistant.execution import recover_stranded_executions
+
+        stale_id = self._insert_action(status="executing", approved_at=None)
+        self.conn.execute(
+            "UPDATE agent_actions SET approved_at = datetime('now'), "
+            "claimed_at = datetime('now', '-60 minutes') WHERE id = ?",
+            (stale_id,),
+        )
+        self.conn.commit()
+        recovered = recover_stranded_executions(self.conn)
+        self.assertEqual(recovered, [stale_id])
+        row = self.conn.execute("SELECT status, result FROM agent_actions WHERE id = ?", (stale_id,)).fetchone()
+        self.assertEqual(row["status"], "failed")
+        self.assertTrue(row["result"].startswith("recovered: stranded in executing"))
+
+    def test_racing_reaper_writes_no_artifacts_on_cas_rowcount_zero(self):
+        """Review R4(b): if a concurrent writer lands a terminal status between
+        the reaper's SELECT and its CAS UPDATE (rowcount 0), the reaper must
+        write none of the recovery artifacts for the now-live row."""
+        from personal_assistant.execution import recover_stranded_executions
+
+        stale_id = self._insert_action(status="executing", approved_at=None)
+        self.conn.execute(
+            "UPDATE agent_actions SET claimed_at = datetime('now', '-90 minutes') WHERE id = ?",
+            (stale_id,),
+        )
+        self.conn.commit()
+
+        real_conn = self.conn
+
+        class RacingConn:
+            """Proxy that simulates a concurrent writer winning the terminal
+            race: when the reaper's CAS fires, the row is flipped to
+            'executed' first, so the CAS matches 0 rows."""
+
+            def __init__(self):
+                self.committed = 0
+
+            def execute(self, sql, params=()):
+                if "SET status='failed'" in sql and "status='executing'" in sql:
+                    real_conn.execute(
+                        "UPDATE agent_actions SET status='executed', executed_at=CURRENT_TIMESTAMP WHERE id = ?",
+                        (params[1],),
+                    )
+                return real_conn.execute(sql, params)
+
+            def commit(self):
+                self.committed += 1
+                real_conn.commit()
+
+        recovered = recover_stranded_executions(RacingConn())
+        self.assertEqual(recovered, [])
+        row = real_conn.execute("SELECT status FROM agent_actions WHERE id = ?", (stale_id,)).fetchone()
+        self.assertEqual(row["status"], "executed", "the concurrent writer's terminal status must stand")
+        follow_ups = real_conn.execute(
+            "SELECT COUNT(*) AS c FROM inbox_items WHERE text LIKE ? AND source = 'execution_recovery'",
+            (f"%#{stale_id}%",),
+        ).fetchone()["c"]
+        self.assertEqual(follow_ups, 0, "no recovery follow-up for a row the reaper did not reset")
+        events = real_conn.execute(
+            "SELECT COUNT(*) AS c FROM event_log WHERE event_type = 'execution_stranded_recovered' AND entity_id = ?",
+            (stale_id,),
+        ).fetchone()["c"]
+        self.assertEqual(events, 0, "no recovery event for a row the reaper did not reset")
+
     def test_approve_and_execute_sweeps_stranded_rows_first(self):
         from personal_assistant.execution import approve_and_execute
 
@@ -486,6 +573,76 @@ class PersistedResultRedactionTest(unittest.TestCase):
             os.environ.pop("MYOS_DB_PATH", None)
             if old_command is not None:
                 os.environ["MYOS_ACTION_COMMAND"] = old_command
+
+
+class AutopilotSafePathRedactionTest(unittest.TestCase):
+    """Review R3: the autopilot safe path (_execute_safe_autopilot_actions)
+    must redact + bound the result it persists, mirroring the autonomy-loop
+    safe path — the raw executor string can embed provider stderr/stdout."""
+
+    def test_persisted_copies_are_redacted_and_bounded(self):
+        from personal_assistant import autopilot
+
+        conn = _memory_conn()
+        try:
+            task_id = _insert_task(conn)
+            conn.execute(
+                """
+                INSERT INTO agent_actions (agent_task_id, action_type, title, payload_json, status, requires_approval)
+                VALUES (?, 'draft_message', 'safe probe', ?, 'proposed', 0)
+                """,
+                (task_id, json.dumps({"draft": "ping bob@example.com token ghp_" + "a" * 20})),
+            )
+            action_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+            conn.commit()
+
+            autopilot._execute_safe_autopilot_actions(conn, limit=5, task_ids=[task_id])
+
+            stored = conn.execute("SELECT result FROM agent_actions WHERE id = ?", (action_id,)).fetchone()
+            self.assertIsNotNone(stored)
+            self.assertNotIn("bob@example.com", stored["result"])
+            self.assertIn("[REDACTED_EMAIL]", stored["result"])
+            self.assertNotIn("ghp_", stored["result"])
+            self.assertIn("[REDACTED_SECRET]", stored["result"])
+            obs = conn.execute(
+                "SELECT content FROM agent_observations WHERE agent_task_id = ? AND observation_type = "
+                "'autopilot_action_result'",
+                (task_id,),
+            ).fetchone()
+            self.assertIsNotNone(obs)
+            self.assertNotIn("bob@example.com", obs["content"])
+            self.assertNotIn("ghp_", obs["content"])
+            self.assertIn("[REDACTED_EMAIL]", obs["content"])
+        finally:
+            conn.close()
+
+    def test_persisted_result_is_bounded_to_2000_chars(self):
+        from personal_assistant import autopilot
+
+        conn = _memory_conn()
+        try:
+            task_id = _insert_task(conn)
+            conn.execute(
+                """
+                INSERT INTO agent_actions (agent_task_id, action_type, title, payload_json, status, requires_approval)
+                VALUES (?, 'draft_message', 'bound probe', ?, 'proposed', 0)
+                """,
+                (task_id, json.dumps({"draft": "x" * 5000})),
+            )
+            conn.commit()
+
+            autopilot._execute_safe_autopilot_actions(conn, limit=5, task_ids=[task_id])
+
+            stored = conn.execute("SELECT result FROM agent_actions WHERE agent_task_id = ?", (task_id,)).fetchone()
+            self.assertLessEqual(len(stored["result"]), 2000)
+            obs = conn.execute(
+                "SELECT content FROM agent_observations WHERE agent_task_id = ? AND observation_type = "
+                "'autopilot_action_result'",
+                (task_id,),
+            ).fetchone()
+            self.assertLessEqual(len(obs["content"]), 2000 + len("action #1: "))
+        finally:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1378,22 +1535,43 @@ class AudioHelperTest(unittest.TestCase):
         self.assertIn("boom boom", err.getvalue())
 
 
-class SchemaV44Test(unittest.TestCase):
-    """PAOS-009: fresh DB reaches migration 44 and carries the new indexes."""
+class SchemaV45Test(unittest.TestCase):
+    """PAOS-009/R4: fresh DB reaches migration 45, carries the v44 indexes and
+    the agent_actions.claimed_at column (review R4 reaper clock)."""
 
-    def test_fresh_db_reaches_version_44_with_indexes(self):
+    def test_fresh_db_reaches_version_45_with_indexes_and_claimed_at(self):
         from personal_assistant import db as db_mod
 
-        self.assertEqual(db_mod.EXPECTED_SCHEMA_VERSION, 44)
+        self.assertEqual(db_mod.EXPECTED_SCHEMA_VERSION, 45)
         conn = _memory_conn()
         try:
             top = conn.execute("SELECT MAX(version) AS m FROM schema_migrations").fetchone()["m"]
-            self.assertEqual(top, 44)
+            self.assertEqual(top, 45)
             applied = {r["version"] for r in conn.execute("SELECT version FROM schema_migrations").fetchall()}
-            self.assertEqual(applied, set(range(1, 45)))
+            self.assertEqual(applied, set(range(1, 46)))
             indexes = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()}
             self.assertIn("idx_chunks_created", indexes)
             self.assertIn("idx_retrieval_runs_query", indexes)
+            columns = {r["name"] for r in conn.execute("PRAGMA table_info(agent_actions)").fetchall()}
+            self.assertIn("claimed_at", columns)
+        finally:
+            conn.close()
+
+    def test_migration_45_survives_partial_application(self):
+        from personal_assistant import db as db_mod
+
+        conn = _memory_conn()
+        try:
+            # Simulate the crash state: the column was added but the version
+            # row was never committed — re-running must not raise
+            # "duplicate column name".
+            conn.execute("DELETE FROM schema_migrations WHERE version=45")
+            conn.commit()
+            db_mod.initialize_schema(conn)
+            versions = {int(r["version"]) for r in conn.execute("SELECT version FROM schema_migrations").fetchall()}
+            self.assertIn(45, versions)
+            columns = [r["name"] for r in conn.execute("PRAGMA table_info(agent_actions)").fetchall()]
+            self.assertEqual(columns.count("claimed_at"), 1)
         finally:
             conn.close()
 

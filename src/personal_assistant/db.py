@@ -7,7 +7,7 @@ import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 
-EXPECTED_SCHEMA_VERSION = 44
+EXPECTED_SCHEMA_VERSION = 45
 PRIVATE_DB_MODE = 0o600
 
 
@@ -1826,6 +1826,27 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
             (44, "add_chunks_created_and_retrieval_query_indexes"),
+        )
+
+    migration_45_applied = conn.execute("SELECT 1 FROM schema_migrations WHERE version=45").fetchone() is not None
+    if current < 45 or not migration_45_applied:
+        # Review R4: the stranded-execution reaper keyed its clock on
+        # COALESCE(approved_at, executed_at, created_at), so a row CLAIMED
+        # ('executing') long after creation was reaped on sight. Every claim
+        # site now stamps claimed_at and the reaper uses it as the primary
+        # clock (approved_at/executed_at/created_at remain the fallback for
+        # pre-migration rows that were stranded before this column existed).
+        # Row-presence guard like migrations 42/43: a bare ADD COLUMN breaks
+        # when migration 45 partially applied (column exists, version row
+        # lost to a crash), so every later open would raise "duplicate column
+        # name".
+        columns = conn.execute("PRAGMA table_info(agent_actions)").fetchall()
+        names = {row["name"] for row in columns}
+        if "claimed_at" not in names:
+            conn.execute("ALTER TABLE agent_actions ADD COLUMN claimed_at TEXT")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (45, "add_agent_actions_claimed_at"),
         )
 
     _ensure_fts5(conn)  # self-heal: build the FTS index if a no-FTS5 run stranded migration 17

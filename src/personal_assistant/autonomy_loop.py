@@ -165,7 +165,7 @@ def _execute_safe_actions(conn: sqlite3.Connection, task_id: int, action_ids: li
         # writer whose UPDATE flips proposed->executing runs the action, so a
         # concurrent loop/pipeline can't double-execute the same proposal.
         claim = conn.execute(
-            "UPDATE agent_actions SET status='executing' WHERE id = ? AND status = 'proposed'",
+            "UPDATE agent_actions SET status='executing', claimed_at=CURRENT_TIMESTAMP WHERE id = ? AND status = 'proposed'",
             (int(row["id"]),),
         )
         conn.commit()

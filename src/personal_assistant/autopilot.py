@@ -264,7 +264,7 @@ def _execute_safe_autopilot_actions(conn, limit: int, task_ids: list[int]) -> in
     executed = 0
     for row in rows:
         claim = conn.execute(
-            "UPDATE agent_actions SET status='executing' WHERE id=? AND status='proposed'",
+            "UPDATE agent_actions SET status='executing', claimed_at=CURRENT_TIMESTAMP WHERE id=? AND status='proposed'",
             (row["id"],),
         )
         if claim.rowcount == 0:
@@ -272,17 +272,22 @@ def _execute_safe_autopilot_actions(conn, limit: int, task_ids: list[int]) -> in
         row = conn.execute("SELECT * FROM agent_actions WHERE id = ?", (row["id"],)).fetchone()
         result = _execute_agent_action(conn, row)
         new_status = _status_from_result(result)
+        # PAOS-017: the raw executor result can embed provider stderr/stdout.
+        # The persisted copies (agent_actions.result, agent_observations) are
+        # redacted and bounded — mirroring the autonomy-loop safe path — while
+        # the receipt/event copies handle their own redaction.
+        persisted_result = apply_privacy_filters(conn, result)[:2000]
         conn.execute(
             "UPDATE agent_actions SET status=?, "
             "executed_at=CASE WHEN ?='executed' THEN CURRENT_TIMESTAMP ELSE executed_at END, result=? WHERE id = ?",
-            (new_status, new_status, result, row["id"]),
+            (new_status, new_status, persisted_result, row["id"]),
         )
         conn.execute(
             """
             INSERT INTO agent_observations (agent_task_id, observation_type, content, confidence)
             VALUES (?, 'autopilot_action_result', ?, 0.85)
             """,
-            (row["agent_task_id"], f"action #{row['id']}: {result}"),
+            (row["agent_task_id"], f"action #{row['id']}: {persisted_result}"),
         )
         # PAOS-013: safe (no-approval) autopilot executions leave the same
         # terminal receipt trail as the approval path; the receipt redacts its

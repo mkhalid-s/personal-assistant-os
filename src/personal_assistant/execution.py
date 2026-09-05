@@ -281,6 +281,16 @@ def recover_stranded_executions(
     event_log row. It deliberately does NOT re-execute: recovery only ever
     fails the row closed so an operator decides what happens next. Returns the
     recovered action ids (empty when nothing was stranded).
+
+    The clock is the CLAIM time (review R4): ``claimed_at`` is stamped by
+    every claim site, so a row claimed seconds ago is never reaped no matter
+    how old its approval/creation is. ``approved_at``/``executed_at``/
+    ``created_at`` remain the fallback chain for pre-migration rows that were
+    stranded before ``claimed_at`` existed. The terminal reset is a CAS on
+    status='executing' and the follow-up/event artifacts are written only
+    when that UPDATE actually moved a row — a racing writer that already
+    finished the action between our SELECT and UPDATE leaves no recovery
+    artifacts behind.
     """
     stale_minutes = max(1, int(stale_minutes))
     rows = conn.execute(
@@ -288,7 +298,7 @@ def recover_stranded_executions(
         SELECT id, agent_task_id, action_type, title
         FROM agent_actions
         WHERE status='executing'
-          AND COALESCE(approved_at, executed_at, created_at) <= datetime('now', ?)
+          AND COALESCE(claimed_at, approved_at, executed_at, created_at) <= datetime('now', ?)
         """,
         (f"-{stale_minutes} minutes",),
     ).fetchall()
@@ -299,10 +309,15 @@ def recover_stranded_executions(
             f"recovered: stranded in executing — no terminal status after {stale_minutes}m; "
             "marked failed by crash recovery, manual re-approval required"
         )
-        conn.execute(
+        reset = conn.execute(
             "UPDATE agent_actions SET status='failed', result=? WHERE id=? AND status='executing'",
             (result, action_id),
         )
+        # Review R4: rowcount 0 means a concurrent writer already moved the
+        # row out of 'executing' between our SELECT and this UPDATE — it is
+        # not stranded, so write none of the recovery artifacts.
+        if reset.rowcount == 0:
+            continue
         insert_inbox_item_dedup(
             conn,
             text=(
@@ -964,7 +979,7 @@ def approve_and_execute(
         conn.commit()
         return {"code": "failed", "approved": approved, "result": result, "status": "failed"}
     claim = conn.execute(
-        "UPDATE agent_actions SET status='executing' WHERE id=? AND status=?",
+        "UPDATE agent_actions SET status='executing', claimed_at=CURRENT_TIMESTAMP WHERE id=? AND status=?",
         (action_id, row["status"]),
     )
     if claim.rowcount == 0:
