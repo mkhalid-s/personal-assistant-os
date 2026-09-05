@@ -23,7 +23,7 @@ from .inbox import (
 )
 from .ingest.audio import transcribe_audio
 from .ingest.image import extract_image_text
-from .locks import acquire_lock, release_lock
+from .locks import acquire_lock, release_lock, renew_lock
 from .privacy import (
     _file_sha256,
     apply_privacy_filters,
@@ -625,6 +625,7 @@ def cmd_pulse(args: argparse.Namespace, *, load_env_file: Callable[[str], int] |
         while True:
             if acquire_lock(lock_conn, "pulse", owner):
                 try:
+                    renew_lock(lock_conn, "pulse", owner)  # PAOS-019: fresh lease per cycle
                     outputs = run_cycle(meeting_hours=args.meeting_hours)
                     print(f"[{datetime.now().isoformat(timespec='seconds')}] cycle -> {', '.join(outputs)}")
                 finally:

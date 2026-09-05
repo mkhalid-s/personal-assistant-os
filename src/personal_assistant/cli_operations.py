@@ -19,7 +19,7 @@ from .inbox import (
     infer_risk,
     insert_inbox_item_dedup,
 )
-from .locks import acquire_lock, release_lock
+from .locks import acquire_lock, release_lock, renew_lock
 
 
 @dataclass(frozen=True)
@@ -38,6 +38,7 @@ def cmd_run_day(args: argparse.Namespace, deps: OperationsDependencies) -> dict[
     if not acquire_lock(conn, "run_day", lock_owner):
         print("Another run-day pipeline is active. Skipping this run.")
         return {"status": "skipped", "details": "run_day lock already held"}
+    renew_lock(conn, "run_day", lock_owner)  # PAOS-019: fresh lease before long pipeline
     connectors = {
         "jira": JiraConnector,
         "github": GitHubConnector,
@@ -186,6 +187,7 @@ def cmd_go_live(args: argparse.Namespace, deps: OperationsDependencies) -> None:
     if not acquire_lock(conn, "go_live", lock_owner):
         print("Another go-live pipeline is active. Skipping this run.")
         return
+    renew_lock(conn, "go_live", lock_owner)  # PAOS-019: fresh lease before long pipeline
     connectors = {
         "jira": JiraConnector,
         "github": GitHubConnector,
