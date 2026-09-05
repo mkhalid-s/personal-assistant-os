@@ -11,10 +11,13 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import sqlite3
+import sys
 import tempfile
 import unittest
 import zlib
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -982,6 +985,729 @@ class InstalledModePathsTest(unittest.TestCase):
                 self.assertEqual(resolve_data_dir(), Path(tmp))
             finally:
                 conn.close()
+
+
+# ===========================================================================
+# Pass B — PAOS-020..053 remediation
+# ===========================================================================
+
+
+class RemindDispatchUsageTest(unittest.TestCase):
+    """PAOS-020: bare `myos remind` prints subcommand usage and exits 2."""
+
+    def test_bare_remind_usage_exit_2_no_db(self):
+        from personal_assistant import cli_reminders
+
+        args = argparse.Namespace(remind_action=None)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as ctx:
+            cli_reminders.cmd_remind_dispatch(args)
+        self.assertEqual(ctx.exception.code, 2)
+        text = out.getvalue().lower()
+        for word in ("usage", "create", "list", "complete", "snooze", "cancel"):
+            self.assertIn(word, text)
+
+    def test_known_action_still_dispatches(self):
+        from personal_assistant import cli_reminders
+
+        captured: list[str] = []
+
+        def fake_list(_args):
+            captured.append("ran")
+
+        with mock.patch.object(cli_reminders, "cmd_remind_list", fake_list):
+            cli_reminders.cmd_remind_dispatch(argparse.Namespace(remind_action="list", limit=5, due_only=False))
+        self.assertEqual(captured, ["ran"])
+
+
+class WorkerSystemExitTest(unittest.TestCase):
+    """PAOS-021: cmd_worker marks the job 'failed' when the orchestrator raises SystemExit."""
+
+    def setUp(self):
+        self.conn, self.path = _fresh_db_conn()
+
+    def tearDown(self):
+        self.conn.close()
+        os.unlink(self.path)
+        os.environ.pop("MYOS_DB_PATH", None)
+
+    def test_system_exit_marks_job_failed_with_code_message(self):
+        from personal_assistant import cli_operations
+
+        self.conn.execute(
+            "INSERT INTO workflow_queue (workflow_name, payload_json, status) VALUES ('daily', '{}', 'queued')"
+        )
+        self.conn.commit()
+
+        def fake_orchestrate(_args):
+            raise SystemExit("boom")
+
+        deps = cli_operations.OperationsDependencies(
+            load_env_file=lambda _path: 0, orchestrate_command=fake_orchestrate
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli_operations.cmd_worker(argparse.Namespace(limit=5), deps)
+        row = self.conn.execute("SELECT status, last_error FROM workflow_queue WHERE id = 1").fetchone()
+        self.assertEqual(row["status"], "failed")
+        self.assertEqual(row["last_error"], "boom")
+        self.assertIn("boom", out.getvalue())
+
+
+class LaunchdLifecycleTest(unittest.TestCase):
+    """PAOS-022: stop unloads loaded agents and KEEPS plists; activate reloads."""
+
+    def _deps(self) -> object:
+        from personal_assistant import cli_launchd
+
+        return cli_launchd.LaunchdRuntimeDependencies(
+            load_env_file=lambda _p: 0,
+            onboard_command=lambda _a: None,
+            go_live_command=lambda _a: None,
+            launchd_status_command=lambda _a: None,
+            sanity_command=lambda _a: None,
+        )
+
+    def test_stop_unloads_only_loaded_agents_and_keeps_plists(self):
+        from personal_assistant import cli_launchd
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = {label: Path(tmp) / f"{label}.plist" for label in cli_launchd._LAUNCHD_LABELS}
+            for path in paths.values():
+                path.write_text("<plist/>")
+            commands: list[list[str]] = []
+            out = io.StringIO()
+
+            def fake_run(argv, **kwargs):  # noqa: ARG001
+                commands.append(list(argv))
+                proc = argparse.Namespace(returncode=0)
+                return proc
+
+            deps = self._deps()
+            with (
+                mock.patch.object(cli_launchd, "_launchd_plist_paths", lambda: paths),
+                mock.patch.object(cli_launchd, "_launchctl", lambda: "launchctl"),
+                mock.patch.object(cli_launchd, "_agent_loaded", lambda _lc, label: label == "com.myos.sync"),
+                mock.patch.object(cli_launchd.subprocess, "run", fake_run),
+                contextlib.redirect_stdout(out),
+            ):
+                cli_launchd.cmd_stop(argparse.Namespace(), deps)
+            self.assertEqual(commands, [["launchctl", "unload", str(paths["com.myos.sync"])]])
+            self.assertIn("plists kept", out.getvalue())
+            for path in paths.values():
+                self.assertTrue(path.exists(), "stop must not delete plist files")
+
+    def test_load_unloaded_agents_reloads_installed_but_stopped(self):
+        from personal_assistant import cli_launchd
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = {label: Path(tmp) / f"{label}.plist" for label in cli_launchd._LAUNCHD_LABELS}
+            paths["com.myos.pulse"].write_text("<plist/>")  # only one exists on disk
+            commands: list[list[str]] = []
+
+            def fake_run(argv, **kwargs):  # noqa: ARG001
+                commands.append(list(argv))
+                return argparse.Namespace(returncode=0)
+
+            with (
+                mock.patch.object(cli_launchd, "_launchd_plist_paths", lambda: paths),
+                mock.patch.object(cli_launchd, "_launchctl", lambda: "launchctl"),
+                mock.patch.object(cli_launchd, "_agent_loaded", lambda _lc, _label: False),
+                mock.patch.object(cli_launchd.subprocess, "run", fake_run),
+            ):
+                count = cli_launchd._load_unloaded_agents()
+            self.assertEqual(count, 1)
+            self.assertEqual(commands, [["launchctl", "load", str(paths["com.myos.pulse"])]])
+
+
+class LaunchdStatusLabelsTest(unittest.TestCase):
+    """PAOS-023: launchd-status must report the scheduler agent label too."""
+
+    def test_status_includes_all_four_labels(self):
+        from personal_assistant import cli_runtime
+
+        out = io.StringIO()
+        with (
+            mock.patch.object(cli_runtime.shutil, "which", lambda _name: None),
+            contextlib.redirect_stdout(out),
+        ):
+            cli_runtime.cmd_launchd_status(argparse.Namespace())
+        text = out.getvalue()
+        for label in ("com.myos.sync", "com.myos.pulse", "com.myos.autopilot", "com.myos.scheduler"):
+            self.assertIn(label, text)
+
+
+class WatchIngestOSErrorTest(unittest.TestCase):
+    """PAOS-024: unreadable/unhashable watch-dir files skip instead of crashing."""
+
+    def setUp(self):
+        self.conn = _memory_conn()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _seed_watch_file(self) -> tuple[str, str]:
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        watch_dir = Path(tmp) / "watched"
+        watch_dir.mkdir()
+        target = watch_dir / "notes.md"
+        target.write_text("plain content")
+        self.conn.execute("INSERT INTO assistant_watch_dirs (path, status) VALUES (?, 'active')", (str(watch_dir),))
+        self.conn.commit()
+        return tmp, str(target)
+
+    def test_unreadable_file_is_marked_skipped_error(self):
+        from personal_assistant import cli_workflow
+
+        _tmp, target = self._seed_watch_file()
+
+        def boom(_self, *args, **kwargs):  # noqa: ARG001
+            raise OSError("rotated away")
+
+        with mock.patch.object(Path, "read_text", boom):
+            files, _suggestions = cli_workflow._scan_watch_dirs(self.conn, limit=5)
+        self.assertEqual(files, 0)
+        row = self.conn.execute("SELECT status FROM file_ingests WHERE file_path = ?", (target,)).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row["status"], "skipped_error")
+
+    def test_unhashable_file_is_skipped_without_stranding(self):
+        from personal_assistant import cli_workflow
+
+        _tmp, _target = self._seed_watch_file()
+        with mock.patch.object(cli_workflow, "_file_sha256", side_effect=OSError("gone")):
+            files, _suggestions = cli_workflow._scan_watch_dirs(self.conn, limit=5)
+        self.assertEqual(files, 0)
+        stranded = self.conn.execute("SELECT COUNT(*) AS c FROM file_ingests WHERE status='processing'").fetchone()["c"]
+        self.assertEqual(stranded, 0)
+
+
+class GoalPauseResumeTest(unittest.TestCase):
+    """PAOS-050: pausing/resuming an unknown goal exits 1 with a clear message."""
+
+    def setUp(self):
+        self.conn, self.path = _fresh_db_conn()
+
+    def tearDown(self):
+        self.conn.close()
+        os.unlink(self.path)
+        os.environ.pop("MYOS_DB_PATH", None)
+
+    def test_pause_and_resume_unknown_goal_exit_1(self):
+        from personal_assistant import cli_autonomy
+
+        for action in ("pause", "resume"):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as ctx:
+                cli_autonomy.cmd_goal(argparse.Namespace(goal_action=action, id=9999))
+            self.assertEqual(ctx.exception.code, 1, action)
+            self.assertIn("Goal #9999 not found.", out.getvalue())
+
+    def test_pause_and_resume_known_goal(self):
+        from personal_assistant import cli_autonomy
+
+        self.conn.execute(
+            "INSERT INTO assistant_goals (objective, context, cadence_minutes, priority, persona_name) "
+            "VALUES ('ship', '', 60, 1, NULL)"
+        )
+        self.conn.commit()
+        cli_autonomy.cmd_goal(argparse.Namespace(goal_action="pause", id=1))
+        status = self.conn.execute("SELECT status FROM assistant_goals WHERE id=1").fetchone()["status"]
+        self.assertEqual(status, "paused")
+        cli_autonomy.cmd_goal(argparse.Namespace(goal_action="resume", id=1))
+        status = self.conn.execute("SELECT status FROM assistant_goals WHERE id=1").fetchone()["status"]
+        self.assertEqual(status, "active")
+
+
+class DestructiveHintTokenTest(unittest.TestCase):
+    """PAOS-033: destructive hints match whole tokens, not substrings."""
+
+    def test_benign_embedded_hints_are_not_blocked(self):
+        from personal_assistant import autonomy
+
+        for name in ("produce_report", "dropdown_update", "deployment_check", "workforce_report"):
+            verdict = autonomy.classify_action(name)
+            self.assertNotEqual(verdict["tier"], autonomy.BLOCKED, name)
+            self.assertFalse(verdict["destructive"], name)
+
+    def test_destructive_names_stay_blocked(self):
+        from personal_assistant import autonomy
+
+        for name in (
+            "delete_comment",
+            "drop_table",
+            "purge_cache",
+            "force_push",
+            "deploy_prod",
+            "uninstall_agent",
+        ):
+            verdict = autonomy.classify_action(name)
+            self.assertEqual(verdict["tier"], autonomy.BLOCKED, name)
+
+    def test_multiword_hints_match_token_sequences(self):
+        from personal_assistant import autonomy
+
+        for name in ("close_all", "close_all_items", "git_reset_hard", "remove_branch", "reset_hard"):
+            self.assertTrue(autonomy._matches_destructive_hint(name), name)
+        for name in ("close_day", "close_alliance", "reset_hardware"):
+            self.assertFalse(autonomy._matches_destructive_hint(name), name)
+
+
+class DraftNudgeDedupTest(unittest.TestCase):
+    """PAOS-035: draft_nudges must not re-enqueue a still-pending nudge."""
+
+    def setUp(self):
+        self.conn = _memory_conn()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _finding(self, ref, kind="overdue"):
+        from personal_assistant.watch import _finding
+
+        return _finding(kind, "high", "work_item", ref, f"title {ref}", "reason", owner=None)
+
+    def test_second_run_enqueues_nothing_new(self):
+        from personal_assistant import watch
+
+        finding = self._finding(1)
+        first = watch.draft_nudges(self.conn, [finding])
+        self.assertEqual(len(first), 1)
+        second = watch.draft_nudges(self.conn, [finding])
+        self.assertEqual(second, [])
+        rows = self.conn.execute(
+            "SELECT COUNT(*) AS c FROM agent_actions WHERE status IN ('proposed','executing')"
+        ).fetchone()["c"]
+        self.assertEqual(rows, 1)
+
+    def test_distinct_refs_are_not_suppressed(self):
+        from personal_assistant import watch
+
+        watch.draft_nudges(self.conn, [self._finding(1), self._finding(2)])
+        rows = self.conn.execute("SELECT COUNT(*) AS c FROM agent_actions WHERE status='proposed'").fetchone()["c"]
+        self.assertEqual(rows, 2)
+
+
+class DashboardTokenTest(unittest.TestCase):
+    """PAOS-042: dashboard HTTP handler requires the ?token= query parameter."""
+
+    def test_handler_requires_token(self):
+        from personal_assistant import dashboard
+
+        conn = _memory_conn()
+        captured: dict[str, object] = {}
+
+        class FakeServer:
+            def __init__(self, _addr, handler):
+                captured["handler"] = handler
+
+            def serve_forever(self):
+                return  # stop serving immediately
+
+            def server_close(self):
+                return
+
+        out = io.StringIO()
+        try:
+            with (
+                mock.patch.object(dashboard, "HTTPServer", FakeServer),
+                contextlib.redirect_stdout(out),
+            ):
+                dashboard.serve_dashboard(conn, host="127.0.0.1", port=8787)
+            printed = [line for line in out.getvalue().splitlines() if "token=" in line]
+            self.assertEqual(len(printed), 1, out.getvalue())
+            token = printed[0].split("token=")[1].strip()
+
+            handler_cls = captured["handler"]
+
+            def make_request(path: str):
+                handler = handler_cls.__new__(handler_cls)
+                handler.request_version = "HTTP/1.0"
+                handler.command = "GET"
+                handler.path = path
+                # log_request interpolates requestline before our no-op
+                # log_message runs, so it must exist.
+                handler.requestline = f"GET {path} HTTP/1.0"
+                handler.wfile = io.BytesIO()
+                return handler
+
+            good = make_request(f"/?token={token}")
+            good.do_GET()
+            self.assertTrue(good.wfile.getvalue().startswith(b"HTTP/1.0 200"))
+            self.assertIn(b"text/html", good.wfile.getvalue())
+
+            bad = make_request("/")
+            bad.do_GET()
+            self.assertTrue(bad.wfile.getvalue().startswith(b"HTTP/1.0 401"), bad.wfile.getvalue())
+        finally:
+            conn.close()
+
+
+class AudioHelperTest(unittest.TestCase):
+    """PAOS-025: transcription helper runs under sys.executable + surfaces stderr."""
+
+    def _fake_run(self, calls, returncode, stdout, stderr):
+        def fake_run(argv, **kwargs):  # noqa: ARG001
+            calls["argv"] = argv
+            return argparse.Namespace(returncode=returncode, stdout=stdout, stderr=stderr)
+
+        return fake_run
+
+    def test_uses_sys_executable(self):
+        from personal_assistant.ingest import audio
+
+        calls: dict[str, object] = {}
+        with mock.patch.object(audio.subprocess, "run", self._fake_run(calls, 0, "hello world", "")):
+            result = audio.transcribe_audio("/tmp/x.wav")
+        self.assertEqual(result, "hello world")
+        self.assertEqual(calls["argv"][0], sys.executable)  # noqa: E501
+
+    def test_nonzero_exit_surfaces_stderr_snippet(self):
+        from personal_assistant.ingest import audio
+
+        err = io.StringIO()
+        calls: dict[str, object] = {}
+        with (
+            mock.patch.object(audio.subprocess, "run", self._fake_run(calls, 2, "", "boom boom\nsecond line")),
+            contextlib.redirect_stderr(err),
+        ):
+            result = audio.transcribe_audio("/tmp/x.wav")
+        self.assertEqual(result, "")
+        self.assertIn("rc=2", err.getvalue())
+        self.assertIn("boom boom", err.getvalue())
+
+
+class SchemaV44Test(unittest.TestCase):
+    """PAOS-009: fresh DB reaches migration 44 and carries the new indexes."""
+
+    def test_fresh_db_reaches_version_44_with_indexes(self):
+        from personal_assistant import db as db_mod
+
+        self.assertEqual(db_mod.EXPECTED_SCHEMA_VERSION, 44)
+        conn = _memory_conn()
+        try:
+            top = conn.execute("SELECT MAX(version) AS m FROM schema_migrations").fetchone()["m"]
+            self.assertEqual(top, 44)
+            applied = {r["version"] for r in conn.execute("SELECT version FROM schema_migrations").fetchall()}
+            self.assertEqual(applied, set(range(1, 45)))
+            indexes = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()}
+            self.assertIn("idx_chunks_created", indexes)
+            self.assertIn("idx_retrieval_runs_query", indexes)
+        finally:
+            conn.close()
+
+
+class SchemaFastPathTest(unittest.TestCase):
+    """PAOS-030: steady-state initialize_schema skips the whole chain."""
+
+    def test_second_initialize_hits_fast_path(self):
+        from personal_assistant import db as db_mod
+
+        conn = _memory_conn()
+        try:
+            with mock.patch.object(db_mod, "_ensure_fts5") as fts:
+                db_mod.initialize_schema(conn)
+            fts.assert_not_called()
+        finally:
+            conn.close()
+
+    def test_gapped_ledger_still_runs_full_chain(self):
+        from personal_assistant import db as db_mod
+
+        conn = _memory_conn()
+        try:
+            conn.execute("DELETE FROM schema_migrations WHERE version=41")
+            conn.commit()
+            with mock.patch.object(db_mod, "_ensure_fts5") as fts:
+                db_mod.initialize_schema(conn)
+            fts.assert_called_once()
+            present = {r["version"] for r in conn.execute("SELECT version FROM schema_migrations").fetchall()}
+            self.assertIn(41, present)
+        finally:
+            conn.close()
+
+
+class OperationalRetentionTest(unittest.TestCase):
+    """PAOS-018: only rows older than the window are removed, from every
+    covered table; the audit trail survives untouched."""
+
+    OLD_TS = "2020-01-01 00:00:00"
+    AUDIT_TABLES = (
+        "agent_actions",
+        "action_execution_receipts",
+        "action_outbox",
+        "autonomy_run_ledger",
+        "action_provider_executions",
+    )
+
+    def setUp(self):
+        self.conn = _memory_conn()
+        self.new_ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        # Parent rows referenced by child tables below (one old + one new each).
+        self.conn.execute("INSERT INTO agent_tasks (objective) VALUES ('retention')")
+        for ts in (self.OLD_TS, self.new_ts):
+            self.conn.execute("INSERT INTO retrieval_runs (query, created_at) VALUES ('q', ?)", (ts,))
+            self.conn.execute(
+                "INSERT INTO route_eval_runs (fixture_path, total_cases, passed_cases, accuracy, created_at) "
+                "VALUES ('f', 1, 1, 1.0, ?)",
+                (ts,),
+            )
+            self.conn.execute(
+                "INSERT INTO agent_actions (agent_task_id, action_type, title, created_at) "
+                "VALUES (1, 'create_inbox_item', 't', ?)",
+                (ts,),
+            )
+            self.conn.execute(
+                "INSERT INTO event_log (event_type, entity_type, entity_id, payload, created_at) "
+                "VALUES ('e', 'x', NULL, '{}', ?)",
+                (ts,),
+            )
+        self.runs = [r["id"] for r in self.conn.execute("SELECT id FROM retrieval_runs ORDER BY id").fetchall()]
+        self.eval_runs = [r["id"] for r in self.conn.execute("SELECT id FROM route_eval_runs ORDER BY id").fetchall()]
+        self.actions = [r["id"] for r in self.conn.execute("SELECT id FROM agent_actions ORDER BY id").fetchall()]
+        self.events = [r["id"] for r in self.conn.execute("SELECT id FROM event_log ORDER BY id").fetchall()]
+        self._insert_all_rows()
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _insert_all_rows(self) -> None:
+        for idx, ts in enumerate((self.OLD_TS, self.new_ts)):
+            suffix = "old" if idx == 0 else "new"
+            self.conn.execute(
+                "INSERT INTO agent_observations (agent_task_id, observation_type, content, created_at) "
+                "VALUES (1, 'o', 'c', ?)",
+                (ts,),
+            )
+            self.conn.execute(
+                "INSERT INTO agent_runs (agent_task_id, agent_name, provider, status, started_at) "
+                "VALUES (1, 'a', 'local', 'completed', ?)",
+                (ts,),
+            )
+            self.conn.execute(
+                "INSERT INTO autopilot_signals (signal_key, signal_type, source_type, title, created_at) "
+                "VALUES (?, 't', 's', 'ti', ?)",
+                (f"sig-{suffix}", ts),
+            )
+            self.conn.execute("INSERT INTO assistant_digests (title, body, created_at) VALUES ('t', 'b', ?)", (ts,))
+            self.conn.execute(
+                "INSERT INTO ai_provider_calls (provider, purpose, status, created_at) VALUES ('p', 'pr', 'ok', ?)",
+                (ts,),
+            )
+            self.conn.execute(
+                "INSERT INTO route_feedback (event_log_id, expected_intent, actual_intent, created_at) "
+                "VALUES (?, 'e', 'a', ?)",
+                (self.events[idx], ts),
+            )
+            self.conn.execute(
+                "INSERT INTO retrieval_run_sources (retrieval_run_id, rank, source_type, source_id, "
+                "citation, score, reason, created_at) VALUES (?, 1, 'chunk', 1, 'c', 0.5, 'r', ?)",
+                (self.runs[idx], ts),
+            )
+            self.conn.execute(
+                "INSERT INTO route_eval_cases (route_eval_run_id, fixture_id, category, text_hash, "
+                "expected_intent, actual_intent, backend, confidence, created_at) "
+                "VALUES (?, 'fx', 'cat', 'h', 'ei', 'ai', 'be', 0.9, ?)",
+                (self.eval_runs[idx], ts),
+            )
+            # Audit-trail rows (owner-decision items) — must survive retention.
+            self.conn.execute(
+                "INSERT INTO action_outbox (provider, target_type, title, body, status, created_at) "
+                "VALUES ('p', 'jira', 't', 'b', 'drafted', ?)",
+                (ts,),
+            )
+            self.conn.execute(
+                "INSERT INTO action_execution_receipts (agent_action_id, agent_task_id, action_type, "
+                "final_status, created_at) VALUES (?, 1, 'create_inbox_item', 'executed', ?)",
+                (self.actions[idx], ts),
+            )
+            self.conn.execute(
+                "INSERT INTO autonomy_run_ledger (decision_type, status, created_at) VALUES ('cycle', 'completed', ?)",
+                (ts,),
+            )
+            self.conn.execute(
+                "INSERT INTO action_provider_executions (agent_action_id, status, created_at) VALUES (?, 'ok', ?)",
+                (self.actions[idx], ts),
+            )
+
+    def test_old_rows_removed_new_kept_audit_trail_untouched(self):
+        from personal_assistant import observability
+
+        counts = observability.apply_operational_retention(self.conn, days=30)
+        self.assertGreaterEqual(counts["event_log"], 1)
+        for table in (
+            "event_log",
+            "agent_observations",
+            "agent_runs",
+            "autopilot_signals",
+            "assistant_digests",
+            "ai_provider_calls",
+            "route_feedback",
+            "retrieval_run_sources",
+            "retrieval_runs",
+            "route_eval_cases",
+            "route_eval_runs",
+        ):
+            remaining = self.conn.execute(f"SELECT COUNT(*) AS c FROM {table}").fetchone()["c"]
+            self.assertEqual(remaining, 1, f"{table} should keep only the new row")
+        for table in self.AUDIT_TABLES:
+            remaining = self.conn.execute(f"SELECT COUNT(*) AS c FROM {table}").fetchone()["c"]
+            self.assertEqual(remaining, 2, f"{table} is an owner-decision audit trail")
+
+    def test_env_window_is_honored_and_defaults_to_180(self):
+        from personal_assistant import observability
+
+        self.assertEqual(observability.DEFAULT_OPERATIONAL_RETENTION_DAYS, 180)
+        with mock.patch.dict(os.environ, {"MYOS_RETENTION_DAYS": "30"}):
+            counts = observability.apply_operational_retention(self.conn)
+        self.assertGreaterEqual(counts["event_log"], 1)
+
+
+class PersonaSeedGateTest(unittest.TestCase):
+    """PAOS-041: second ensure_builtin_personas call in the same process writes nothing."""
+
+    def test_second_call_performs_no_writes(self):
+        from personal_assistant import personas as personas_mod
+
+        personas_mod._BUILTIN_PERSONAS_SEEDED = False
+        conn = _memory_conn()
+        try:
+            personas_mod.ensure_builtin_personas(conn)
+            self.assertGreater(conn.total_changes, 0)
+            changes_after_first = conn.total_changes
+            personas_mod.ensure_builtin_personas(conn)
+            self.assertEqual(conn.total_changes, changes_after_first)
+        finally:
+            personas_mod._BUILTIN_PERSONAS_SEEDED = False
+            conn.close()
+
+
+class ConnectorClientErrorTest(unittest.TestCase):
+    """PAOS-046: 4xx HTTP errors are not retried; 5xx still are."""
+
+    def setUp(self):
+        self.conn = _memory_conn()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _make(self):
+        from personal_assistant.connectors.base import BaseConnector
+
+        class NoopConnector(BaseConnector):
+            name = "noop"
+
+        return NoopConnector(self.conn)
+
+    def test_401_raises_without_retry(self):
+        import urllib.error
+
+        from personal_assistant.connectors import base as base_mod
+
+        connector = self._make()
+        calls = {"count": 0}
+        real_urlopen = base_mod.urllib.request.urlopen
+
+        def fake_urlopen(req, timeout=25):  # noqa: ARG001
+            calls["count"] += 1
+            raise urllib.error.HTTPError(req.full_url, 401, "unauthorized", None, None)
+
+        base_mod.urllib.request.urlopen = fake_urlopen
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                connector.json_get("https://example.test/secret", {})
+        finally:
+            base_mod.urllib.request.urlopen = real_urlopen
+        ctx.exception.close()  # the fake fp-less error still warns on GC
+        self.assertEqual(calls["count"], 1)
+
+    def test_500_retries_then_raises(self):
+        import urllib.error
+
+        from personal_assistant.connectors import base as base_mod
+
+        connector = self._make()
+        calls = {"count": 0}
+        real_urlopen = base_mod.urllib.request.urlopen
+        os.environ["MYOS_CONNECTOR_RETRIES"] = "3"
+        os.environ["MYOS_CONNECTOR_BACKOFF_SEC"] = "0"
+
+        def fake_urlopen(req, timeout=25):  # noqa: ARG001
+            calls["count"] += 1
+            raise urllib.error.HTTPError(req.full_url, 500, "server error", None, None)
+
+        base_mod.urllib.request.urlopen = fake_urlopen
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                connector.json_get("https://example.test/flaky", {})
+        finally:
+            base_mod.urllib.request.urlopen = real_urlopen
+            os.environ.pop("MYOS_CONNECTOR_RETRIES", None)
+            os.environ.pop("MYOS_CONNECTOR_BACKOFF_SEC", None)
+        ctx.exception.close()
+        self.assertEqual(calls["count"], 3)
+
+
+class InboxListCommandTest(unittest.TestCase):
+    """PAOS-026: `myos inbox list` is a real read-only command."""
+
+    def setUp(self):
+        # cmd_inbox_list opens its own connection() — point MYOS_DB_PATH at a
+        # temp file so the handler reads the same rows we seed here.
+        self.conn, self.path = _fresh_db_conn()
+        for text in ("first capture", "second capture"):
+            self.conn.execute("INSERT INTO inbox_items (text, kind, source) VALUES (?, 'note', 'manual')", (text,))
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+        os.unlink(self.path)
+        os.environ.pop("MYOS_DB_PATH", None)
+
+    def test_inbox_list_prints_recent_items_newest_first(self):
+        from personal_assistant.cli_workflow import cmd_inbox_list
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cmd_inbox_list(argparse.Namespace(limit=10))
+        self.assertIn("Inbox items", out.getvalue())
+        self.assertIn("#2", out.getvalue())
+        self.assertIn("second capture", out.getvalue())
+        # newest-first ordering (id 2 printed before id 1)
+        self.assertLess(out.getvalue().index("#2"), out.getvalue().index("#1"))
+
+    def test_inbox_registered_as_read_only(self):
+        from personal_assistant import command_registry
+
+        spec = command_registry.find_command("inbox")
+        self.assertIsNotNone(spec)
+        self.assertEqual(spec.subcommands, ("list",))
+        self.assertEqual(spec.safety, "read_only")
+
+
+class QueuePayloadValidationTest(unittest.TestCase):
+    """PAOS-049: malformed --payload JSON exits 1 with a clean message."""
+
+    def setUp(self):
+        self.conn, self.path = _fresh_db_conn()
+
+    def tearDown(self):
+        self.conn.close()
+        os.unlink(self.path)
+        os.environ.pop("MYOS_DB_PATH", None)
+
+    def test_invalid_json_exits_1(self):
+        from personal_assistant import cli_operations
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as ctx:
+            cli_operations.cmd_queue_add(argparse.Namespace(workflow="daily", payload="{not json"))
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertIn("Invalid --payload JSON", out.getvalue())
+        queued = self.conn.execute("SELECT COUNT(*) AS c FROM workflow_queue").fetchone()["c"]
+        self.assertEqual(queued, 0)
 
 
 if __name__ == "__main__":
