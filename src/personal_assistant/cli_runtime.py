@@ -44,7 +44,8 @@ def cmd_dashboard(args: argparse.Namespace) -> None:
         output_path.write_text(render_dashboard_html(conn, report_dir=args.report_dir))
         print(f"Dashboard snapshot written: {output_path}")
         return
-    print(f"Serving dashboard at http://{args.host}:{args.port}")
+    # serve_dashboard prints the tokened URL itself (PAOS-042); a bare URL
+    # would invite requests that can no longer authenticate.
     serve_dashboard(conn, host=args.host, port=args.port, report_dir=args.report_dir)
 
 

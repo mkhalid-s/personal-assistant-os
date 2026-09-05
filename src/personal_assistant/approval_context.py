@@ -40,6 +40,17 @@ def _dedupe(values: list[str]) -> list[str]:
     return result
 
 
+# Mirrors execution.py's connector-payload detection (that module imports this
+# one, so the shape check is duplicated rather than imported — keep in sync).
+_CONNECTOR_TARGETS = frozenset({"jira", "github", "confluence", "aha"})
+_CONNECTOR_OPERATIONS = frozenset({"comment", "status_update", "draft_note", "link_back"})
+
+
+def _is_connector_shaped_payload(payload: dict[str, Any]) -> bool:
+    target = str(payload.get("connector") or payload.get("target") or payload.get("target_type") or "").lower()
+    return target in _CONNECTOR_TARGETS or str(payload.get("operation") or "").strip() in _CONNECTOR_OPERATIONS
+
+
 def action_review_context(
     action_type: str, payload: dict[str, Any] | None, *, requires_approval: bool = True
 ) -> ActionReviewContext:
@@ -82,6 +93,11 @@ def action_review_context(
         safer_commands.insert(1, "myos runbook --short")
 
     dry_run = _truthy(payload.get("dry_run"))
+    if "dry_run" not in payload and _is_connector_shaped_payload(payload):
+        # PAOS-039: connector mutations are drafted-by-default in execution.py —
+        # only an explicit dry_run=false makes them live. When the payload never
+        # states dry_run, the approval display must not claim dry_run=False.
+        dry_run = True
     approval_reason = "approval_required" if requires_approval else "safe_local"
     if "external_write" in side_effects:
         approval_reason = "external_write_requires_approval"

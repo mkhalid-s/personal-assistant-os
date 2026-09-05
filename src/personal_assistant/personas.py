@@ -93,7 +93,23 @@ def _row_to_persona(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+# PAOS-041: the builtin seed is immutable within a process, but list/get/
+# create surfaces call ensure_builtin_personas on every invocation — each
+# call runs an upsert per persona plus a commit. This once-per-process gate
+# skips the writes once builtins are known-present. The existence re-check
+# keeps behavior identical when a process touches more than one database
+# (a second, still-empty personas table must be seeded too), while the
+# steady-state path is a single indexed SELECT instead of N upserts.
+_BUILTIN_PERSONAS_SEEDED = False
+
+
 def ensure_builtin_personas(conn: sqlite3.Connection) -> None:
+    global _BUILTIN_PERSONAS_SEEDED
+    if (
+        _BUILTIN_PERSONAS_SEEDED
+        and conn.execute("SELECT 1 FROM personas WHERE is_builtin=1 LIMIT 1").fetchone() is not None
+    ):
+        return
     for persona in BUILTIN_PERSONAS:
         conn.execute(
             """
@@ -120,6 +136,7 @@ def ensure_builtin_personas(conn: sqlite3.Connection) -> None:
             ),
         )
     conn.commit()
+    _BUILTIN_PERSONAS_SEEDED = True
 
 
 def list_personas(conn: sqlite3.Connection, *, active_only: bool = True) -> list[dict[str, Any]]:

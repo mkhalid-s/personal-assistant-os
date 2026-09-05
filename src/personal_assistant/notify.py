@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import sqlite3
@@ -146,11 +147,17 @@ def _dispatch_osascript(envelope: dict[str, Any]) -> tuple[bool, str | None]:
     """macOS Notification Center fallback via ``osascript``.
 
     Escapes double quotes in title/body so ``display notification`` is
-    given a well-formed AppleScript expression. Only runs on darwin;
-    the caller guards this.
+    given a well-formed AppleScript expression. Control characters
+    (newlines/CR/tabs) are collapsed to single spaces (PAOS-036): the
+    script is passed as a single ``-e`` AppleScript string, and a raw
+    newline inside it terminates the statement / breaks the literal.
+    Only runs on darwin; the caller guards this.
     """
     title = (envelope.get("title") or "MYOS Reminder").replace('"', "'").replace("\\", "/")
     body = (envelope.get("body") or "").replace('"', "'").replace("\\", "/")
+    # osascript string literals cannot contain raw newlines (PAOS-036).
+    title = re.sub(r"[\r\n\t]+", " ", title)
+    body = re.sub(r"[\r\n\t]+", " ", body)
     script = f'display notification "{body}" with title "{title}"'
     try:
         proc = subprocess.run(  # noqa: S603 - fixed argv, no user shell interpolation

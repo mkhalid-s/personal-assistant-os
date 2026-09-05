@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import secrets
 import sqlite3
 from datetime import datetime
 from html import escape
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from .data_dirs import resolve_data_dir
 
@@ -181,8 +183,24 @@ def render_dashboard_html(conn: sqlite3.Connection, report_dir: str = "") -> str
 
 
 def serve_dashboard(conn: sqlite3.Connection, host: str = "127.0.0.1", port: int = 8787, report_dir: str = "") -> None:
+    # PAOS-042: the dashboard renders personal schedule/risk data, and a bare
+    # localhost bind does not stop other local processes (or a browser
+    # DNS-rebinding page) from reading it. Every serve mints a random token;
+    # requests must present it as a query parameter or get a 401.
+    token = secrets.token_urlsafe(16)
+
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
+            query = parse_qs(urlparse(self.path).query)
+            supplied = (query.get("token") or [""])[0]
+            if not secrets.compare_digest(supplied, token):
+                body = b"unauthorized: use the tokened URL printed at startup\n"
+                self.send_response(401)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             body = render_dashboard_html(conn, report_dir=report_dir).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -194,6 +212,7 @@ def serve_dashboard(conn: sqlite3.Connection, host: str = "127.0.0.1", port: int
             return
 
     server = HTTPServer((host, port), Handler)
+    print(f"Serving dashboard at http://{host}:{port}/?token={token}")
     try:
         server.serve_forever()
     finally:
