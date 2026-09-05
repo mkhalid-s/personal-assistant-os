@@ -286,15 +286,32 @@ def cmd_scheduler_tick(args: argparse.Namespace) -> None:
         print(f"- #{entry['id']} [{entry['kind']}] via {marker}")
 
 
+_REMIND_USAGE = """\
+usage: myos remind <subcommand> [options]
+
+subcommands:
+  create    Schedule a reminder: myos remind create "text" --at HH:MM|+Nm|ISO
+  list      List pending reminders (optionally --due-only).
+  complete  Mark a reminder done: myos remind complete --id <id>
+  snooze    Push a reminder later: myos remind snooze --id <id> --for 30m
+  cancel    Cancel a reminder: myos remind cancel --id <id>
+"""
+
+
 def cmd_remind_dispatch(args: argparse.Namespace) -> None:
     """Dispatch entry for ``myos remind …`` subcommands.
 
     argparse routes to this function via ``set_defaults(func=…)`` when
-    the top-level ``remind`` parser dispatches — the sub-action lives on
-    ``args.remind_action`` and defaults to ``create`` so ``myos remind
-    "text" --at 15:00`` behaves as a create.
+    the top-level ``remind`` parser dispatches. ``text``/``--at`` only
+    exist on the ``create`` subparser, so a bare ``myos remind`` (no
+    subcommand) has nothing to create with — print the subcommand usage
+    and exit 2 (PAOS-020) instead of falling through to ``create`` and
+    crashing with an AttributeError on the missing namespace fields.
     """
-    action = getattr(args, "remind_action", None) or "create"
+    action = getattr(args, "remind_action", None)
+    if action is None:
+        print(_REMIND_USAGE, end="")
+        raise SystemExit(2)
     handler = {
         "create": cmd_remind_create,
         "list": cmd_remind_list,

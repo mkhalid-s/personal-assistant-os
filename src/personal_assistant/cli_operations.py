@@ -439,7 +439,14 @@ def cmd_queue_add(args: argparse.Namespace) -> None:
     conn = get_connection()
     payload = {}
     if args.payload:
-        payload = json.loads(args.payload)
+        # PAOS-049: a malformed --payload used to escape as a bare traceback;
+        # fail with a clean message instead.
+        try:
+            payload = json.loads(args.payload)
+        except json.JSONDecodeError as err:
+            conn.close()
+            print(f"Invalid --payload JSON: {err}")
+            raise SystemExit(1) from err
     conn.execute(
         """
         INSERT INTO workflow_queue (workflow_name, payload_json, status)
@@ -508,17 +515,26 @@ def cmd_worker(args: argparse.Namespace, deps: OperationsDependencies) -> None:
                 )
                 conn.commit()
                 print(f"Worker completed job #{job_id} ({workflow})")
-            except Exception as exc:
+            except (Exception, SystemExit) as exc:
+                # PAOS-021: SystemExit must be caught too — cmd_orchestrate and
+                # every step handler signal failure with `raise SystemExit(...)`,
+                # which does not derive from Exception, so the old handler let
+                # the job row stay stuck in 'running'. Carry exc.code (int or
+                # str) as the message for SystemExit, str(exc) otherwise.
+                if isinstance(exc, SystemExit):
+                    message = str(exc.code) if exc.code not in (None, "") else "exited"
+                else:
+                    message = str(exc)
                 conn.execute(
                     """
                     UPDATE workflow_queue
                     SET status='failed', finished_at=CURRENT_TIMESTAMP, last_error=?
                     WHERE id = ?
                     """,
-                    (str(exc), job_id),
+                    (message, job_id),
                 )
                 conn.commit()
-                print(f"Worker failed job #{job_id} ({workflow}): {exc}")
+                print(f"Worker failed job #{job_id} ({workflow}): {message}")
         if processed == 0:
             print("Worker: all queued jobs were already claimed by another worker.")
     finally:
