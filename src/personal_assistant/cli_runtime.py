@@ -12,7 +12,9 @@ from .db import get_connection
 
 
 def cmd_launchd_status(_: argparse.Namespace) -> None:
-    labels = ["com.myos.sync", "com.myos.pulse", "com.myos.autopilot"]
+    # PAOS-023: the scheduler agent was missing from the status surface even
+    # though `myos launchd-install --scheduler` installs it — report all four.
+    labels = ["com.myos.sync", "com.myos.pulse", "com.myos.autopilot", "com.myos.scheduler"]
     print("Launchd status:")
     launchctl = shutil.which("launchctl")
     if not launchctl:

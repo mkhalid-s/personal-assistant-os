@@ -48,6 +48,41 @@ class LaunchdRuntimeDependencies:
     sanity_command: Callable[[argparse.Namespace], None]
 
 
+_LAUNCHD_LABELS = ("com.myos.sync", "com.myos.pulse", "com.myos.autopilot", "com.myos.scheduler")
+
+
+def _launchd_plist_paths() -> dict[str, Path]:
+    """Destination plist path per agent label.
+
+    Single source of truth for install/uninstall/stop/start so the
+    lifecycle verbs (PAOS-022: stop must unload without deleting) can
+    never drift from the paths the installer writes.
+    """
+    target_dir = Path.home() / "Library" / "LaunchAgents"
+    return {label: target_dir / f"{label}.plist" for label in _LAUNCHD_LABELS}
+
+
+def _launchctl() -> str | None:
+    return shutil.which("launchctl")
+
+
+def _agent_loaded(launchctl: str, label: str) -> bool:
+    proc = subprocess.run([launchctl, "list", label], capture_output=True, text=True, check=False)
+    return proc.returncode == 0
+
+
+def _launchctl_verb(launchctl: str, verb: str, path: Path, label: str) -> bool:
+    """Run ``launchctl <verb> <path>`` and report the per-label outcome
+    (PAOS-045): ``loaded``/``unloaded`` on success, ``FAILED (rc=N)``
+    otherwise, so a silently-failing launchctl is no longer invisible."""
+    proc = subprocess.run([launchctl, verb, str(path)], capture_output=True, text=True, check=False)
+    if proc.returncode == 0:
+        print(f"- {label}: {verb}ed")
+        return True
+    print(f"- {label}: FAILED (rc={proc.returncode})")
+    return False
+
+
 def _dev_repo_root() -> Path | None:
     """Return the checkout root if we're in dev mode AND a usable
     ``.venv`` is available, else ``None``.
@@ -138,10 +173,11 @@ def cmd_launchd_install(args: argparse.Namespace) -> None:
     err_path = {name: log_dir / f"{name}.err.log" for name in ("sync", "pulse", "autopilot", "scheduler")}
 
     target_dir = Path.home() / "Library" / "LaunchAgents"
-    dst_sync = target_dir / "com.myos.sync.plist"
-    dst_pulse = target_dir / "com.myos.pulse.plist"
-    dst_autopilot = target_dir / "com.myos.autopilot.plist"
-    dst_scheduler = target_dir / "com.myos.scheduler.plist"
+    paths = _launchd_plist_paths()
+    dst_sync = paths["com.myos.sync"]
+    dst_pulse = paths["com.myos.pulse"]
+    dst_autopilot = paths["com.myos.autopilot"]
+    dst_scheduler = paths["com.myos.scheduler"]
 
     sync_plist = f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
@@ -269,57 +305,52 @@ def cmd_launchd_install(args: argparse.Namespace) -> None:
         dst_scheduler.write_text(scheduler_plist)
     print("Copied launchd files.")
     if args.load:
-        launchctl = shutil.which("launchctl")
+        launchctl = _launchctl()
         if not launchctl:
             print("launchctl unavailable; copied files but skipped loading launch agents.")
             return
-        subprocess.run([launchctl, "unload", str(dst_sync)], check=False)
-        subprocess.run([launchctl, "unload", str(dst_pulse)], check=False)
+        wanted = [dst_sync, dst_pulse]
         if args.autopilot:
-            subprocess.run([launchctl, "unload", str(dst_autopilot)], check=False)
+            wanted.append(dst_autopilot)
         if scheduler_enabled:
-            subprocess.run([launchctl, "unload", str(dst_scheduler)], check=False)
-        subprocess.run([launchctl, "load", str(dst_sync)], check=False)
-        subprocess.run([launchctl, "load", str(dst_pulse)], check=False)
-        if args.autopilot:
-            subprocess.run([launchctl, "load", str(dst_autopilot)], check=False)
-        if scheduler_enabled:
-            subprocess.run([launchctl, "load", str(dst_scheduler)], check=False)
+            wanted.append(dst_scheduler)
+        load_results: list[tuple[str, bool]] = []
+        for path in wanted:
+            label = path.stem
+            # Reload semantics: only unload agents that are actually loaded so a
+            # first install doesn't print noise for a no-op unload (PAOS-045).
+            if _agent_loaded(launchctl, label):
+                _launchctl_verb(launchctl, "unload", path, label)
+            load_results.append((label, _launchctl_verb(launchctl, "load", path, label)))
+        failed_labels = [label for label, ok in load_results if not ok]
+        if failed_labels:
+            print(f"Warning: {len(failed_labels)} launch agent(s) failed to load: {', '.join(failed_labels)}.")
+            print("Inspect <data_dir>/logs/*.err.log and re-run `myos launchd-install --apply --load`.")
+            raise SystemExit(1)
         print("Loaded launch agents.")
 
 
 def cmd_launchd_uninstall(args: argparse.Namespace) -> None:
-    target_dir = Path.home() / "Library" / "LaunchAgents"
-    dst_sync = target_dir / "com.myos.sync.plist"
-    dst_pulse = target_dir / "com.myos.pulse.plist"
-    dst_autopilot = target_dir / "com.myos.autopilot.plist"
-    dst_scheduler = target_dir / "com.myos.scheduler.plist"
+    paths = _launchd_plist_paths()
     print("Launchd uninstall plan:")
-    print(f"- remove {dst_sync}")
-    print(f"- remove {dst_pulse}")
-    print(f"- remove {dst_autopilot}")
-    print(f"- remove {dst_scheduler}")
+    for label in _LAUNCHD_LABELS:
+        print(f"- remove {paths[label]}")
     if not args.apply:
         print("Dry run only. Re-run with --apply to execute.")
         return
-    launchctl = shutil.which("launchctl")
+    launchctl = _launchctl()
 
-    def unload(path: Path) -> None:
-        if launchctl:
+    def unload(path: Path, label: str) -> None:
+        # Tolerant by design: uninstall must succeed even when launchctl is
+        # missing or the agent was never loaded; rc is captured, never fatal.
+        if launchctl and _agent_loaded(launchctl, label):
             subprocess.run([launchctl, "unload", str(path)], check=False, capture_output=True, text=True)
 
-    if dst_sync.exists():
-        unload(dst_sync)
-        dst_sync.unlink()
-    if dst_pulse.exists():
-        unload(dst_pulse)
-        dst_pulse.unlink()
-    if dst_autopilot.exists():
-        unload(dst_autopilot)
-        dst_autopilot.unlink()
-    if dst_scheduler.exists():
-        unload(dst_scheduler)
-        dst_scheduler.unlink()
+    for label in _LAUNCHD_LABELS:
+        path = paths[label]
+        if path.exists():
+            unload(path, label)
+            path.unlink()
     print("Launch agents removed.")
 
 
@@ -358,6 +389,25 @@ def cmd_activate(args: argparse.Namespace, deps: LaunchdRuntimeDependencies) -> 
                 scheduler_interval_sec=60,
             )
         )
+    # PAOS-022: stop no longer deletes plists, so start/activate must restore
+    # the runtime by loading any installed-but-unloaded agents.
+    restored = _load_unloaded_agents()
+    if restored:
+        print(f"Loaded {restored} previously installed launch agent(s).")
+
+
+def _load_unloaded_agents() -> int:
+    """``launchctl load`` every MYOS agent plist that exists on disk but is
+    not currently loaded. Returns the count of newly loaded agents."""
+    launchctl = _launchctl()
+    if not launchctl:
+        return 0
+    loaded = 0
+    for label in _LAUNCHD_LABELS:
+        path = _launchd_plist_paths()[label]
+        if path.exists() and not _agent_loaded(launchctl, label) and _launchctl_verb(launchctl, "load", path, label):
+            loaded += 1
+    return loaded
 
 
 def cmd_start(args: argparse.Namespace, deps: LaunchdRuntimeDependencies) -> None:
@@ -379,8 +429,17 @@ def cmd_start(args: argparse.Namespace, deps: LaunchdRuntimeDependencies) -> Non
 
 
 def cmd_stop(args: argparse.Namespace, deps: LaunchdRuntimeDependencies) -> None:
-    print("Stopping MYOS runtime: unload/remove launchd -> status")
-    cmd_launchd_uninstall(argparse.Namespace(apply=True))
+    # PAOS-022: stop is a runtime pause, not an uninstall — unload the loaded
+    # agents but keep their plists so a later `myos start` can reload them.
+    print("Stopping MYOS runtime: unload launchd agents (plists kept) -> status")
+    launchctl = _launchctl()
+    if not launchctl:
+        print("launchctl unavailable; nothing to unload.")
+    else:
+        for label in _LAUNCHD_LABELS:
+            path = _launchd_plist_paths()[label]
+            if path.exists() and _agent_loaded(launchctl, label):
+                _launchctl_verb(launchctl, "unload", path, label)
     print()
     deps.launchd_status_command(argparse.Namespace())
 
