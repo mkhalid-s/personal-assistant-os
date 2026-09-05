@@ -119,8 +119,31 @@ ensure_pipx() {
     log "(dry-run) would run: python3 -m pipx ensurepath"
     return
   fi
-  if ! python3 -m pip install --user --upgrade pipx; then
-    die 3 "failed to install pipx via pip"
+  local pip_err
+  if ! pip_err="$(python3 -m pip install --user --upgrade pipx 2>&1)"; then
+    # PAOS-027: PEP 668 marks many distro pythons as externally managed, which
+    # makes `pip install --user` fail outright. Fall back to the distro's own
+    # pipx package (apt-get, then dnf) before giving up with guidance.
+    if printf '%s' "$pip_err" | grep -q 'externally-managed-environment'; then
+      log "PEP 668 externally-managed python detected; trying the distro pipx package."
+      if command -v apt-get >/dev/null 2>&1; then
+        if sudo apt-get install -y pipx; then
+          log "pipx installed via apt-get."
+        else
+          die 3 "apt-get install -y pipx failed. Install pipx with your OS package manager or via https://pipx.pypa.io, then re-run."
+        fi
+      elif command -v dnf >/dev/null 2>&1; then
+        if sudo dnf install -y pipx; then
+          log "pipx installed via dnf."
+        else
+          die 3 "dnf install -y pipx failed. Install pipx with your OS package manager or via https://pipx.pypa.io, then re-run."
+        fi
+      else
+        die 3 "This python is externally managed (PEP 668) and 'pip install --user' is refused. No apt-get or dnf was found: install pipx with your OS package manager (e.g. pacman -S python-pipx) or via https://pipx.pypa.io, then re-run."
+      fi
+    else
+      die 3 "failed to install pipx via pip: $(printf '%s\n' "$pip_err" | tail -n 2 | tr '\n' ' ')"
+    fi
   fi
   # `pipx ensurepath` prints its own instructions; refresh PATH so this
   # shell can find the newly installed pipx binary without a re-login.

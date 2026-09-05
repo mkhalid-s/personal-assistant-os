@@ -6,6 +6,11 @@ on:
     tags:
       - "v*"
 
+# PAOS-052: least-privilege — the release validation only needs to read the
+# repository; publishing is done by a dedicated workflow.
+permissions:
+  contents: read
+
 jobs:
   validate:
     runs-on: ubuntu-latest

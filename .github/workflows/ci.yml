@@ -7,6 +7,11 @@ on:
   pull_request:
     branches: [main]
 
+# PAOS-051: cancel superseded runs on the same ref instead of queueing them.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -119,8 +124,22 @@ jobs:
         with:
           fetch-depth: 0
 
+      # PAOS-051: check the actual pushed/PR diff, not a hardcoded range.
+      # For pushes use github.event.before when it is a real commit SHA
+      # (not the all-zeros placeholder GitHub sends on new branches); for
+      # PRs diff the merge-base with the base branch so later pushes to the
+      # base don't leak into the result.
       - name: Check diff whitespace
-        run: git diff --check HEAD~1..HEAD
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --quiet origin "${{ github.base_ref }}"
+            base="$(git merge-base "origin/${{ github.base_ref }}" HEAD)"
+            git diff --check "${base}..HEAD"
+          elif [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            git diff --check "${{ github.event.before }}..HEAD"
+          else
+            git diff --check HEAD~1..HEAD
+          fi
 
       - name: Scan for private references
         run: |
