@@ -466,7 +466,14 @@ class ClaudeBackend(BaseBackend):
         reply = "\n".join(p for p in reply_parts if p).strip()
         # One ledger row per turn: the tool loop bills per API call, so the
         # per-iteration usage is summed with a request count (see usage.py).
-        usage.record(conn, backend=self.name, model=model, purpose="chat", usage=usage_acc, persona=(persona or {}).get("name"))
+        usage.record(
+            conn,
+            backend=self.name,
+            model=model,
+            purpose="chat",
+            usage=usage_acc,
+            persona=(persona or {}).get("name"),
+        )
         return {
             "reply": reply,
             "proposed_action_ids": ctx["ids"],

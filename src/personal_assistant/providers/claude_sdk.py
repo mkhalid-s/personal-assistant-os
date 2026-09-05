@@ -143,9 +143,21 @@ class ClaudeSdkBackend(BaseBackend):
                 # The terminal ResultMessage carries token usage and the SDK's own
                 # dollar figure; pass both through so run_turn can ledger them
                 # (usage.record keeps self-reported cost beside the computed one).
+                # `usage` may be a dict or a typed Usage object depending on the
+                # SDK version — normalize both into the mapping.
                 message_usage = getattr(message, "usage", None)
                 if isinstance(message_usage, dict):
                     usage_map.update(message_usage)
+                elif message_usage is not None:
+                    for field in (
+                        "input_tokens",
+                        "output_tokens",
+                        "cache_creation_input_tokens",
+                        "cache_read_input_tokens",
+                    ):
+                        value = getattr(message_usage, field, None)
+                        if value is not None:
+                            usage_map[field] = value
                 total_cost = getattr(message, "total_cost_usd", None)
                 if total_cost is not None:
                     usage_map["cost_usd"] = total_cost

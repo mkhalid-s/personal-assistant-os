@@ -9,6 +9,7 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
+from . import usage as usage_ledger
 from .connectors import AhaConnector, ConfluenceConnector, GitHubConnector, JiraConnector
 from .db import append_event, connection
 from .extraction import extract_suggestions
@@ -24,7 +25,6 @@ from .inbox import (
 from .ingest.audio import transcribe_audio
 from .ingest.image import extract_image_text
 from .locks import acquire_lock, release_lock
-from . import usage as usage_ledger
 from .privacy import (
     _file_sha256,
     apply_privacy_filters,

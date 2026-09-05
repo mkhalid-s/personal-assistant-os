@@ -50,13 +50,15 @@ def _self_reported_cost_millicents(usage: Mapping[str, Any] | None) -> int | Non
     """External executors self-report dollars (``costUsd``); keep it verbatim,
     converted to millicents, next to our own computed figure."""
     usage = usage or {}
-    raw = usage.get("costUsd", usage.get("cost_usd"))
-    if raw is None:
-        return None
-    try:
-        return round(float(raw) * 100_000)
-    except (TypeError, ValueError):
-        return None
+    for key in ("costUsd", "cost_usd"):
+        raw = usage.get(key)
+        if raw is None:
+            continue
+        try:
+            return round(float(raw) * 100_000)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def record(
@@ -156,7 +158,8 @@ def budget_status(conn) -> dict[str, object]:
     )
     monthly_spent = int(
         conn.execute(
-            "SELECT COALESCE(SUM(cost_millicents), 0) FROM llm_usage_events WHERE created_at >= date('now', 'start of month')"
+            "SELECT COALESCE(SUM(cost_millicents), 0) FROM llm_usage_events "
+            "WHERE created_at >= date('now', 'start of month')"
         ).fetchone()[0]
     )
 
