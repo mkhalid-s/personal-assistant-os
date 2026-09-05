@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import autonomy, command_registry, factory, intents, model_setup, providers
+from .data_dirs import _repo_root_if_dev, resolve_data_dir
 from .db import get_connection, initialize_schema, resolve_db_path, verify_schema
 
 
@@ -107,6 +108,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     db_parent = db_path.expanduser().parent
     fts_ok, fts_detail = _sqlite_fts5_available(conn)
     schema_status = verify_schema(conn)
+    repo_root = _repo_root_if_dev()
     gitignore_text = _repo_file(".gitignore").read_text() if _repo_file(".gitignore").exists() else ""
 
     core_checks.extend(
@@ -133,14 +135,30 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                 bool(schema_status["ok"]),
                 f"current={schema_status['current_version']} expected={schema_status['expected_version']}",
             ),
-            ("env_example", _repo_file(".env.example").exists(), str(_repo_file(".env.example"))),
-            (
-                "local_artifacts_ignored",
-                "data/" in gitignore_text and ".env" in gitignore_text,
-                ".gitignore covers data and env files",
-            ),
         ]
     )
+    if repo_root is None:
+        # PAOS-003: installed mode (pipx/wheel) — .env.example and .gitignore live
+        # in the repo, not next to site-packages, so checking them would fail
+        # `myos doctor --strict` for a healthy install. Downgrade to informational
+        # optional checks; dev checkouts keep the exact previous core behavior.
+        optional_checks.extend(
+            [
+                ("env_example", False, "not a dev checkout — repo .env.example not applicable"),
+                ("local_artifacts_ignored", False, "not a dev checkout — no .gitignore to verify"),
+            ]
+        )
+    else:
+        core_checks.extend(
+            [
+                ("env_example", _repo_file(".env.example").exists(), str(_repo_file(".env.example"))),
+                (
+                    "local_artifacts_ignored",
+                    "data/" in gitignore_text and ".env" in gitignore_text,
+                    ".gitignore covers data and env files",
+                ),
+            ]
+        )
 
     credential_groups = {
         "jira_credentials": ["JIRA_BASE_URL", "JIRA_USER_EMAIL", "JIRA_API_TOKEN"],
@@ -283,7 +301,7 @@ def cmd_sanity(args: argparse.Namespace) -> None:
     open_items = conn.execute("SELECT COUNT(*) AS c FROM work_items WHERE status='open'").fetchone()["c"]
     checks.append(("load_levels", True, f"inbox_new={inbox_new}, open_items={open_items}"))
 
-    report_dir = Path(args.report_dir) if args.report_dir else Path(__file__).resolve().parents[2] / "data" / "reports"
+    report_dir = Path(args.report_dir) if args.report_dir else resolve_data_dir() / "reports"
     latest_reports = sorted(report_dir.glob("daily-brief-*.md"), reverse=True)[:1] if report_dir.exists() else []
     checks.append(
         ("daily_report", len(latest_reports) > 0, f"latest={latest_reports[0].name if latest_reports else 'none'}")

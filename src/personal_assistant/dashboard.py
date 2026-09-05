@@ -6,6 +6,8 @@ from html import escape
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+from .data_dirs import resolve_data_dir
+
 
 def _query_rows(conn: sqlite3.Connection, query: str, params: tuple = ()):
     return conn.execute(query, params).fetchall()
@@ -71,7 +73,9 @@ def render_dashboard_html(conn: sqlite3.Connection, report_dir: str = "") -> str
     ).fetchone()
 
     report_links = []
-    rdir = Path(report_dir) if report_dir else Path(__file__).resolve().parents[2] / "data" / "reports"
+    # PAOS-003: default through data_dirs (MYOS_DATA_DIR > dev repo data/ >
+    # platform data dir) so installed builds resolve reports outside site-packages.
+    rdir = Path(report_dir) if report_dir else resolve_data_dir() / "reports"
     if rdir.exists():
         report_links = sorted(rdir.glob("daily-brief-*.md"), reverse=True)[:10]
 

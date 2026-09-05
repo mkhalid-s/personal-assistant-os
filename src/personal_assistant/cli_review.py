@@ -6,6 +6,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from . import autonomy
+from .data_dirs import resolve_data_dir
 from .db import append_event, connection
 from .privacy import apply_privacy_filters
 from .pulse import detect_mode
@@ -371,7 +372,9 @@ def cmd_report(args: argparse.Namespace) -> None:
             """
         ).fetchall()
 
-    report_dir = Path(args.output_dir) if args.output_dir else Path(__file__).resolve().parents[2] / "data" / "reports"
+    # PAOS-003: default through data_dirs so installed builds write reports
+    # under the platform data dir instead of site-packages.
+    report_dir = Path(args.output_dir) if args.output_dir else resolve_data_dir() / "reports"
     report_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d-%H%M")
     report_path = report_dir / f"daily-brief-{ts}.md"

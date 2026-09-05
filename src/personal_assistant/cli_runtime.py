@@ -7,6 +7,7 @@ from pathlib import Path
 
 from . import cli_health
 from .dashboard import render_dashboard_html, serve_dashboard
+from .data_dirs import resolve_data_dir
 from .db import get_connection
 
 
@@ -34,11 +35,9 @@ def cmd_launchd_status(_: argparse.Namespace) -> None:
 def cmd_dashboard(args: argparse.Namespace) -> None:
     conn = get_connection()
     if args.once:
-        output_path = (
-            Path(args.output_html)
-            if args.output_html
-            else (Path(__file__).resolve().parents[2] / "data" / "dashboard.html")
-        )
+        # PAOS-003: default snapshot path through data_dirs so installed builds
+        # write the dashboard under the platform data dir, not site-packages.
+        output_path = Path(args.output_html) if args.output_html else resolve_data_dir() / "dashboard.html"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(render_dashboard_html(conn, report_dir=args.report_dir))
         print(f"Dashboard snapshot written: {output_path}")

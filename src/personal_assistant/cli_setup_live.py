@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import cli_diagnostics, model_setup
+from .data_dirs import resolve_data_dir
 from .db import get_connection
 
 
@@ -100,8 +101,10 @@ def _upsert_env_lines(path: Path, lines: list[str], *, header: str = "# Managed 
 
 
 def _setup_live_paths(args: argparse.Namespace) -> tuple[Path, Path, Path, Path]:
-    project_root = Path(__file__).resolve().parents[2]
-    data_dir = (Path(args.data_dir).expanduser() if args.data_dir else project_root / "data").resolve()
+    # PAOS-003: default data_dir comes from data_dirs (MYOS_DATA_DIR > dev repo
+    # data/ > platform data dir) instead of Path(__file__).parents[2], which
+    # pointed into site-packages for pipx installs.
+    data_dir = (Path(args.data_dir).expanduser() if args.data_dir else resolve_data_dir()).resolve()
     env_path = (Path(args.env_file).expanduser() if args.env_file else data_dir / ".env.myos").resolve()
     env_values = _read_env_values(env_path)
     configured_db = args.db_path or os.getenv("MYOS_DB_PATH", "") or env_values.get("MYOS_DB_PATH", "")
