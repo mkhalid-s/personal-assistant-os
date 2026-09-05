@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import re
+import zlib
 
 from . import agentcore, em, graph
 from .db import append_event
@@ -263,11 +264,16 @@ def _derive_comention_edges(conn, names: list[str]) -> int:
 
 def _person_ref(conn, name: str) -> int:
     """ref_id for a person node: the people.id if known, else a stable hash so unknown
-    names still get a consistent node (negative to avoid colliding with real ids)."""
+    names still get a consistent node (negative to avoid colliding with real ids).
+
+    Uses crc32 rather than salted ``hash()`` (PAOS-004): PYTHONHASHSEED randomizes
+    str hashing per process, so the same name would map to a different node id in
+    every new process and split the co-mention graph across runs. Matches the
+    deterministic approach documented in retrieval.py."""
     row = conn.execute("SELECT id FROM people WHERE name = ? COLLATE NOCASE", (name,)).fetchone()
     if row:
         return int(row["id"])
-    return -(abs(hash(name)) % 1_000_000_000)
+    return -(zlib.crc32(name.encode("utf-8")) % 1_000_000_000)
 
 
 def reflect(conn, *, lookback: int = 200, min_cluster: int = 2) -> dict:
