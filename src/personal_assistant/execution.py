@@ -213,13 +213,125 @@ def _status_from_result(result: str) -> str:
         return "blocked"
     if result.startswith(("provider execution failed:", "patch failed")):
         return "failed"
-    if result.startswith(("no diff to apply", "marked complete")):
-        return "noop"  # nothing happened — don't record as 'executed' (review A5)
+    if result.startswith(
+        (
+            "no diff to apply",
+            "marked complete",
+            # PAOS-014: these outcomes leave no external mutation to undo, so
+            # they must not be recorded as 'executed' (which would make the
+            # receipt derive a rollback compensation for nothing).
+            "connector drafted",
+            "inbox item already existed",
+            "draft ready:",
+        )
+    ):
+        return "noop"
     return "executed"
 
 
 def _truthy(value: object) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+# PAOS-007: bounds for the operator-facing diff preview on approval surfaces.
+# Large enough to judge a patch, small enough to keep a terminal scroll sane;
+# the full diff stays in the payload (hash-pinned, approval-gated).
+DIFF_PREVIEW_MAX_LINES = 40
+DIFF_PREVIEW_MAX_CHARS = 2000
+
+
+def format_diff_preview(payload: dict[str, object]) -> str | None:
+    """Bounded preview of payload["diff"] for approval display surfaces (PAOS-007).
+
+    Renders the first ``DIFF_PREVIEW_MAX_LINES`` lines (capped at
+    ``DIFF_PREVIEW_MAX_CHARS`` chars) with an explicit truncation marker that
+    counts the remaining lines, so an operator approving an apply_patch action
+    sees the actual patch without dumping an unbounded blob to the terminal.
+    Returns ``None`` when the payload carries no diff."""
+    diff = str(payload.get("diff") or "")
+    if not diff.strip():
+        return None
+    lines = diff.splitlines()
+    shown = lines[:DIFF_PREVIEW_MAX_LINES]
+    preview = "\n".join(shown)
+    if len(preview) > DIFF_PREVIEW_MAX_CHARS:
+        preview = preview[:DIFF_PREVIEW_MAX_CHARS] + "\n[...]"
+    remaining = len(lines) - len(shown)
+    if remaining > 0:
+        preview += f"\n[... {remaining} more line(s) truncated — full diff is pinned in the payload]"
+    return preview
+
+
+# PAOS-002: an 'executing' row older than this was claimed by a process that
+# died between the claim commit and the terminal status UPDATE. Recovery resets
+# it to 'failed' — it never auto-retries, so the stale threshold can stay short.
+STRANDED_EXECUTION_STALE_MINUTES = 30
+
+
+def recover_stranded_executions(
+    conn: sqlite3.Connection, stale_minutes: int = STRANDED_EXECUTION_STALE_MINUTES
+) -> list[int]:
+    """Reset agent_actions rows stuck in status='executing' past ``stale_minutes``.
+
+    A crash between the status='executing' claim commit and the final status
+    UPDATE strands the row forever: every path that could advance it requires
+    status='proposed' or 'approved' (PAOS-002). Recovery marks such rows
+    'failed' with a ``recovered: stranded in executing`` result, leaves a
+    ``follow_up`` inbox item referencing the action id, and appends an
+    event_log row. It deliberately does NOT re-execute: recovery only ever
+    fails the row closed so an operator decides what happens next. Returns the
+    recovered action ids (empty when nothing was stranded).
+    """
+    stale_minutes = max(1, int(stale_minutes))
+    rows = conn.execute(
+        """
+        SELECT id, agent_task_id, action_type, title
+        FROM agent_actions
+        WHERE status='executing'
+          AND COALESCE(approved_at, executed_at, created_at) <= datetime('now', ?)
+        """,
+        (f"-{stale_minutes} minutes",),
+    ).fetchall()
+    recovered: list[int] = []
+    for row in rows:
+        action_id = int(row["id"])
+        result = (
+            f"recovered: stranded in executing — no terminal status after {stale_minutes}m; "
+            "marked failed by crash recovery, manual re-approval required"
+        )
+        conn.execute(
+            "UPDATE agent_actions SET status='failed', result=? WHERE id=? AND status='executing'",
+            (result, action_id),
+        )
+        insert_inbox_item_dedup(
+            conn,
+            text=(
+                f"Action #{action_id} [{row['action_type']}] {row['title']} was stranded in 'executing' "
+                "by a crashed run and has been marked failed. Review the outcome and re-run manually: "
+                f"myos approve --action {action_id} --execute"
+            ),
+            kind="follow_up",
+            owner=None,
+            due_date=None,
+            confidence=0.9,
+            source="execution_recovery",
+        )
+        append_event(
+            conn,
+            "execution_stranded_recovered",
+            "agent_action",
+            action_id,
+            json.dumps(
+                {"task_id": row["agent_task_id"], "stale_minutes": stale_minutes, "result": result},
+                ensure_ascii=True,
+            ),
+        )
+        recovered.append(action_id)
+    if recovered:
+        # Commit only when we actually recovered something so callers that hold
+        # an open transaction keep their existing commit points.
+        conn.commit()
+    return recovered
 
 
 def _connector_live_enabled(conn: sqlite3.Connection, connector: str) -> bool:
@@ -764,6 +876,25 @@ def _post_github_comment(payload: dict[str, object], body: str) -> str:
         return text[:1000]
 
 
+_INTEGRITY_REASON_DETAILS = {
+    "payload_hash_mismatch": (
+        "payload changed between approval and execution — refusing to execute "
+        "a modified payload (approval integrity binding)."
+    ),
+    "approval_ttl_exceeded": (
+        "approval is older than MYOS_APPROVAL_TTL_SECONDS — refusing to execute "
+        "a long-stale approval; re-approve to run."
+    ),
+}
+
+
+def _integrity_block_result(integrity: dict[str, object]) -> str:
+    """Build the refusal result string for a failed integrity check."""
+    reason = str(integrity.get("reason") or "approval_integrity_failed")
+    detail = _INTEGRITY_REASON_DETAILS.get(reason, "approval integrity check failed — refusing to execute.")
+    return f"blocked: {reason} — {detail}"
+
+
 def approve_and_execute(
     conn: sqlite3.Connection,
     action_id: int,
@@ -777,6 +908,9 @@ def approve_and_execute(
     code ∈ not_found | approved_only | noop | needs_approval | already_executed
           | already_handled | executed | failed
     """
+    # PAOS-002: sweep rows stranded in 'executing' by earlier crashed runs before
+    # any new work so they can't linger forever in the queue.
+    recover_stranded_executions(conn)
     row = conn.execute("SELECT * FROM agent_actions WHERE id = ?", (action_id,)).fetchone()
     if not row:
         return {"code": "not_found", "approved": False, "result": "", "status": ""}
@@ -807,18 +941,7 @@ def approve_and_execute(
         return {"code": "already_executed", "approved": approved, "result": "", "status": "executed"}
     integrity = verify_approval_integrity(row)
     if not integrity["ok"]:
-        reason = str(integrity.get("reason") or "approval_integrity_failed")
-        detail = {
-            "payload_hash_mismatch": (
-                "payload changed between approval and execution — refusing to execute "
-                "a modified payload (approval integrity binding)."
-            ),
-            "approval_ttl_exceeded": (
-                "approval is older than MYOS_APPROVAL_TTL_SECONDS — refusing to execute "
-                "a long-stale approval; re-approve to run."
-            ),
-        }.get(reason, "approval integrity check failed — refusing to execute.")
-        result = f"blocked: {reason} — {detail}"
+        result = _integrity_block_result(integrity)
         conn.execute(
             "UPDATE agent_actions SET status='failed', result=? WHERE id = ?",
             (result, action_id),
@@ -828,7 +951,7 @@ def approve_and_execute(
             "approval_integrity_block",
             "agent_action",
             action_id,
-            json.dumps({"reason": reason, "context": integrity}, ensure_ascii=True),
+            json.dumps({"reason": integrity.get("reason"), "context": integrity}, ensure_ascii=True),
         )
         _record_execution_receipt(
             conn,
@@ -849,19 +972,54 @@ def approve_and_execute(
         return {"code": "already_handled", "approved": approved, "result": "", "status": row["status"]}
     conn.commit()
     row = conn.execute("SELECT * FROM agent_actions WHERE id = ?", (action_id,)).fetchone()
+    # PAOS-016: re-verify integrity on the re-fetched row. The claim commit opened
+    # a window in which payload_json could be mutated or the approval could age
+    # past its TTL — that gap must not skip the guard right before execution.
+    integrity = verify_approval_integrity(row)
+    if not integrity["ok"]:
+        result = _integrity_block_result(integrity)
+        conn.execute(
+            "UPDATE agent_actions SET status='failed', result=? WHERE id = ?",
+            (result, action_id),
+        )
+        append_event(
+            conn,
+            "approval_integrity_block",
+            "agent_action",
+            action_id,
+            json.dumps(
+                {"reason": integrity.get("reason"), "context": integrity, "phase": "post_claim"},
+                ensure_ascii=True,
+            ),
+        )
+        _record_execution_receipt(
+            conn,
+            row,
+            approved=approved,
+            final_status="failed",
+            result=result,
+            integrity=integrity,
+        )
+        conn.commit()
+        return {"code": "failed", "approved": approved, "result": result, "status": "failed"}
     result = _execute_agent_action(conn, row)
     new_status = _status_from_result(result)
+    # PAOS-017: the raw executor result can embed provider stderr/stdout. The
+    # persisted copies (agent_actions.result, agent_observations) are redacted and
+    # bounded; the return envelope keeps the raw string for the interactive caller,
+    # and _record_execution_receipt redacts its own receipt copy.
+    persisted_result = apply_privacy_filters(conn, result)[:2000]
     conn.execute(
         "UPDATE agent_actions SET status=?, "
         "executed_at=CASE WHEN ?='executed' THEN CURRENT_TIMESTAMP ELSE executed_at END, result=? WHERE id = ?",
-        (new_status, new_status, result, action_id),
+        (new_status, new_status, persisted_result, action_id),
     )
     conn.execute(
         """
         INSERT INTO agent_observations (agent_task_id, observation_type, content, confidence)
         VALUES (?, 'action_result', ?, 0.85)
         """,
-        (row["agent_task_id"], f"action #{action_id}: {result}"),
+        (row["agent_task_id"], f"action #{action_id}: {persisted_result}"),
     )
     _record_execution_receipt(conn, row, approved=approved, final_status=new_status, result=result)
     append_event(
@@ -910,6 +1068,16 @@ def _handle_proposals(conn: sqlite3.Connection, action_ids: list[int]) -> None:
         body = _provider_body(payload)
         if body:
             print(f"    draft: {body if len(body) <= 300 else body[:297] + '...'}")
+        # PAOS-007: an apply_patch proposal must be reviewable before approval —
+        # show a bounded preview of the actual diff plus where it would apply.
+        diff_preview = format_diff_preview(payload)
+        if diff_preview:
+            print("    diff preview:")
+            for line in diff_preview.splitlines():
+                print(f"      {line}")
+        repo_root = str(payload.get("repo_root") or "").strip()
+        if repo_root:
+            print(f"    repo_root: {repo_root}")
 
         if tier == autonomy.BLOCKED:
             print(f"    ⛔ blocked ({verdict['reason']}). Will not auto-execute — do this manually.")
