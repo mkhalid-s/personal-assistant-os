@@ -84,16 +84,23 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     # state for every connect after the first) skips the entire migration
     # chain, including the FTS5 self-heal probe and its trigger DDL. Fresh
     # DBs (no table), behind-version DBs, and corrupt/partial states fall
-    # through to the full idempotent path below.
+    # through to the full idempotent path below. The ledger COUNT guard keeps
+    # the partial-application repair semantics: if a version row was lost to a
+    # crash between DDL and ledger insert, MAX(version) can still equal the
+    # expected version while the ledger has a gap — that DB must re-run the
+    # chain so the guarded migrations repair themselves (PAOS-001).
     try:
         has_migrations_table = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
         ).fetchone()
         if has_migrations_table is not None:
-            current_version = int(
-                conn.execute("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations").fetchone()["version"]
-            )
-            if current_version == EXPECTED_SCHEMA_VERSION:
+            ledger = conn.execute(
+                "SELECT COALESCE(MAX(version), 0) AS max_version, COUNT(*) AS applied FROM schema_migrations"
+            ).fetchone()
+            if (
+                int(ledger["max_version"]) == EXPECTED_SCHEMA_VERSION
+                and int(ledger["applied"]) == EXPECTED_SCHEMA_VERSION
+            ):
                 return
     except sqlite3.OperationalError:
         pass  # unreadable/corrupt schema — run the full init path
@@ -1777,7 +1784,11 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             (41, "scrub_connector_payloads"),
         )
 
-    if current < 42:
+    # PAOS-001/PAOS-009: key the repair on the version ROW's presence, not just
+    # MAX(version) — once migration 44 exists, a ledger missing 42/43 keeps
+    # MAX at 44, and a `current < N` check alone would never repair it.
+    migration_42_applied = conn.execute("SELECT 1 FROM schema_migrations WHERE version=42").fetchone() is not None
+    if current < 42 or not migration_42_applied:
         # PAOS-001: guard like migrations 36/37/38 — a bare ADD COLUMN breaks
         # when migration 42 partially applied (column exists, version row lost
         # to a crash), so every later open would raise "duplicate column name".
@@ -1790,7 +1801,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             (42, "add_factory_persona"),
         )
 
-    if current < 43:
+    migration_43_applied = conn.execute("SELECT 1 FROM schema_migrations WHERE version=43").fetchone() is not None
+    if current < 43 or not migration_43_applied:
         # PAOS-001: same partial-application guard as migration 42.
         columns = conn.execute("PRAGMA table_info(assistant_goals)").fetchall()
         names = {row["name"] for row in columns}

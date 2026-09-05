@@ -223,14 +223,15 @@ OPERATIONAL_RETENTION_DAYS_ENV = "MYOS_RETENTION_DAYS"
 # action_outbox, autonomy_run_ledger, and action_provider_executions are
 # owner-decision items (approvals, compensations, delegated-mutation evidence)
 # and must survive retention sweeps until an owner explicitly purges them.
-_OPERATIONAL_RETENTION_TABLES = (
-    "event_log",
-    "agent_observations",
-    "agent_runs",
-    "autopilot_signals",
-    "assistant_digests",
-    "ai_provider_calls",
-    "route_feedback",
+# Each entry is (table, timestamp column) — agent_runs stamps started_at.
+_OPERATIONAL_RETENTION_TABLES: tuple[tuple[str, str], ...] = (
+    ("event_log", "created_at"),
+    ("agent_observations", "created_at"),
+    ("agent_runs", "started_at"),
+    ("autopilot_signals", "created_at"),
+    ("assistant_digests", "created_at"),
+    ("ai_provider_calls", "created_at"),
+    ("route_feedback", "created_at"),
 )
 
 
@@ -250,13 +251,13 @@ def apply_operational_retention(conn: sqlite3.Connection, days: int | None = Non
     """
     if days is None:
         days = int(os.getenv(OPERATIONAL_RETENTION_DAYS_ENV, str(DEFAULT_OPERATIONAL_RETENTION_DAYS)))
-    # These tables stamp created_at via SQLite's CURRENT_TIMESTAMP (UTC,
+    # These tables stamp their timestamp via SQLite's CURRENT_TIMESTAMP (UTC,
     # "YYYY-MM-DD HH:MM:SS"), so the cutoff uses the same shape for a clean
     # lexicographic comparison.
     cutoff = (datetime.now(timezone.utc) - timedelta(days=max(0, int(days)))).strftime("%Y-%m-%d %H:%M:%S")
     deleted: dict[str, int] = {}
-    for table in _OPERATIONAL_RETENTION_TABLES:
-        deleted[table] = conn.execute(f"DELETE FROM {table} WHERE created_at < ?", (cutoff,)).rowcount
+    for table, ts_column in _OPERATIONAL_RETENTION_TABLES:
+        deleted[table] = conn.execute(f"DELETE FROM {table} WHERE {ts_column} < ?", (cutoff,)).rowcount
     # Children must follow their parent's cutoff (deleting by the child's own
     # created_at would orphan sources whose run aged out).
     deleted["retrieval_run_sources"] = conn.execute(
