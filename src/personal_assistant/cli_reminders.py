@@ -20,10 +20,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
+import uuid
 from typing import Any
 
-from . import notify, observability, reminders
+from . import locks, notify, observability, reminders
 from .db import connection
 
 REMINDER_SCHEMA = "myos.reminder.v1"
@@ -171,11 +173,19 @@ def cmd_scheduler_tick(args: argparse.Namespace) -> None:
     """``myos scheduler tick [--json]`` — fire every due reminder once.
 
     Intended to run on a short cadence (60s default) from launchd via
-    ``myos launchd-install --scheduler``. Each due reminder is
-    dispatched through the ``notify.notify()`` pipeline and then
-    ``reminders.mark_fired()``-transitioned so a subsequent tick won't
-    re-fire it. ``mark_fired`` is a no-op on a non-pending row, so a
-    crashed tick can safely be retried.
+    ``myos launchd-install --scheduler``. Two agents guard against
+    double-firing (PAOS-011):
+
+    1. The tick holds the ``scheduler`` pipeline lock for its duration, so
+       two overlapping ticks can't dispatch the same due reminder.
+    2. Per reminder, ``reminders.mark_fired()`` CAS-claims the row BEFORE
+       dispatch; a concurrent tick therefore never sees it as due. If the
+       notification then fails, ``notify.notify()`` still writes its
+       ``reminder_missed`` durable-inbox row, so the reminder is surfaced
+       even though it won't re-fire.
+
+    Work commits per reminder so a slow subprocess hook doesn't hold the
+    SQLite write lock (and the pipeline lock) for the whole tick.
 
     JSON envelope ``myos.scheduler.tick.v1``:
 
@@ -204,28 +214,40 @@ def cmd_scheduler_tick(args: argparse.Namespace) -> None:
             command_path="scheduler tick",
             surface="scheduler",
         )
-        due = reminders.list_due(conn)
+        lock_owner = f"scheduler-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         fired: list[dict[str, Any]] = []
-        for row in due:
-            result = notify.notify(
-                conn,
-                title=f"MYOS Reminder: {row['kind']}",
-                body=row["text"],
-                kind="reminder",
-                correlation_id=correlation_id,
-                source_ref=f"reminder:{row['id']}",
-            )
-            reminders.mark_fired(conn, int(row["id"]))
-            fired.append(
-                {
-                    "id": int(row["id"]),
-                    "kind": row["kind"],
-                    "dispatched": bool(result["dispatched"]),
-                    "channel": str(result["channel"]),
-                    "error": result["error"],
-                    "inbox_id": result["inbox_id"],
-                }
-            )
+        if locks.acquire_lock(conn, "scheduler", lock_owner):
+            try:
+                due = reminders.list_due(conn)
+                for row in due:
+                    # Claim first (CAS pending -> fired): whichever tick wins the
+                    # race owns the dispatch; the loser skips without notifying.
+                    if reminders.mark_fired(conn, int(row["id"])) is None:
+                        continue
+                    result = notify.notify(
+                        conn,
+                        title=f"MYOS Reminder: {row['kind']}",
+                        body=row["text"],
+                        kind="reminder",
+                        correlation_id=correlation_id,
+                        source_ref=f"reminder:{row['id']}",
+                    )
+                    # notify() already recorded the reminder_missed durable-inbox
+                    # fallback when dispatch failed, so a failed push never
+                    # silently swallows the reminder — commit and continue.
+                    conn.commit()
+                    fired.append(
+                        {
+                            "id": int(row["id"]),
+                            "kind": row["kind"],
+                            "dispatched": bool(result["dispatched"]),
+                            "channel": str(result["channel"]),
+                            "error": result["error"],
+                            "inbox_id": result["inbox_id"],
+                        }
+                    )
+            finally:
+                locks.release_lock(conn, "scheduler", lock_owner)
         remaining = reminders.count_pending(conn)
         next_at = reminders.next_scheduled_at(conn)
         ts = notify.build_envelope(title="", body="")["ts"]
