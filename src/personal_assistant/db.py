@@ -39,9 +39,13 @@ def get_connection() -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode = WAL;")
+    # PAOS-010: busy_timeout and foreign_keys MUST be set before the WAL
+    # switch — journal_mode=WAL briefly needs exclusive access, so without
+    # an early busy_timeout a concurrent writer holding the DB makes the
+    # pragma (and thus every connection open) fail with "database is locked".
     conn.execute("PRAGMA busy_timeout = 5000;")
     conn.execute("PRAGMA foreign_keys = ON;")
+    conn.execute("PRAGMA journal_mode = WAL;")
     initialize_schema(conn)
     for candidate in (db_path, Path(f"{db_path}-wal"), Path(f"{db_path}-shm")):
         if candidate.exists():
@@ -1751,14 +1755,24 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         )
 
     if current < 42:
-        conn.execute("ALTER TABLE factory_runs ADD COLUMN persona_name TEXT")
+        # PAOS-001: guard like migrations 36/37/38 — a bare ADD COLUMN breaks
+        # when migration 42 partially applied (column exists, version row lost
+        # to a crash), so every later open would raise "duplicate column name".
+        columns = conn.execute("PRAGMA table_info(factory_runs)").fetchall()
+        names = {row["name"] for row in columns}
+        if "persona_name" not in names:
+            conn.execute("ALTER TABLE factory_runs ADD COLUMN persona_name TEXT")
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
             (42, "add_factory_persona"),
         )
 
     if current < 43:
-        conn.execute("ALTER TABLE assistant_goals ADD COLUMN persona_name TEXT")
+        # PAOS-001: same partial-application guard as migration 42.
+        columns = conn.execute("PRAGMA table_info(assistant_goals)").fetchall()
+        names = {row["name"] for row in columns}
+        if "persona_name" not in names:
+            conn.execute("ALTER TABLE assistant_goals ADD COLUMN persona_name TEXT")
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
             (43, "add_goal_persona"),
