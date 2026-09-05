@@ -61,7 +61,12 @@ def _emit_error(schema: str, error: str, *, details: dict[str, Any] | None = Non
 
 
 def cmd_remind_create(args: argparse.Namespace) -> None:
-    """``myos remind "text" --at <when> [--kind …] [--json]``."""
+    """``myos remind create "text" --at <when> [--kind …] [--source-ref …] [--json]``.
+
+    The ``create`` subcommand is required — bare ``myos remind`` has no
+    positional shorthand (``text``/``--at`` only exist on this subparser) and
+    prints the subcommand usage with exit 2 (PAOS-020; see
+    ``cmd_remind_dispatch``)."""
     with connection() as conn:
         try:
             rid = reminders.create(

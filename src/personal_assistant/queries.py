@@ -8,6 +8,8 @@ so any backend can call them safely and auto-run them without approval.
 
 from __future__ import annotations
 
+import sqlite3
+
 from .retrieval import hybrid_score, tokenize
 
 
@@ -169,8 +171,10 @@ def context_search(conn, query: str, limit: int = 5, *, source_types: set[str] |
                 )
             if out:
                 return out
-        except Exception:
-            pass  # FTS5 missing / query error -> fall back to scan
+        except sqlite3.OperationalError:
+            # PAOS-029: only FTS5-missing / FTS query errors fall back to the
+            # brute-force scan; programming errors must still surface.
+            pass
 
     type_sql = ""
     params = []

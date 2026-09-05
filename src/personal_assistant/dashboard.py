@@ -209,6 +209,12 @@ def serve_dashboard(conn: sqlite3.Connection, host: str = "127.0.0.1", port: int
             self.wfile.write(body)
 
         def log_message(self, format, *args):
+            # R9/PAOS-042: BaseHTTPRequestHandler's default request logging
+            # writes each request line — including the ?token= query string —
+            # to stderr. The token is the dashboard's only access control, so
+            # request logging is suppressed entirely (a redacted path would
+            # still leak which URLs were requested with which shape); the
+            # tokened URL is printed exactly once at startup instead.
             return
 
     server = HTTPServer((host, port), Handler)

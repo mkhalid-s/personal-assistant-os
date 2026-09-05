@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 import zlib
 
 from . import agentcore, em, graph
@@ -192,7 +193,10 @@ def extract_observations(conn, turn_id: int | None, user_text: str, assistant_te
     # People — known team members named anywhere in the turn (most reliable signal).
     try:
         known = [r["name"] for r in conn.execute("SELECT name FROM people").fetchall()]
-    except Exception:
+    except sqlite3.OperationalError:
+        # PAOS-028: only the expected failure — the people table missing on a
+        # fresh/partial schema — falls back to no known names; programming
+        # errors must still surface.
         known = []
     mentioned: list[str] = []
     for name in known:

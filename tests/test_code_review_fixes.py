@@ -1500,6 +1500,52 @@ class DashboardTokenTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_request_logging_never_emits_token(self):
+        """R9: BaseHTTPRequestHandler's default log_message writes each request
+        line (including ?token=…) to stderr; the dashboard handler must
+        override it so the access-control token can't leak into logs."""
+        from personal_assistant import dashboard
+
+        captured: dict[str, object] = {}
+
+        class FakeServer:
+            def __init__(self, _addr, handler):
+                captured["handler"] = handler
+
+            def serve_forever(self):
+                return
+
+            def server_close(self):
+                return
+
+        conn = _memory_conn()
+        out = io.StringIO()
+        try:
+            with (
+                mock.patch.object(dashboard, "HTTPServer", FakeServer),
+                contextlib.redirect_stdout(out),
+            ):
+                dashboard.serve_dashboard(conn, host="127.0.0.1", port=8787)
+            handler_cls = captured["handler"]
+
+            inst = handler_cls.__new__(handler_cls)
+            inst.requestline = "GET /?token=SUPERSECRET HTTP/1.0"
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                inst.log_message('"%s"', inst.requestline)
+            self.assertEqual(err.getvalue(), "", "tokened request line must not reach stderr")
+
+            # Control: the stock implementation DOES emit, so the override is
+            # what silences it (this test can't pass vacuously).
+            stock = dashboard.BaseHTTPRequestHandler.__new__(dashboard.BaseHTTPRequestHandler)
+            stock.address_string = lambda: "127.0.0.1"  # type: ignore[method-assign]
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                dashboard.BaseHTTPRequestHandler.log_message(stock, '"%s"', inst.requestline)
+            self.assertIn("SUPERSECRET", err.getvalue())
+        finally:
+            conn.close()
+
 
 class AudioHelperTest(unittest.TestCase):
     """PAOS-025: transcription helper runs under sys.executable + surfaces stderr."""
