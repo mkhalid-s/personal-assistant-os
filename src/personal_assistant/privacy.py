@@ -235,6 +235,15 @@ def _cleanup_policy_retention(conn: sqlite3.Connection) -> dict[str, int]:
         # 5) Derived artifacts must not outlive their source conversations in cleartext:
         #    purge old reflection insights (review #7) and the context-derived relationship
         #    graph, then drop person nodes left with no edges (review #8).
+        #    context_suggestions FK-references context_insights with no ON DELETE
+        #    CASCADE, so its referencing rows go first — otherwise PRAGMA
+        #    foreign_keys=ON aborts the whole cleanup when an aged reflection still
+        #    has suggestions attached (PAOS-008).
+        conn.execute(
+            "DELETE FROM context_suggestions WHERE insight_id IN "
+            "(SELECT id FROM context_insights WHERE kind='reflection' AND created_at < datetime('now', ?))",
+            (cutoff,),
+        )
         conn.execute(
             "DELETE FROM context_insights WHERE kind='reflection' AND created_at < datetime('now', ?)",
             (cutoff,),
