@@ -453,21 +453,20 @@ def cmd_goal(args: argparse.Namespace) -> None:
             conn.commit()
             print(f"Added assistant goal #{goal_id}: {objective}")
             return
-        if args.goal_action == "pause":
-            conn.execute(
-                "UPDATE assistant_goals SET status='paused', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (args.id,),
+        if args.goal_action in {"pause", "resume"}:
+            # PAOS-050: a bogus id used to print success anyway; check the
+            # UPDATE rowcount and fail loudly so scripts can detect the typo.
+            new_status = "paused" if args.goal_action == "pause" else "active"
+            verb = "Paused" if args.goal_action == "pause" else "Resumed"
+            cursor = conn.execute(
+                "UPDATE assistant_goals SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (new_status, args.id),
             )
             conn.commit()
-            print(f"Paused assistant goal #{args.id}.")
-            return
-        if args.goal_action == "resume":
-            conn.execute(
-                "UPDATE assistant_goals SET status='active', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (args.id,),
-            )
-            conn.commit()
-            print(f"Resumed assistant goal #{args.id}.")
+            if cursor.rowcount == 0:
+                print(f"Goal #{args.id} not found.")
+                raise SystemExit(1)
+            print(f"{verb} assistant goal #{args.id}.")
             return
         rows = conn.execute(
             """

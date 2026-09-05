@@ -462,7 +462,13 @@ def _scan_watch_dirs(
                     continue
             except OSError:
                 continue
-            file_hash = _file_sha256(path)
+            # PAOS-024: hashing can hit the same race/permission window the
+            # stat gate just did; treat it identically instead of crashing the
+            # whole watch-dir sweep.
+            try:
+                file_hash = _file_sha256(path)
+            except OSError:
+                continue
             reserve = conn.execute(
                 """
                 INSERT OR IGNORE INTO file_ingests (watch_dir_id, file_path, file_hash, status)
@@ -472,7 +478,16 @@ def _scan_watch_dirs(
             )
             if reserve.rowcount == 0:
                 continue
-            raw_text = path.read_text(errors="replace")
+            try:
+                raw_text = path.read_text(errors="replace")
+            except OSError:
+                # File became unreadable between reserve and read — record the
+                # row so it isn't stranded in 'processing' and keep sweeping.
+                conn.execute(
+                    "UPDATE file_ingests SET status='skipped_error' WHERE file_path=? AND file_hash=?",
+                    (str(path), file_hash),
+                )
+                continue
             filtered = apply_privacy_filters(conn, raw_text)
             if not filtered.strip():
                 conn.execute(
