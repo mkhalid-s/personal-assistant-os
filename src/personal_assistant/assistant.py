@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 import time
 
-from . import agentcore, context, graphrag, personas, router
+from . import agentcore, context, graphrag, personas, router, usage
 from .providers import get_backend, resolve_backend_name
 
 
@@ -77,6 +77,14 @@ def run_turn(
         result = backend.run_turn(conn, user_text, history, on_text=on_text, persona=persona)
         result["persona"] = persona["name"]
     result["route_decision"] = route_decision.to_dict()
+    # Interactive surfaces warn about an exceeded usage budget but never block a
+    # user-initiated turn — only unattended proposing loops are gated (usage.py).
+    budget = usage.budget_status(conn)
+    if budget["state"] == "exceeded":
+        reasons = "; ".join(str(reason) for reason in budget["reasons"])
+        result["reply"] = f"[usage budget] {reasons} — unattended proposing is paused; approvals still run.\n\n" + (
+            result.get("reply") or ""
+        )
     if not (result.get("reply") or "").strip() and route_decision.confidence >= 0.7:
         result["reply"] = f"Smart route: {route_decision.intent}. {route_decision.recommended_workflow}"
     if retrieval_run_ids:

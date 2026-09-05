@@ -24,6 +24,7 @@ from .inbox import (
 from .ingest.audio import transcribe_audio
 from .ingest.image import extract_image_text
 from .locks import acquire_lock, release_lock
+from . import usage as usage_ledger
 from .privacy import (
     _file_sha256,
     apply_privacy_filters,
@@ -142,11 +143,18 @@ def cmd_today(args: argparse.Namespace) -> None:
             """
         ).fetchall()
 
+        budget = usage_ledger.budget_status(conn)
+
     if json_mode:
         payload = {
             "schema": "myos.today.v1",
             "mode": str(mode),
             "meeting_hours": int(meeting_hours) if meeting_hours is not None else None,
+            "usage": {
+                "today_cost_millicents": int(budget["daily_spent_millicents"]),
+                "daily_budget_millicents": int(budget["daily_budget_millicents"]),
+                "state": str(budget["state"]),
+            },
             "top_outcomes": [
                 {
                     "id": int(item["id"]),
@@ -187,6 +195,13 @@ def cmd_today(args: argparse.Namespace) -> None:
         for item in risky:
             due = item["due_date"] or "no due date"
             print(f"- {item['title']} (risk={item['risk_score']}, due={due})")
+
+    budget_line = f"${int(budget['daily_spent_millicents']) / 100_000:.4f}"
+    if int(budget["daily_budget_millicents"]) > 0:
+        budget_line += (
+            f" of ${int(budget['daily_budget_millicents']) / 100_000:.2f} budget ({budget['state']})"
+        )
+    print(f"\nLLM usage today: {budget_line}")
 
     if mode == "meeting-heavy":
         print("\nMeeting-heavy guidance:")

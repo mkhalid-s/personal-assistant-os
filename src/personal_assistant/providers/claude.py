@@ -21,7 +21,7 @@ import json
 import os
 from typing import Any
 
-from .. import agentcore, em, personas, queries, watch
+from .. import agentcore, em, personas, queries, usage, watch
 from . import BaseBackend
 
 SYSTEM_PROMPT = """You are MYOS, an always-on personal chief-of-staff for a Staff/Senior \
@@ -279,6 +279,34 @@ TOOLS = [
 ]
 
 
+def _new_usage_acc() -> dict[str, int]:
+    return {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_write_tokens": 0,
+        "cache_read_tokens": 0,
+        "reasoning_tokens": 0,
+        "requests": 0,
+    }
+
+
+def _accumulate_message_usage(acc: dict[str, int], message: Any) -> None:
+    """Fold one Anthropic Message's usage into the running totals.
+
+    The tool loop bills per API call, so a single turn can span up to 12
+    messages; cache reads/writes are tracked separately because they bill at
+    0.1x/1.25x the base input rate (docs/COST_OBSERVABILITY.md §2.1).
+    """
+    u = getattr(message, "usage", None)
+    if u is None:
+        return
+    acc["input_tokens"] += int(getattr(u, "input_tokens", 0) or 0)
+    acc["output_tokens"] += int(getattr(u, "output_tokens", 0) or 0)
+    acc["cache_write_tokens"] += int(getattr(u, "cache_creation_input_tokens", 0) or 0)
+    acc["cache_read_tokens"] += int(getattr(u, "cache_read_input_tokens", 0) or 0)
+    acc["requests"] += 1
+
+
 class ClaudeBackend(BaseBackend):
     name = "claude"
 
@@ -377,6 +405,7 @@ class ClaudeBackend(BaseBackend):
             "rejected_tools": [],
         }
         reply_parts: list[str] = []
+        usage_acc = _new_usage_acc()
         stream_kwargs = dict(
             model=model,
             max_tokens=16000,
@@ -398,6 +427,7 @@ class ClaudeBackend(BaseBackend):
                             on_text(event.delta.text)
                 response = stream.get_final_message()
 
+            _accumulate_message_usage(usage_acc, response)
             messages.append({"role": "assistant", "content": response.content})
 
             if response.stop_reason == "tool_use":
@@ -434,11 +464,15 @@ class ClaudeBackend(BaseBackend):
 
         conn.commit()
         reply = "\n".join(p for p in reply_parts if p).strip()
+        # One ledger row per turn: the tool loop bills per API call, so the
+        # per-iteration usage is summed with a request count (see usage.py).
+        usage.record(conn, backend=self.name, model=model, purpose="chat", usage=usage_acc, persona=(persona or {}).get("name"))
         return {
             "reply": reply,
             "proposed_action_ids": ctx["ids"],
             "history": messages,
             "backend": "claude",
+            "usage": dict(usage_acc),
             **({"persona": persona["name"], "rejected_tools": ctx["rejected_tools"]} if persona is not None else {}),
         }
 
@@ -655,6 +689,9 @@ class ClaudeBackend(BaseBackend):
             output_config={"format": {"type": "json_schema", "schema": schema}},
             messages=[{"role": "user", "content": prompt}],
         )
+        reason_usage = _new_usage_acc()
+        _accumulate_message_usage(reason_usage, resp)
+        usage.record(conn, backend=self.name, model=model, purpose="reason", usage=reason_usage)
         text = next((b.text for b in resp.content if b.type == "text"), "{}")
         data = json.loads(text)
         actions = data.get("actions", [])

@@ -1,0 +1,28 @@
+{
+  "version": "2026-09-placeholder",
+  "currency": "usd",
+  "note": "Placeholder rates for offline testing and relative comparison. Refresh from the provider pricing pages before trusting absolute dollar figures; bump `version` when rates change so historical ledger rows keep their original basis. Rates are millicents per million tokens (100,000 millicents = $1).",
+  "per_mtok": {
+    "claude-opus-4-8": {
+      "input": 1500000,
+      "output": 7500000,
+      "cache_write_5m": 1875000,
+      "cache_write_1h": 3000000,
+      "cache_read": 150000
+    },
+    "claude-sonnet-4-5": {
+      "input": 300000,
+      "output": 1500000,
+      "cache_write_5m": 375000,
+      "cache_write_1h": 600000,
+      "cache_read": 30000
+    },
+    "claude-haiku-4-5": {
+      "input": 100000,
+      "output": 500000,
+      "cache_write_5m": 125000,
+      "cache_write_1h": 200000,
+      "cache_read": 10000
+    }
+  }
+}

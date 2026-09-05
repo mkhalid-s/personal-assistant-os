@@ -29,7 +29,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-personal_assistant = ["route_eval_fixtures.json"]
+personal_assistant = ["route_eval_fixtures.json", "model_prices.json"]
 
 # Ruff configuration. CI runs both lint and format checks fatally across
 # the complete source and test trees, with an additional explicit pass over

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import os
 
-from .. import agentcore, personas
+from .. import agentcore, personas, usage
 
 DEFAULT_BACKEND = "claude"
 
@@ -78,6 +78,18 @@ class BaseBackend:
             conn,
             {"purpose": "chat", "objective": objective, "context": context, "analogies": []},
         )
+        # Subprocess backends that report usage in their JSON get ledgered here;
+        # claude/claude-sdk override run_turn and record at their own call sites.
+        usage_payload = result.get("usage") if isinstance(result, dict) else None
+        if isinstance(usage_payload, dict) and usage_payload:
+            usage.record(
+                conn,
+                backend=self.name,
+                model=str(usage_payload.get("model") or self.name),
+                purpose="chat",
+                usage=usage_payload,
+                persona=(persona or {}).get("name") if persona else None,
+            )
         reply = (result.get("reply") or _plan_to_text(result.get("plan", []))).strip()
         ids: list[int] = []
         task_id: int | None = None

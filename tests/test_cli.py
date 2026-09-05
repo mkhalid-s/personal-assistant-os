@@ -1118,6 +1118,7 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("39 add_reminders", list_out)
             self.assertIn("40 add_personas", list_out)
             self.assertIn("41 scrub_connector_payloads", list_out)
+            self.assertIn("44 add_llm_usage_events", list_out)
             from personal_assistant.db import EXPECTED_SCHEMA_VERSION
 
             self.assertIn(f"Current version: {EXPECTED_SCHEMA_VERSION} / expected {EXPECTED_SCHEMA_VERSION}", list_out)
@@ -3973,6 +3974,31 @@ class JsonEnvelopeSurfaceTest(unittest.TestCase):
             self.assertEqual(retrieval_list["schema"], "myos.retrieval_run.list.v1")
             self.assertEqual(retrieval_list["count"], 0)
             self.assertEqual(retrieval_list["runs"], [])
+
+    def test_usage_json_envelopes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._prepared_env(tmp)
+
+            report = json.loads(self._run(env, "usage", "report", "--json"))
+            self.assertEqual(report["schema"], "myos.usage.report.v1")
+            self.assertIn("group_by", report)
+            self.assertIn("rows", report)
+            self.assertIn("totals", report)
+
+            by_day = json.loads(self._run(env, "usage", "report", "--by", "day", "--json"))
+            self.assertEqual(by_day["schema"], "myos.usage.report.v1")
+            self.assertEqual(by_day["group_by"], "day")
+
+            prices_list = json.loads(self._run(env, "prices", "list", "--json"))
+            self.assertEqual(prices_list["schema"], "myos.prices.v1")
+            self.assertIn("version", prices_list)
+            self.assertIn("models", prices_list)
+            self.assertIn("uncovered_models", prices_list)
+
+            missing = json.loads(self._run(env, "usage", "show", "trace_missing", "--json", expect_exit=1))
+            self.assertEqual(missing["schema"], "myos.usage.show.v1")
+            self.assertEqual(missing["error"], "not_found")
+            self.assertEqual(missing["correlation_id"], "trace_missing")
 
     def test_write_side_json_envelopes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

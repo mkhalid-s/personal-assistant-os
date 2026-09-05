@@ -7,7 +7,7 @@ import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 
-EXPECTED_SCHEMA_VERSION = 43
+EXPECTED_SCHEMA_VERSION = 44
 PRIVATE_DB_MODE = 0o600
 
 
@@ -1764,6 +1764,65 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             (43, "add_goal_persona"),
         )
 
+    if current < 44:
+        # Append-only LLM usage ledger (see docs/COST_OBSERVABILITY.md). Token
+        # counts by billing category, cost in integer millicents
+        # (100_000 millicents = $1), price version stamped at write time so
+        # later price changes never rewrite history. Recording is observe-only:
+        # nothing here feeds the approval/execution path.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS llm_usage_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                correlation_id TEXT,
+                surface TEXT,
+                command TEXT,
+                agent_task_id INTEGER,
+                agent_run_id INTEGER,
+                factory_run_id INTEGER,
+                persona TEXT,
+                pack TEXT,
+                project_id INTEGER,
+                backend TEXT NOT NULL,
+                model TEXT NOT NULL,
+                purpose TEXT,
+                requests INTEGER NOT NULL DEFAULT 1,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                estimated INTEGER NOT NULL DEFAULT 0,
+                cost_millicents INTEGER,
+                self_reported_cost_millicents INTEGER,
+                price_version TEXT,
+                latency_ms INTEGER,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_created ON llm_usage_events(created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_correlation ON llm_usage_events(correlation_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_backend ON llm_usage_events(backend, model, created_at)")
+        defaults = [
+            ("usage_budget_daily_millicents", "0"),
+            ("usage_budget_monthly_millicents", "0"),
+            ("usage_warn_threshold_pct", "80"),
+        ]
+        for key, value in defaults:
+            conn.execute(
+                """
+                INSERT INTO assistant_policies (key, value, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO NOTHING
+                """,
+                (key, value),
+            )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+            (44, "add_llm_usage_events"),
+        )
+
     _ensure_fts5(conn)  # self-heal: build the FTS index if a no-FTS5 run stranded migration 17
     conn.commit()
 
@@ -1842,6 +1901,7 @@ def verify_schema(conn: sqlite3.Connection) -> dict[str, object]:
         "autonomy_eval_runs",
         "autonomy_eval_cases",
         "autonomy_feedback",
+        "llm_usage_events",
     }
     existing_tables = {
         row["name"]

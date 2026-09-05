@@ -11,7 +11,7 @@ import json
 import sqlite3
 from typing import Any
 
-from . import agentcore, observability, personas, providers
+from . import agentcore, observability, personas, providers, usage
 from .db import append_event
 from .execution import _execute_agent_action, _status_from_result
 from .planner import _agent_action_specs, _agent_analogies, _agent_plan, _normalize_ai_actions, _normalize_ai_plan
@@ -90,33 +90,40 @@ def _reason(
     provider = "local_loop"
     reply = ""
     if backend_name:
-        try:
-            backend = providers.get_backend(backend_name)
-            ok, detail = backend.available()
-            if ok:
-                result = backend.reason(
-                    conn,
-                    {
-                        "purpose": purpose,
-                        "objective": objective,
-                        "context": context,
-                        "analogies": [
-                            {"score": score, "source": source, "content": apply_privacy_filters(conn, content)}
-                            for score, source, content in analogies
-                        ],
-                    },
-                )
-                plan = _normalize_ai_plan(result.get("plan"))
-                actions = _normalize_ai_actions(result.get("actions"))
-                reply = str(result.get("reply") or "")[:2000]
-                if plan or actions:
-                    return plan, actions, backend.name, reply
-                provider = backend.name
-                reply = reply or f"Backend {backend.name} returned no structured actions; using local fallback."
-            else:
-                reply = f"Backend {backend.name} unavailable: {detail}; using local fallback."
-        except Exception as exc:  # noqa: BLE001 - durable loop should degrade to local planning
-            reply = f"Backend {backend_name} failed: {exc}; using local fallback."[:2000]
+        allowed, gate_reason = usage.proposing_allowed(conn)
+        if not allowed:
+            # Usage budget gate (docs/COST_OBSERVABILITY.md §3.6): unattended
+            # proposing pauses when a budget is exceeded; local planning still
+            # runs and already-approved actions are unaffected.
+            reply = f"Usage budget gate: {gate_reason}; using local fallback."[:2000]
+        else:
+            try:
+                backend = providers.get_backend(backend_name)
+                ok, detail = backend.available()
+                if ok:
+                    result = backend.reason(
+                        conn,
+                        {
+                            "purpose": purpose,
+                            "objective": objective,
+                            "context": context,
+                            "analogies": [
+                                {"score": score, "source": source, "content": apply_privacy_filters(conn, content)}
+                                for score, source, content in analogies
+                            ],
+                        },
+                    )
+                    plan = _normalize_ai_plan(result.get("plan"))
+                    actions = _normalize_ai_actions(result.get("actions"))
+                    reply = str(result.get("reply") or "")[:2000]
+                    if plan or actions:
+                        return plan, actions, backend.name, reply
+                    provider = backend.name
+                    reply = reply or f"Backend {backend.name} returned no structured actions; using local fallback."
+                else:
+                    reply = f"Backend {backend.name} unavailable: {detail}; using local fallback."
+            except Exception as exc:  # noqa: BLE001 - durable loop should degrade to local planning
+                reply = f"Backend {backend_name} failed: {exc}; using local fallback."[:2000]
     plan = _agent_plan(objective, context, len(analogies))
     actions = _agent_action_specs(objective, context, plan)
     return plan, actions, provider, reply

@@ -121,11 +121,18 @@ def _parse_output(raw: str) -> dict:
     text = (raw or "").strip()
     obj = _extract_json_object(text)
     if isinstance(obj, dict) and ("plan" in obj or "actions" in obj):
-        return {
+        out = {
             "reply": str(obj.get("reply", "")).strip() or text,
             "plan": obj.get("plan") or [],
             "actions": obj.get("actions") or [],
         }
+        # Optional usage/model passthrough so BaseBackend.run_turn can ledger the
+        # call when the external command reports it (unknown → no row fields).
+        if isinstance(obj.get("usage"), dict) and obj["usage"]:
+            out["usage"] = obj["usage"]
+        if str(obj.get("model", "")).strip():
+            out.setdefault("usage", {})["model"] = str(obj["model"]).strip()
+        return out
     return {"reply": text, "plan": [], "actions": []}
 
 

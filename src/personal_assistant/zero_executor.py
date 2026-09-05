@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import observability
+from . import observability, usage
 from .db import append_event
 from .privacy import apply_privacy_filters, redact_obj
 
@@ -293,5 +293,18 @@ def record_zero_agent_run(
         conn,
         agent_task_id=int(task_id),
         factory_run_id=int(factory_run_id) if factory_run_id is not None else None,
+    )
+    # Zero reports its own token usage/cost on the usage stream event; ledger it
+    # with MYOS's computed price beside the self-reported figure (usage.record
+    # maps the camelCase keys and never raises).
+    usage.record(
+        conn,
+        backend="zero",
+        model=result.model or result.provider or "zero",
+        purpose="execute",
+        usage=dict(result.usage),
+        agent_task_id=int(task_id),
+        agent_run_id=agent_run_id,
+        factory_run_id=factory_run_id,
     )
     return agent_run_id

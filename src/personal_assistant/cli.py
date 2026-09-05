@@ -29,6 +29,7 @@ from . import (
     cli_review,
     cli_runtime,
     cli_setup_live,
+    cli_usage,
     cli_workflow,
     command_registry,
     factory,
@@ -760,6 +761,12 @@ cmd_remind = cli_reminders.cmd_remind_dispatch
 cmd_scheduler_tick = cli_reminders.cmd_scheduler_tick
 
 
+cmd_usage = cli_usage.cmd_usage_dispatch
+
+
+cmd_prices = cli_usage.cmd_prices_list
+
+
 cmd_agent_run = cli_agent.cmd_agent_run
 
 
@@ -876,6 +883,32 @@ def build_parser() -> argparse.ArgumentParser:
     trace_rollups = trace_sub.add_parser("rollups", help="Show retained aggregate trace counts.")
     trace_rollups.add_argument("--limit", type=int, default=20)
     trace_rollups.set_defaults(func=cmd_trace)
+
+    usage_parser = sub.add_parser("usage", help="Inspect LLM token usage and cost from the ledger.")
+    usage_sub = usage_parser.add_subparsers(dest="usage_action", required=True)
+    usage_report = usage_sub.add_parser("report", help="Grouped usage/cost rollup over a time window.")
+    usage_report.add_argument("--since", type=int, default=7, help="Days to include (default 7).")
+    usage_report.add_argument("--today", action="store_true", help="Only include today (overrides --since).")
+    usage_report.add_argument(
+        "--by", choices=["backend", "model", "persona", "purpose", "day"], default="backend"
+    )
+    usage_report.add_argument("--json", action="store_true", help="Emit myos.usage.report.v1 envelope.")
+    usage_report.set_defaults(func=cmd_usage)
+    usage_show = usage_sub.add_parser("show", help="Show ledger rows for one correlation id.")
+    usage_show.add_argument("correlation_id", help="Correlation id (see `myos trace list`).")
+    usage_show.add_argument("--json", action="store_true", help="Emit myos.usage.show.v1 envelope.")
+    usage_show.set_defaults(func=cmd_usage)
+    usage_cleanup = usage_sub.add_parser("cleanup", help="Delete ledger rows beyond retention.")
+    usage_cleanup.add_argument("--retention-days", type=int, default=180)
+    usage_cleanup.add_argument("--max-rows", type=int, default=200000)
+    usage_cleanup.add_argument("--json", action="store_true", help="Emit myos.usage.cleanup.v1 envelope.")
+    usage_cleanup.set_defaults(func=cmd_usage)
+
+    prices = sub.add_parser("prices", help="Inspect the packaged model price map.")
+    prices_sub = prices.add_subparsers(dest="prices_action", required=True)
+    prices_list = prices_sub.add_parser("list", help="List per-model rates and coverage warnings.")
+    prices_list.add_argument("--json", action="store_true", help="Emit myos.prices.v1 envelope.")
+    prices_list.set_defaults(func=cmd_prices)
 
     autonomy_parser = sub.add_parser("autonomy", help="Evaluate policy and record privacy-safe feedback.")
     autonomy_sub = autonomy_parser.add_subparsers(dest="autonomy_action", required=True)

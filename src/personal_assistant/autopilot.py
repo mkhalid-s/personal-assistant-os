@@ -12,7 +12,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import watch
+from . import usage, watch
 from .db import append_event
 from .execution import _execute_agent_action, _status_from_result
 from .planner import _agent_analogies, _ai_reason_artifacts
@@ -32,13 +32,22 @@ def _create_agent_task(
     objective = apply_privacy_filters(conn, objective)
     context = apply_privacy_filters(conn, context)
     analogies = _agent_analogies(conn, f"{objective} {context}", limit=analogy_limit)
-    plan, actions, provider = _ai_reason_artifacts(
-        conn,
-        objective=objective,
-        context=context,
-        analogies=analogies,
-        purpose="autopilot",
-    )
+    budget_note = ""
+    allowed, gate_reason = usage.proposing_allowed(conn)
+    if allowed:
+        plan, actions, provider = _ai_reason_artifacts(
+            conn,
+            objective=objective,
+            context=context,
+            analogies=analogies,
+            purpose="autopilot",
+        )
+    else:
+        # Usage budget gate (docs/COST_OBSERVABILITY.md §3.6): unattended
+        # autopilot skips LLM-backed planning when a budget is exceeded. Local
+        # bookkeeping continues and already-approved actions are unaffected.
+        plan, actions, provider = [], [], "local_budget_gate"
+        budget_note = f" Usage budget gate: {gate_reason}."
     actions = actions[:max_actions]
     constraints = {"mode": mode, "max_actions": max_actions, "source": "autopilot"}
 
@@ -59,7 +68,7 @@ def _create_agent_task(
             task_id,
             provider,
             json.dumps(plan, ensure_ascii=True),
-            f"Autopilot created {len(plan)} plan steps and {len(actions)} proposed actions.",
+            f"Autopilot created {len(plan)} plan steps and {len(actions)} proposed actions.{budget_note}",
         ),
     )
     for score, source, content in analogies:

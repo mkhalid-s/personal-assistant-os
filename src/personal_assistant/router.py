@@ -41,9 +41,12 @@ class RouteDecision:
     workflow_pack: str = ""
     backend: str = "heuristic"
     fallback_reason: str = ""
+    model_usage: dict[str, Any] = field(default_factory=dict)  # capture-only; excluded from to_dict
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload.pop("model_usage", None)  # not part of the routing contract
+        return payload
 
 
 def _contains(text: str, *needles: str) -> bool:
@@ -222,7 +225,16 @@ def _model_route_text(text: str, *, surface: str, fallback: RouteDecision) -> Ro
             raise RuntimeError((proc.stderr or proc.stdout or f"exit={proc.returncode}")[:300])
         parsed = json.loads(proc.stdout or "{}")
         decision = _coerce_model_decision(parsed, fallback=fallback)
-        decision.fallback_reason = f"heuristic confidence {fallback.confidence:.2f}; model latency_ms={int((time.monotonic() - started) * 1000)}"
+        latency_ms = int((time.monotonic() - started) * 1000)
+        decision.fallback_reason = f"heuristic confidence {fallback.confidence:.2f}; model latency_ms={latency_ms}"
+        # Local tiny-model: no dollar cost, but record estimated tokens so routing
+        # volume stays visible in the usage ledger.
+        decision.model_usage = {
+            "input_tokens": (len(json.dumps(request, ensure_ascii=True)) + len(proc.stdout)) // 4,
+            "requests": 1,
+            "latency_ms": latency_ms,
+            "model": os.path.basename(shlex.split(command)[0]) if shlex.split(command) else "router",
+        }
         return decision
     except Exception as exc:  # noqa: BLE001 - routing must never fail closed
         fallback.fallback_reason = f"router model fallback ignored: {str(exc)[:200]}"
@@ -378,6 +390,20 @@ def record_route_event(conn: sqlite3.Connection, text: str, *, surface: str, dec
         intent=decision.intent,
         command_tier=decision.command_tier,
     )
+    model_usage = decision.model_usage if isinstance(decision.model_usage, dict) else {}
+    if model_usage:
+        from . import usage as _usage
+
+        _usage.record(
+            conn,
+            backend="local-tiny",
+            model=str(model_usage.get("model") or "router-local"),
+            purpose="route",
+            usage=model_usage,
+            estimated=True,
+            surface=surface,
+            latency_ms=model_usage.get("latency_ms"),
+        )
     return event_id
 
 

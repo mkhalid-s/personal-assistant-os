@@ -23,7 +23,7 @@ import asyncio
 import os
 import sys
 
-from .. import autonomy
+from .. import autonomy, usage
 from . import BaseBackend, _history_to_context
 
 SYSTEM_PROMPT_SDK = (
@@ -88,12 +88,16 @@ class ClaudeSdkBackend(BaseBackend):
             raise ValueError("claude-sdk cannot enforce scoped persona tools")
         level = autonomy.level_from_policy(conn)
         try:
-            return asyncio.run(self._arun_turn(user_text, history, on_text, level))
+            result = asyncio.run(self._arun_turn(user_text, history, on_text, level))
         except Exception as exc:  # noqa: BLE001 - degrade to the raw brain, never crash
             from .claude import ClaudeBackend
 
             print(f"[claude-sdk unavailable: {exc}; falling back to raw Claude brain]")
             return ClaudeBackend().run_turn(conn, user_text, history, on_text=on_text)
+        usage_payload = result.get("usage")
+        if usage_payload:
+            usage.record(conn, backend=self.name, model=self.model, purpose="chat", usage=usage_payload)
+        return result
 
     def _options_kwargs(self, level: str, interactive: bool) -> dict:
         """Build the ClaudeAgentOptions kwargs. Extracted so the setting_sources
@@ -126,6 +130,7 @@ class ClaudeSdkBackend(BaseBackend):
 
         options = ClaudeAgentOptions(**self._options_kwargs(level, sys.stdin.isatty()))
         reply_parts: list[str] = []
+        usage_map: dict = {}
         async with ClaudeSDKClient(options=options) as client:
             await client.query(prompt)
             async for message in client.receive_response():
@@ -135,13 +140,25 @@ class ClaudeSdkBackend(BaseBackend):
                         reply_parts.append(text)
                         if on_text is not None:
                             on_text(text)
+                # The terminal ResultMessage carries token usage and the SDK's own
+                # dollar figure; pass both through so run_turn can ledger them
+                # (usage.record keeps self-reported cost beside the computed one).
+                message_usage = getattr(message, "usage", None)
+                if isinstance(message_usage, dict):
+                    usage_map.update(message_usage)
+                total_cost = getattr(message, "total_cost_usd", None)
+                if total_cost is not None:
+                    usage_map["cost_usd"] = total_cost
 
         reply = "".join(reply_parts).strip()
         new_history = history + [
             {"role": "user", "content": user_text},
             {"role": "assistant", "content": reply or "(no reply)"},
         ]
-        return {"reply": reply, "proposed_action_ids": [], "history": new_history, "backend": "claude-sdk"}
+        result = {"reply": reply, "proposed_action_ids": [], "history": new_history, "backend": "claude-sdk"}
+        if usage_map:
+            result["usage"] = usage_map
+        return result
 
     def reason(self, conn, request: dict) -> dict:
         # One-shot structured reasoning is simpler via the raw Messages API (also
