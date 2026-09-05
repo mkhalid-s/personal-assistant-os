@@ -161,6 +161,16 @@ def _execute_safe_actions(conn: sqlite3.Connection, task_id: int, action_ids: li
     ).fetchall()
     executed = 0
     for row in rows:
+        # PAOS-034: CAS claim mirroring autopilot's chokepoint — only the
+        # writer whose UPDATE flips proposed->executing runs the action, so a
+        # concurrent loop/pipeline can't double-execute the same proposal.
+        claim = conn.execute(
+            "UPDATE agent_actions SET status='executing' WHERE id = ? AND status = 'proposed'",
+            (int(row["id"]),),
+        )
+        conn.commit()
+        if claim.rowcount == 0:
+            continue  # already claimed or executed elsewhere
         result = _execute_agent_action(conn, row)
         status = _status_from_result(result)
         conn.execute(

@@ -215,13 +215,42 @@ def _is_destructive_payload(payload: dict[str, Any] | None) -> bool:
     return False
 
 
+# PAOS-033: single-word hints match as whole tokens; multi-word hints match a
+# consecutive token sequence (so 'close_all' still trips 'close_all_items' and
+# reset-hard-shaped names while 'close_day' does not).
+_MULTI_WORD_HINTS = tuple(h for h in _DESTRUCTIVE_HINTS if "_" in h)
+
+
+def _matches_destructive_hint(name: str) -> bool:
+    """Token-boundary destructive-hint match (PAOS-033).
+
+    Plain substring matching flagged benign action types whose names merely
+    embed a hint fragment (produce_report ~ 'prod', dropdown_update ~ 'drop',
+    deployment_check ~ 'deploy', workforce_report ~ 'force'). The name is
+    split on non-alphanumeric separators and hints must match whole tokens;
+    multi-word hints match a consecutive run of tokens spelled the same way.
+    """
+    tokens = [t for t in re.split(r"[^a-z0-9]+", (name or "").lower()) if t]
+    if not tokens:
+        return False
+    if any(token in _DESTRUCTIVE_HINTS for token in tokens):
+        return True
+    for hint in _MULTI_WORD_HINTS:
+        parts = hint.split("_")
+        width = len(parts)
+        for start in range(len(tokens) - width + 1):
+            if tokens[start : start + width] == parts:
+                return True
+    return False
+
+
 def classify_action(
     action_type: str, payload: dict[str, Any] | None = None, *, level: str = DEFAULT_LEVEL
 ) -> dict[str, Any]:
     """Classify a queued ``agent_action`` (action_type + payload)."""
     level = _norm_level(level)
     at = (action_type or "").lower()
-    if any(h in at for h in _DESTRUCTIVE_HINTS) or _is_destructive_payload(payload):
+    if _matches_destructive_hint(at) or _is_destructive_payload(payload):
         return {"tier": BLOCKED, "destructive": True, "reason": f"destructive action '{action_type}'"}
     base = _ACTION_TIER.get(at, CONFIRM)  # unknown -> confirm (safe default)
     tier = base
@@ -247,8 +276,9 @@ def classify_tool(
                 return {"tier": BLOCKED, "destructive": True, "reason": f"dangerous command (/{pat}/)"}
         return {"tier": CONFIRM, "destructive": False, "reason": "bash command (side effects)"}
 
-    # 2. Destructive-looking op names are blocked regardless of level.
-    if any(h in op for h in _DESTRUCTIVE_HINTS):
+    # 2. Destructive-looking op names are blocked regardless of level
+    #    (token-boundary match, PAOS-033).
+    if _matches_destructive_hint(op):
         return {"tier": BLOCKED, "destructive": True, "reason": f"destructive op '{op}'"}
 
     # 3. Writes/mutations -> confirm. Checked BEFORE read so an op like
@@ -305,7 +335,7 @@ def decide_command(
             },
             command_name,
         )
-    if safety == "unknown" or (not safety and any(h in command_name for h in _DESTRUCTIVE_HINTS)):
+    if safety == "unknown" or (not safety and _matches_destructive_hint(command_name)):
         return _with_command_metadata(
             {
                 "decision": BLOCKED,
