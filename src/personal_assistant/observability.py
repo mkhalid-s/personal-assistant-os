@@ -224,30 +224,47 @@ OPERATIONAL_RETENTION_DAYS_ENV = "MYOS_RETENTION_DAYS"
 # owner-decision items (approvals, compensations, delegated-mutation evidence)
 # and must survive retention sweeps until an owner explicitly purges them.
 # Each entry is (table, timestamp column) — agent_runs stamps started_at.
-_OPERATIONAL_RETENTION_TABLES: tuple[tuple[str, str], ...] = (
+# Only PARENT tables belong here: every child with a live FK reference is
+# handled in the child phase of apply_operational_retention BEFORE this loop
+# runs (review R1: with PRAGMA foreign_keys=ON, deleting a referenced parent
+# raises IntegrityError and aborts the whole sweep).
+_OPERATIONAL_RETENTION_PARENT_TABLES: tuple[tuple[str, str], ...] = (
     ("event_log", "created_at"),
     ("agent_observations", "created_at"),
     ("agent_runs", "started_at"),
     ("autopilot_signals", "created_at"),
     ("assistant_digests", "created_at"),
     ("ai_provider_calls", "created_at"),
-    ("route_feedback", "created_at"),
 )
+
+# Back-compat alias for the parent list (the pre-R1 name mixed parents and
+# children; nothing should import the children through it anymore).
+_OPERATIONAL_RETENTION_TABLES = _OPERATIONAL_RETENTION_PARENT_TABLES
 
 
 def apply_operational_retention(conn: sqlite3.Connection, days: int | None = None) -> dict[str, int]:
     """Delete operational-telemetry rows older than ``days`` (PAOS-018).
 
-    Plain DELETEs, mirroring :func:`cleanup_traces`. Covers event_log,
-    agent_observations, agent_runs, retrieval_runs (+ child
-    retrieval_run_sources), autopilot_signals, assistant_digests,
-    ai_provider_calls, route_feedback, and route_eval_runs (+ child
-    route_eval_cases). Children are deleted via the parent's cutoff so no
-    orphan survives. Audit-trail tables are intentionally untouched (see
-    ``_OPERATIONAL_RETENTION_TABLES`` comment).
+    FK-safe order (review R1): children are deleted — or their dangling
+    reference NULLed, for audit children that must survive — BEFORE their
+    parent, because with ``PRAGMA foreign_keys=ON`` (set on every
+    ``db.get_connection``) deleting a referenced parent raises IntegrityError
+    and would abort every autopilot cycle once history crossed the window.
+    The dependency direction is explicit below: each step names the child
+    table first and the parent it references second.
+
+    Covers event_log (children: route_feedback, execution_traces.route_event_id),
+    agent_runs (audit children: autonomy_run_ledger / factory_stages),
+    route_feedback (audit child: route_overrides), retrieval_runs (children:
+    retrieval_run_sources, review_packets), route_eval_runs (child:
+    route_eval_cases), agent_observations, autopilot_signals,
+    assistant_digests, and ai_provider_calls. Audit-trail tables are
+    intentionally never deleted (see ``_OPERATIONAL_RETENTION_PARENT_TABLES``
+    comment).
 
     ``days`` defaults to the ``MYOS_RETENTION_DAYS`` env var (180). Returns
-    per-table deleted row counts.
+    per-table deleted row counts (audit tables report the number of rows
+    unlinked instead).
     """
     if days is None:
         days = int(os.getenv(OPERATIONAL_RETENTION_DAYS_ENV, str(DEFAULT_OPERATIONAL_RETENTION_DAYS)))
@@ -256,20 +273,65 @@ def apply_operational_retention(conn: sqlite3.Connection, days: int | None = Non
     # lexicographic comparison.
     cutoff = (datetime.now(timezone.utc) - timedelta(days=max(0, int(days)))).strftime("%Y-%m-%d %H:%M:%S")
     deleted: dict[str, int] = {}
-    for table, ts_column in _OPERATIONAL_RETENTION_TABLES:
-        deleted[table] = conn.execute(f"DELETE FROM {table} WHERE {ts_column} < ?", (cutoff,)).rowcount
-    # Children must follow their parent's cutoff (deleting by the child's own
-    # created_at would orphan sources whose run aged out).
+
+    # ---- child phase (run before any parent delete) ----
+    # Audit children keep their rows but lose the pointer to the deleted
+    # parent — the link is meaningless once the parent is gone, and NULLing
+    # it is what lets the parent delete succeed without deleting audit rows.
+    deleted["route_overrides_unlinked"] = conn.execute(
+        "UPDATE route_overrides SET source_feedback_id = NULL WHERE source_feedback_id IN "
+        "(SELECT id FROM route_feedback WHERE created_at < ? "
+        "OR event_log_id IN (SELECT id FROM event_log WHERE created_at < ?))",
+        (cutoff, cutoff),
+    ).rowcount
+    # route_feedback.event_log_id → event_log (NOT NULL, no CASCADE). Delete by
+    # its own age cutoff, plus any younger straggler pointing at a doomed event
+    # (CURRENT_TIMESTAMP has 1-second resolution, so a feedback row can stamp a
+    # second after its event and outlive it by that much otherwise).
+    deleted["route_feedback"] = conn.execute(
+        "DELETE FROM route_feedback WHERE created_at < ? "
+        "OR event_log_id IN (SELECT id FROM event_log WHERE created_at < ?)",
+        (cutoff, cutoff),
+    ).rowcount
+    # execution_traces.route_event_id → event_log. These rows are removed only
+    # because their parent event is; no rollup here — cleanup_traces owns
+    # rollup accounting for its own age/max-rows evictions, and re-rolling
+    # rows it may already have rolled up would double-count them.
+    deleted["execution_traces"] = conn.execute(
+        "DELETE FROM execution_traces WHERE route_event_id IN (SELECT id FROM event_log WHERE created_at < ?)",
+        (cutoff,),
+    ).rowcount
+    deleted["autonomy_run_ledger_unlinked"] = conn.execute(
+        "UPDATE autonomy_run_ledger SET agent_run_id = NULL WHERE agent_run_id IN "
+        "(SELECT id FROM agent_runs WHERE started_at < ?)",
+        (cutoff,),
+    ).rowcount
+    deleted["factory_stages_unlinked"] = conn.execute(
+        "UPDATE factory_stages SET agent_run_id = NULL WHERE agent_run_id IN "
+        "(SELECT id FROM agent_runs WHERE started_at < ?)",
+        (cutoff,),
+    ).rowcount
+    deleted["review_packets_unlinked"] = conn.execute(
+        "UPDATE review_packets SET retrieval_run_id = NULL WHERE retrieval_run_id IN "
+        "(SELECT id FROM retrieval_runs WHERE created_at < ?)",
+        (cutoff,),
+    ).rowcount
+    # Children of doomed parents deleted via the parent's cutoff (deleting by
+    # the child's own created_at would orphan sources whose run aged out).
     deleted["retrieval_run_sources"] = conn.execute(
         "DELETE FROM retrieval_run_sources WHERE retrieval_run_id IN "
         "(SELECT id FROM retrieval_runs WHERE created_at < ?)",
         (cutoff,),
     ).rowcount
-    deleted["retrieval_runs"] = conn.execute("DELETE FROM retrieval_runs WHERE created_at < ?", (cutoff,)).rowcount
     deleted["route_eval_cases"] = conn.execute(
         "DELETE FROM route_eval_cases WHERE route_eval_run_id IN (SELECT id FROM route_eval_runs WHERE created_at < ?)",
         (cutoff,),
     ).rowcount
+
+    # ---- parent phase (only after every referencing child is gone) ----
+    for table, ts_column in _OPERATIONAL_RETENTION_PARENT_TABLES:
+        deleted[table] = conn.execute(f"DELETE FROM {table} WHERE {ts_column} < ?", (cutoff,)).rowcount
+    deleted["retrieval_runs"] = conn.execute("DELETE FROM retrieval_runs WHERE created_at < ?", (cutoff,)).rowcount
     deleted["route_eval_runs"] = conn.execute("DELETE FROM route_eval_runs WHERE created_at < ?", (cutoff,)).rowcount
     conn.commit()
     return deleted

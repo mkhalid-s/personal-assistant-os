@@ -1430,7 +1430,13 @@ class SchemaFastPathTest(unittest.TestCase):
 
 class OperationalRetentionTest(unittest.TestCase):
     """PAOS-018: only rows older than the window are removed, from every
-    covered table; the audit trail survives untouched."""
+    covered table; the audit trail survives untouched.
+
+    Review R1: the connection runs with PRAGMA foreign_keys=ON (mirroring
+    production ``db.get_connection``) so a child row that outlives its
+    deleted parent (route_feedback.event_log_id → event_log) fails the
+    sweep with IntegrityError instead of passing silently.
+    """
 
     OLD_TS = "2020-01-01 00:00:00"
     AUDIT_TABLES = (
@@ -1442,7 +1448,7 @@ class OperationalRetentionTest(unittest.TestCase):
     )
 
     def setUp(self):
-        self.conn = _memory_conn()
+        self.conn = _memory_conn(foreign_keys=True)
         self.new_ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         # Parent rows referenced by child tables below (one old + one new each).
         self.conn.execute("INSERT INTO agent_tasks (objective) VALUES ('retention')")
@@ -1467,6 +1473,7 @@ class OperationalRetentionTest(unittest.TestCase):
         self.eval_runs = [r["id"] for r in self.conn.execute("SELECT id FROM route_eval_runs ORDER BY id").fetchall()]
         self.actions = [r["id"] for r in self.conn.execute("SELECT id FROM agent_actions ORDER BY id").fetchall()]
         self.events = [r["id"] for r in self.conn.execute("SELECT id FROM event_log ORDER BY id").fetchall()]
+        self.run_ids: list[int] = []
         self._insert_all_rows()
         self.conn.commit()
 
@@ -1486,6 +1493,7 @@ class OperationalRetentionTest(unittest.TestCase):
                 "VALUES (1, 'a', 'local', 'completed', ?)",
                 (ts,),
             )
+            self.run_ids.append(int(self.conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]))
             self.conn.execute(
                 "INSERT INTO autopilot_signals (signal_key, signal_type, source_type, title, created_at) "
                 "VALUES (?, 't', 's', 'ti', ?)",
@@ -1500,6 +1508,13 @@ class OperationalRetentionTest(unittest.TestCase):
                 "INSERT INTO route_feedback (event_log_id, expected_intent, actual_intent, created_at) "
                 "VALUES (?, 'e', 'a', ?)",
                 (self.events[idx], ts),
+            )
+            # Review R1: execution_traces.route_event_id is a second FK child
+            # of event_log — a trace linked to a doomed event must go too.
+            self.conn.execute(
+                "INSERT INTO execution_traces (correlation_id, command, command_path, route_event_id, started_at) "
+                "VALUES (?, 'cmd', 'myos cmd', ?, ?)",
+                (f"trace-{suffix}", self.events[idx], ts),
             )
             self.conn.execute(
                 "INSERT INTO retrieval_run_sources (retrieval_run_id, rank, source_type, source_id, "
@@ -1524,8 +1539,9 @@ class OperationalRetentionTest(unittest.TestCase):
                 (self.actions[idx], ts),
             )
             self.conn.execute(
-                "INSERT INTO autonomy_run_ledger (decision_type, status, created_at) VALUES ('cycle', 'completed', ?)",
-                (ts,),
+                "INSERT INTO autonomy_run_ledger (decision_type, status, agent_run_id, created_at) "
+                "VALUES ('cycle', 'completed', ?, ?)",
+                (self.run_ids[idx], ts),
             )
             self.conn.execute(
                 "INSERT INTO action_provider_executions (agent_action_id, status, created_at) VALUES (?, 'ok', ?)",
@@ -1555,6 +1571,53 @@ class OperationalRetentionTest(unittest.TestCase):
         for table in self.AUDIT_TABLES:
             remaining = self.conn.execute(f"SELECT COUNT(*) AS c FROM {table}").fetchone()["c"]
             self.assertEqual(remaining, 2, f"{table} is an owner-decision audit trail")
+
+    def test_child_rows_referencing_doomed_events_are_removed(self):
+        """Review R1: with foreign_keys=ON, retention must delete the
+        route_feedback/execution_traces children of old event_log rows before
+        the parents, or the sweep raises IntegrityError."""
+        from personal_assistant import observability
+
+        old_event_id, new_event_id = self.events
+        counts = observability.apply_operational_retention(self.conn, days=30)
+        self.assertGreaterEqual(counts["route_feedback"], 1)
+        self.assertGreaterEqual(counts["execution_traces"], 1)
+        # Old parent gone, new parent kept.
+        remaining_events = {r["id"] for r in self.conn.execute("SELECT id FROM event_log").fetchall()}
+        self.assertEqual(remaining_events, {new_event_id})
+        # The old child rows are gone, not orphaned.
+        self.assertIsNone(
+            self.conn.execute("SELECT 1 FROM route_feedback WHERE event_log_id = ?", (old_event_id,)).fetchone()
+        )
+        self.assertIsNone(
+            self.conn.execute("SELECT 1 FROM execution_traces WHERE route_event_id = ?", (old_event_id,)).fetchone()
+        )
+        # New rows (and their links) survive.
+        self.assertIsNotNone(
+            self.conn.execute("SELECT 1 FROM route_feedback WHERE event_log_id = ?", (new_event_id,)).fetchone()
+        )
+        self.assertIsNotNone(
+            self.conn.execute("SELECT 1 FROM execution_traces WHERE route_event_id = ?", (new_event_id,)).fetchone()
+        )
+        # No dangling references remain anywhere.
+        self.assertEqual(self.conn.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_audit_children_survive_with_dangling_reference_nulled(self):
+        """Review R1 companion: autonomy_run_ledger is an audit table that
+        references agent_runs. Its rows must survive retention with the now
+        meaningless agent_run_id set to NULL — not block the parent delete."""
+        from personal_assistant import observability
+
+        old_run_id, new_run_id = self.run_ids
+        counts = observability.apply_operational_retention(self.conn, days=30)
+        self.assertGreaterEqual(counts["autonomy_run_ledger_unlinked"], 1)
+        rows = {
+            r["agent_run_id"]: r["id"] for r in self.conn.execute("SELECT id, agent_run_id FROM autonomy_run_ledger")
+        }
+        self.assertEqual(len(rows), 2, "both ledger rows survive")
+        self.assertIn(None, rows, "old ledger row's agent_run_id was nulled")
+        self.assertIn(new_run_id, rows, "new ledger row keeps its link")
+        self.assertNotIn(old_run_id, rows)
 
     def test_env_window_is_honored_and_defaults_to_180(self):
         from personal_assistant import observability
