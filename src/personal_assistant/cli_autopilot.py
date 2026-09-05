@@ -20,6 +20,7 @@ from .autopilot import (
 from .db import append_event, get_connection
 from .execution import recover_stranded_executions
 from .locks import acquire_lock, release_lock, renew_lock
+from .observability import apply_operational_retention
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,9 @@ def run_autopilot_cycle(args: argparse.Namespace, deps: AutopilotCommandDependen
     # PAOS-002: reset rows stranded in 'executing' by earlier crashed runs before
     # this cycle does any work (once per cycle).
     recover_stranded_executions(conn)
+    # PAOS-018: cheap operational-telemetry sweep once per cycle (window comes
+    # from MYOS_RETENTION_DAYS; audit-trail tables are excluded by design).
+    apply_operational_retention(conn)
     conn.execute(
         "INSERT INTO autopilot_runs (status, mode) VALUES ('running', ?)",
         (args.mode,),

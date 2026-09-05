@@ -214,6 +214,66 @@ def _rollup_rows(conn: sqlite3.Connection, where_sql: str, values: tuple[object,
     return sum(int(row["trace_count"] or 0) for row in rows)
 
 
+DEFAULT_OPERATIONAL_RETENTION_DAYS = 180
+OPERATIONAL_RETENTION_DAYS_ENV = "MYOS_RETENTION_DAYS"
+
+# PAOS-018: operational telemetry is high-volume, low-value after a few months,
+# and never referenced by execution logic — safe to age out. The audit trail is
+# deliberately NOT in this list: agent_actions, action_execution_receipts,
+# action_outbox, autonomy_run_ledger, and action_provider_executions are
+# owner-decision items (approvals, compensations, delegated-mutation evidence)
+# and must survive retention sweeps until an owner explicitly purges them.
+_OPERATIONAL_RETENTION_TABLES = (
+    "event_log",
+    "agent_observations",
+    "agent_runs",
+    "autopilot_signals",
+    "assistant_digests",
+    "ai_provider_calls",
+    "route_feedback",
+)
+
+
+def apply_operational_retention(conn: sqlite3.Connection, days: int | None = None) -> dict[str, int]:
+    """Delete operational-telemetry rows older than ``days`` (PAOS-018).
+
+    Plain DELETEs, mirroring :func:`cleanup_traces`. Covers event_log,
+    agent_observations, agent_runs, retrieval_runs (+ child
+    retrieval_run_sources), autopilot_signals, assistant_digests,
+    ai_provider_calls, route_feedback, and route_eval_runs (+ child
+    route_eval_cases). Children are deleted via the parent's cutoff so no
+    orphan survives. Audit-trail tables are intentionally untouched (see
+    ``_OPERATIONAL_RETENTION_TABLES`` comment).
+
+    ``days`` defaults to the ``MYOS_RETENTION_DAYS`` env var (180). Returns
+    per-table deleted row counts.
+    """
+    if days is None:
+        days = int(os.getenv(OPERATIONAL_RETENTION_DAYS_ENV, str(DEFAULT_OPERATIONAL_RETENTION_DAYS)))
+    # These tables stamp created_at via SQLite's CURRENT_TIMESTAMP (UTC,
+    # "YYYY-MM-DD HH:MM:SS"), so the cutoff uses the same shape for a clean
+    # lexicographic comparison.
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max(0, int(days)))).strftime("%Y-%m-%d %H:%M:%S")
+    deleted: dict[str, int] = {}
+    for table in _OPERATIONAL_RETENTION_TABLES:
+        deleted[table] = conn.execute(f"DELETE FROM {table} WHERE created_at < ?", (cutoff,)).rowcount
+    # Children must follow their parent's cutoff (deleting by the child's own
+    # created_at would orphan sources whose run aged out).
+    deleted["retrieval_run_sources"] = conn.execute(
+        "DELETE FROM retrieval_run_sources WHERE retrieval_run_id IN "
+        "(SELECT id FROM retrieval_runs WHERE created_at < ?)",
+        (cutoff,),
+    ).rowcount
+    deleted["retrieval_runs"] = conn.execute("DELETE FROM retrieval_runs WHERE created_at < ?", (cutoff,)).rowcount
+    deleted["route_eval_cases"] = conn.execute(
+        "DELETE FROM route_eval_cases WHERE route_eval_run_id IN (SELECT id FROM route_eval_runs WHERE created_at < ?)",
+        (cutoff,),
+    ).rowcount
+    deleted["route_eval_runs"] = conn.execute("DELETE FROM route_eval_runs WHERE created_at < ?", (cutoff,)).rowcount
+    conn.commit()
+    return deleted
+
+
 def cleanup_traces(
     conn: sqlite3.Connection,
     *,

@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .db import PRIVATE_DB_MODE, get_connection, resolve_db_path, verify_schema
+from .observability import apply_operational_retention
 from .privacy import _cleanup_policy_retention
 
 
@@ -169,9 +170,13 @@ def cmd_cleanup(args: argparse.Namespace) -> None:
         )
         archived += 1
     retention = _cleanup_policy_retention(conn)
+    # PAOS-018: age out operational telemetry (audit-trail tables excluded).
+    operational = apply_operational_retention(conn)
     conn.commit()
     print(f"Cleanup complete. Archived {archived} stale open items.")
     print(
         f"Policy retention cleanup: media_deleted={retention['media']} "
         f"evidence_deleted={retention['evidence']} conversation_turns_deleted={retention['conversation_turns']}"
     )
+    operational_summary = " ".join(f"{table}={count}" for table, count in sorted(operational.items()))
+    print(f"Operational retention (MYOS_RETENTION_DAYS): {operational_summary}")
