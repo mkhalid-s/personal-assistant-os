@@ -1031,6 +1031,12 @@ def build_parser() -> argparse.ArgumentParser:
     triage = sub.add_parser("triage", help="Triage inbox into work items.")
     triage.set_defaults(func=cmd_triage)
 
+    inbox = sub.add_parser("inbox", help="Inspect captured inbox items.")
+    inbox_sub = inbox.add_subparsers(dest="inbox_action", required=True)
+    inbox_list = inbox_sub.add_parser("list", help="List recent inbox items (newest first).")
+    inbox_list.add_argument("--limit", type=int, default=25, help="Maximum rows to return (default: 25).")
+    inbox_list.set_defaults(func=cli_workflow.cmd_inbox_list)
+
     today = sub.add_parser("today", help="Generate today's focus list.")
     today.add_argument("--meeting-hours", type=float, default=0.0)
     today.add_argument("--json", action="store_true", help="Emit a single JSON object instead of formatted text.")

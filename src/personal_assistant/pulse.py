@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from datetime import datetime
 
 from personal_assistant.connectors import AhaConnector, ConfluenceConnector, GitHubConnector, JiraConnector
@@ -33,9 +32,3 @@ def run_cycle(meeting_hours: float = 0.0) -> list[str]:
     )
     conn.commit()
     return outputs
-
-
-def run_forever(interval_sec: int = 1800, meeting_hours: float = 0.0) -> None:
-    while True:
-        run_cycle(meeting_hours=meeting_hours)
-        time.sleep(interval_sec)
