@@ -1862,7 +1862,10 @@ class CliFlowTest(unittest.TestCase):
             )
             conn.close()
             self.assertEqual(outbox, {"aha": 1, "confluence": 1, "github": 1, "jira": 1})
-            self.assertEqual(receipt_statuses.get("executed"), 4)
+            # PAOS-014: dry-run connector drafts leave nothing to undo, so their
+            # receipts are final_status='noop' (no rollback compensation) instead
+            # of the previous 'executed'.
+            self.assertEqual(receipt_statuses.get("noop"), 4)
             self.assertEqual(receipt_statuses.get("blocked"), 1)
             self.assertEqual(follow_up[0], 1)
             self.assertIsNotNone(follow_up[1])
