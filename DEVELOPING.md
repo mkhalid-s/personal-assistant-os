@@ -160,6 +160,7 @@ An executor produces `agent_actions` proposals from an intent. It must:
 - Redact stderr and stdout through `privacy.apply_privacy_filters` before persisting.
 - Attach a review-packet artifact via `plans.attach_executor_artifact` with a stable schema string so downstream tooling can evolve without breaking.
 - Never call `execute_action` directly — always propose via `agentcore.enqueue_proposal` so the approval + integrity + audit chain runs.
+- Record every LLM call through `usage.record` (see `providers/claude.py` for the pattern); the usage ledger is observe-only and must never break the call it observes.
 
 Doctor probe: add a preflight check in `cli_health._<backend>_preflight()` and wire it into `_optional_checks` so `myos doctor` reports whether the backend is installed and correctly configured.
 
