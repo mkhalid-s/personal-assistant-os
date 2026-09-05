@@ -3371,7 +3371,10 @@ class CliFlowTest(unittest.TestCase):
             db_path = Path(tmp) / "assistant.db"
             env["MYOS_DB_PATH"] = str(db_path)
             request = {
-                "action_id": 42,
+                # PAOS-037: no `action_id` here — a request that names an
+                # agent_actions row must reference a real, approved row, and a
+                # dangling id is now rejected with an error envelope. The
+                # self-attested safety flag only governs id-less requests.
                 "agent_task_id": 7,
                 "action_type": "draft_external_update",
                 "title": "Post Jira launch update",

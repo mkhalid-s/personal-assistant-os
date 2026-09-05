@@ -1057,13 +1057,27 @@ def cmd_action_provider(args: argparse.Namespace) -> None:
                 safety = {}
             approved = bool(safety.get("approved"))
             action_type = str(request.get("action_type", ""))
+            agent_action_id = request.get("action_id")
+            agent_action_id = int(agent_action_id) if agent_action_id is not None else None
+            if agent_action_id is not None:
+                # PAOS-037: when the request names an existing agent_actions row,
+                # approval is established by that row's persisted status — never
+                # by the self-attested `safety.approved` flag, which any caller
+                # can set. A missing/unapproved row is a clean error envelope.
+                row = conn.execute(
+                    "SELECT id, status FROM agent_actions WHERE id = ?",
+                    (agent_action_id,),
+                ).fetchone()
+                if row is None:
+                    raise ValueError(f"action #{agent_action_id} not found")
+                if str(row["status"]) not in {"approved", "executing"}:
+                    raise ValueError(f"action #{agent_action_id} is not approved (status={row['status']})")
+                approved = True
             target = str(payload.get("target") or payload.get("target_type") or "outbox").lower()
             title = apply_privacy_filters(conn, str(request.get("title") or "Assistant action"))
             body = apply_privacy_filters(conn, _provider_body(payload))
             if not body:
                 raise ValueError("action payload does not include draft/body/text")
-            agent_action_id = request.get("action_id")
-            agent_action_id = int(agent_action_id) if agent_action_id is not None else None
 
             target_ref = str(
                 payload.get("issue_key") or payload.get("issue_number") or payload.get("pr_number") or "draft"
