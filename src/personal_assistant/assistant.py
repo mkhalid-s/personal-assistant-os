@@ -130,7 +130,10 @@ def delegate_to_agent(conn, target: str, task_text: str, cwd: str | None = None,
             "Run from inside a git repo (or `git init`), or use the agent as a brain via `myos chat`."
         }
 
-    diff, log = _run_in_worktree(root, argv, timeout=timeout)
+    try:
+        diff, log = _run_in_worktree(root, argv, timeout=timeout)
+    except WorktreeCreationError as exc:
+        return {"error": str(exc)}
     task_id = agentcore.ensure_turn_task(conn, f"delegate to {name}: {task_text}")
 
     if not diff.strip():
@@ -174,12 +177,24 @@ def _git_root(cwd: str) -> str | None:
     return proc.stdout.strip() if proc.returncode == 0 and proc.stdout.strip() else None
 
 
+class WorktreeCreationError(RuntimeError):
+    """Raised when `git worktree add` fails during coding delegation (PAOS-043)."""
+
+
 def _run_in_worktree(root: str, argv: list[str], timeout: int) -> tuple[str, str]:
     wt = tempfile.mkdtemp(prefix="myos-wt-")
     try:
-        subprocess.run(
-            ["git", "-C", root, "worktree", "add", "--detach", wt], capture_output=True, text=True, check=True
-        )
+        try:
+            subprocess.run(
+                ["git", "-C", root, "worktree", "add", "--detach", wt], capture_output=True, text=True, check=True
+            )
+        except subprocess.CalledProcessError as exc:
+            # PAOS-043: worktree creation can legitimately fail (locked index,
+            # corrupted repo, disk full). Surface it as the same {'error': …}
+            # envelope as the other delegation failures instead of a traceback.
+            stderr = (exc.stderr or "").strip().splitlines()
+            snippet = " | ".join(stderr[:2])[:200] or f"git exited rc={exc.returncode}"
+            raise WorktreeCreationError(f"worktree creation failed: {snippet}") from exc
         try:
             proc = subprocess.run(argv, cwd=wt, capture_output=True, text=True, timeout=timeout, check=False)
             log = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
