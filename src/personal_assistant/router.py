@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import agentcore, autonomy, command_registry, factory, graphrag, intents, observability, plans
+from . import agentcore, autonomy, command_registry, factory, graphrag, intents, observability, plans, usage
 from .db import append_event, verify_schema
 
 COMMAND_TIERS: dict[str, list[str]] = command_registry.command_inventory()
@@ -392,9 +392,7 @@ def record_route_event(conn: sqlite3.Connection, text: str, *, surface: str, dec
     )
     model_usage = decision.model_usage if isinstance(decision.model_usage, dict) else {}
     if model_usage:
-        from . import usage as _usage
-
-        _usage.record(
+        usage.record(
             conn,
             backend="local-tiny",
             model=str(model_usage.get("model") or "router-local"),
@@ -403,6 +401,7 @@ def record_route_event(conn: sqlite3.Connection, text: str, *, surface: str, dec
             estimated=True,
             surface=surface,
             latency_ms=model_usage.get("latency_ms"),
+            commit=False,  # caller of record_route_event owns the transaction boundary
         )
     return event_id
 

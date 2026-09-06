@@ -111,7 +111,14 @@ def _report_rows(conn, group_by: str, where: str, values: list[Any]) -> tuple[li
     ]
     totals = {
         key: sum(entry[key] or 0 for entry in entries if isinstance(entry[key], int))
-        for key in ("requests", "input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens")
+        for key in (
+            "requests",
+            "input_tokens",
+            "output_tokens",
+            "cache_write_tokens",
+            "cache_read_tokens",
+            "reasoning_tokens",
+        )
     }
     totals["estimated_requests"] = sum(entry["estimated_requests"] for entry in entries)
     totals["cost_millicents"] = sum(

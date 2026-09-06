@@ -79,9 +79,16 @@ def record(
     factory_run_id: int | None = None,
     project_id: int | None = None,
     correlation_id: str | None = None,
+    commit: bool = True,
 ) -> int | None:
     """Insert one ``llm_usage_events`` row. Returns the row id, or None when
-    recording failed (by design: callers never need to handle a failure)."""
+    recording failed (by design: callers never need to handle a failure).
+
+    Commits by default so a usage row survives even if the caller's later work
+    rolls back — the tokens were consumed externally either way. Pass
+    ``commit=False`` where the caller owns the transaction boundary and has
+    in-flight writes that must not be persisted early.
+    """
     try:
         tokens = _tokens_from_usage(usage)
         rates, price_version = prices.rate_for(model)
@@ -125,7 +132,8 @@ def record(
                 _int(latency_ms) if latency_ms is not None else None,
             ),
         )
-        conn.commit()
+        if commit:
+            conn.commit()
         return int(cursor.lastrowid) if cursor.lastrowid is not None else None
     except Exception:  # noqa: BLE001 — auditing must never break the observed call
         return None

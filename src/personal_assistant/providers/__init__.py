@@ -80,15 +80,18 @@ class BaseBackend:
         )
         # Subprocess backends that report usage in their JSON get ledgered here;
         # claude/claude-sdk override run_turn and record at their own call sites.
+        # commit=False: proposals/tasks are enqueued right after and the caller
+        # owns the transaction boundary.
         usage_payload = result.get("usage") if isinstance(result, dict) else None
         if isinstance(usage_payload, dict) and usage_payload:
             usage.record(
                 conn,
                 backend=self.name,
-                model=str(usage_payload.get("model") or self.name),
+                model=str(usage_payload.get("model") or "unknown"),
                 purpose="chat",
                 usage=usage_payload,
                 persona=(persona or {}).get("name") if persona else None,
+                commit=False,
             )
         reply = (result.get("reply") or _plan_to_text(result.get("plan", []))).strip()
         ids: list[int] = []

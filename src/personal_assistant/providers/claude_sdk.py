@@ -144,7 +144,9 @@ class ClaudeSdkBackend(BaseBackend):
                 # dollar figure; pass both through so run_turn can ledger them
                 # (usage.record keeps self-reported cost beside the computed one).
                 # `usage` may be a dict or a typed Usage object depending on the
-                # SDK version — normalize both into the mapping.
+                # SDK version — normalize both into the mapping. The SDK's
+                # ResultMessage usage is CUMULATIVE for the turn, so last message
+                # wins; this relies on that contract rather than summing.
                 message_usage = getattr(message, "usage", None)
                 if isinstance(message_usage, dict):
                     usage_map.update(message_usage)
