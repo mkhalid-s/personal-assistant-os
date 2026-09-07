@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 
 from . import agentcore, em, graph
 from .db import append_event
@@ -264,7 +265,11 @@ def _derive_comention_edges(conn, names: list[str]) -> int:
 def _person_ref(conn, name: str) -> int:
     """ref_id for a person node: the people.id if known, else a stable hash so unknown
     names still get a consistent node (negative to avoid colliding with real ids)."""
-    row = conn.execute("SELECT id FROM people WHERE name = ? COLLATE NOCASE", (name,)).fetchone()
+    try:
+        row = conn.execute("SELECT id FROM people WHERE name = ? COLLATE NOCASE", (name,)).fetchone()
+    except sqlite3.OperationalError:
+        # PAOS-028: people table may not exist in minimal installs; fall back to hash
+        row = None
     if row:
         return int(row["id"])
     return -(abs(hash(name)) % 1_000_000_000)

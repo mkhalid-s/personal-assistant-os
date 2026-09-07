@@ -59,7 +59,11 @@ def _emit_error(schema: str, error: str, *, details: dict[str, Any] | None = Non
 
 
 def cmd_remind_create(args: argparse.Namespace) -> None:
-    """``myos remind "text" --at <when> [--kind …] [--json]``."""
+    """``myos remind create "text" --at <when> [--kind …] [--json]``.
+
+    The create subcommand is required (PAOS-029/R10); the bare
+    ``myos remind "text" --at …`` shorthand is not supported.
+    """
     with connection() as conn:
         try:
             rid = reminders.create(
@@ -270,9 +274,13 @@ def cmd_remind_dispatch(args: argparse.Namespace) -> None:
     argparse routes to this function via ``set_defaults(func=…)`` when
     the top-level ``remind`` parser dispatches — the sub-action lives on
     ``args.remind_action`` and defaults to ``create`` so ``myos remind
-    "text" --at 15:00`` behaves as a create.
+    create "text" --at 15:00`` behaves as a create. The bare ``myos remind
+    "text" --at …`` shorthand is not supported (PAOS-029/R10).
     """
-    action = getattr(args, "remind_action", None) or "create"
+    action = getattr(args, "remind_action", None)
+    if action is None:
+        print("Error: the 'create' subcommand is required. Use: myos remind create \"text\" --at <when>")
+        raise SystemExit(2)
     handler = {
         "create": cmd_remind_create,
         "list": cmd_remind_list,
