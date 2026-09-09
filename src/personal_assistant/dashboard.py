@@ -101,13 +101,19 @@ def _query_audit_trail(
     """Paged event_log listing. Always bounded by page_size."""
     page = _clamp_int(page, default=1, minimum=1, maximum=100_000)
     page_size = _clamp_int(page_size, default=AUDIT_PAGE_SIZE, minimum=1, maximum=AUDIT_PAGE_SIZE_MAX)
-    offset = (page - 1) * page_size
     event_type = str(event_type or "").strip()[:80]
     if event_type:
         total_row = conn.execute(
             "SELECT COUNT(*) AS n FROM event_log WHERE event_type = ?",
             (event_type,),
         ).fetchone()
+    else:
+        total_row = conn.execute("SELECT COUNT(*) AS n FROM event_log").fetchone()
+    total = int(total_row["n"] or 0) if total_row else 0
+    pages = max(1, (total + page_size - 1) // page_size) if total else 1
+    page = min(page, pages)
+    offset = (page - 1) * page_size
+    if event_type:
         rows = conn.execute(
             """
             SELECT id, event_type, entity_type, entity_id, payload, created_at
@@ -119,7 +125,6 @@ def _query_audit_trail(
             (event_type, page_size, offset),
         ).fetchall()
     else:
-        total_row = conn.execute("SELECT COUNT(*) AS n FROM event_log").fetchone()
         rows = conn.execute(
             """
             SELECT id, event_type, entity_type, entity_id, payload, created_at
@@ -129,10 +134,6 @@ def _query_audit_trail(
             """,
             (page_size, offset),
         ).fetchall()
-    total = int(total_row["n"] or 0) if total_row else 0
-    pages = max(1, (total + page_size - 1) // page_size) if total else 1
-    if page > pages:
-        page = pages
     return {
         "rows": [dict(r) for r in rows],
         "total": total,
@@ -263,6 +264,7 @@ def render_dashboard_html(
     *,
     audit_page: int = 1,
     audit_event_type: str = "",
+    audit_page_size: int = AUDIT_PAGE_SIZE,
     request_token: str = "",
 ) -> str:
     counts = conn.execute(
@@ -324,7 +326,7 @@ def render_dashboard_html(
     ).fetchone()
 
     intent_rows = _query_intents(conn)
-    audit = _query_audit_trail(conn, event_type=audit_event_type, page=audit_page)
+    audit = _query_audit_trail(conn, event_type=audit_event_type, page=audit_page, page_size=audit_page_size)
     audit_types = _query_audit_event_types(conn)
     approval_rows = _query_approvals(conn)
     graph_summary = _query_graph_summary(conn)
@@ -578,12 +580,13 @@ def dashboard_http_response(
     route = path.rstrip("/") or "/"
     if route == "/graph.json":
         return 200, "application/json; charset=utf-8", export_graph_json(conn).encode("utf-8")
-    page, event_type, _page_size = parse_audit_query(query)
+    page, event_type, page_size = parse_audit_query(query)
     html = render_dashboard_html(
         conn,
         report_dir=report_dir,
         audit_page=page,
         audit_event_type=event_type,
+        audit_page_size=page_size,
         request_token=token,
     )
     return 200, "text/html; charset=utf-8", html.encode("utf-8")
