@@ -1111,7 +1111,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "read_only",
         "system_health",
         "Serve or export local dashboard.",
-        examples=("myos dashboard --once",),
+        examples=("myos dashboard --once", "myos dashboard --once --output-graph-json ./data/graph.json"),
         side_effects=("local_file_write", "long_running"),
         long_running=True,
     ),

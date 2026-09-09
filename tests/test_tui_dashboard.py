@@ -12,10 +12,13 @@ from personal_assistant.db import initialize_schema
 from personal_assistant.tui_dashboard import (
     _due_label,
     _event_summary,
+    _query_graph_counts,
     _query_inbox_count,
+    _query_intents,
     _query_latest_digest,
     _query_loop_status,
     _query_queue,
+    _query_recent_events,
     _query_work_count,
     _query_work_items,
     build_snapshot,
@@ -233,7 +236,18 @@ class BuildSnapshotTest(unittest.TestCase):
 
     def test_all_keys_present_on_empty_db(self) -> None:
         snapshot = build_snapshot(self.conn)
-        for key in ("queue", "work_items", "work_counts", "events", "inbox_new", "digest", "loop", "backend_name"):
+        for key in (
+            "queue",
+            "work_items",
+            "work_counts",
+            "events",
+            "intents",
+            "graph",
+            "inbox_new",
+            "digest",
+            "loop",
+            "backend_name",
+        ):
             self.assertIn(key, snapshot)
 
     def test_backend_name_from_env(self) -> None:
@@ -326,5 +340,100 @@ class StatusPlainTest(unittest.TestCase):
         self.assertIn("ollama", buf.getvalue())
 
 
-if __name__ == "__main__":
-    unittest.main()
+class QueryIntentsAndGraphTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.conn = _conn()
+        self.addCleanup(self.conn.close)
+
+    def test_intents_empty(self) -> None:
+        self.assertEqual(_query_intents(self.conn), [])
+
+    def test_intents_open_active_with_counts_and_limit(self) -> None:
+        self.conn.execute(
+            """INSERT INTO intents (objective, constraints_json, priority, status)
+               VALUES ('Keep lights on', '[]', 1, 'open')"""
+        )
+        intent_id = int(self.conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+        self.conn.execute(
+            """INSERT INTO intents (objective, constraints_json, priority, status)
+               VALUES ('Parked', '[]', 1, 'done')"""
+        )
+        self.conn.execute(
+            "INSERT INTO intent_risks (intent_id, risk, status) VALUES (?, 'slip', 'open')",
+            (intent_id,),
+        )
+        for i in range(12):
+            self.conn.execute(
+                """INSERT INTO intents (objective, constraints_json, priority, status)
+                   VALUES (?, '[]', 3, 'active')""",
+                (f"extra {i}",),
+            )
+        self.conn.commit()
+        rows = _query_intents(self.conn, limit=5)
+        self.assertEqual(len(rows), 5)
+        keep = [r for r in _query_intents(self.conn, limit=20) if r["objective"] == "Keep lights on"][0]
+        self.assertEqual(keep["open_risks"], 1)
+        self.assertEqual(keep["evidence_count"], 0)
+        self.assertFalse(any(r["objective"] == "Parked" for r in rows))
+
+    def test_graph_counts(self) -> None:
+        self.conn.execute("INSERT INTO knowledge_nodes (node_type, ref_id, label) VALUES ('work_item', 1, 'a')")
+        self.conn.execute("INSERT INTO knowledge_nodes (node_type, ref_id, label) VALUES ('person', 1, 'b')")
+        a = int(self.conn.execute("SELECT id FROM knowledge_nodes WHERE label='a'").fetchone()["id"])
+        b = int(self.conn.execute("SELECT id FROM knowledge_nodes WHERE label='b'").fetchone()["id"])
+        self.conn.execute(
+            """INSERT INTO knowledge_edges (from_node_id, to_node_id, relation)
+               VALUES (?, ?, 'related')""",
+            (a, b),
+        )
+        self.conn.commit()
+        counts = _query_graph_counts(self.conn)
+        self.assertEqual(counts["node_count"], 2)
+        self.assertEqual(counts["edge_count"], 1)
+        types = {row["node_type"]: row["n"] for row in counts["top_types"]}
+        self.assertEqual(types["work_item"], 1)
+
+    def test_recent_events_honors_larger_window(self) -> None:
+        for i in range(15):
+            self.conn.execute(
+                "INSERT INTO event_log (event_type, entity_type, payload) VALUES (?, 'x', '{}')",
+                (f"e{i}",),
+            )
+        self.conn.commit()
+        self.assertEqual(len(_query_recent_events(self.conn)), 8)
+        self.assertEqual(len(_query_recent_events(self.conn, limit=12)), 12)
+
+
+class StatusPlainNewPanelsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.conn = _conn()
+        self.addCleanup(self.conn.close)
+
+    def test_shows_intents_graph_and_payload(self) -> None:
+        self.conn.execute(
+            """INSERT INTO intents (objective, constraints_json, priority, status)
+               VALUES ('Ship Phase A', '[]', 1, 'open')"""
+        )
+        task_id = self.conn.execute(
+            "INSERT INTO agent_tasks (objective, status, priority) VALUES ('t', 'active', 2)"
+        ).lastrowid
+        self.conn.execute(
+            """INSERT INTO agent_actions (agent_task_id, action_type, title, payload_json, status, requires_approval)
+               VALUES (?, 'create_inbox_item', 'Queue me', '{"target":"notes"}', 'proposed', 1)""",
+            (task_id,),
+        )
+        self.conn.execute("INSERT INTO knowledge_nodes (node_type, ref_id, label) VALUES ('work_item', 1, 'n')")
+        self.conn.execute(
+            "INSERT INTO event_log (event_type, entity_type, payload) VALUES ('loop_cycle_end', 'loop', '{}')"
+        )
+        self.conn.commit()
+        buf = io.StringIO()
+        with patch("sys.stdout", buf):
+            status_plain(self.conn)
+        output = buf.getvalue()
+        self.assertIn("Intents:", output)
+        self.assertIn("Ship Phase A", output)
+        self.assertIn("Graph:", output)
+        self.assertIn("nodes", output)
+        self.assertIn("target=notes", output)
+        self.assertIn("loop_cycle_end", output)
