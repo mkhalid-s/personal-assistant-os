@@ -152,6 +152,17 @@ class QueryAuditTrailTest(DashboardTestCase):
         result = _query_audit_trail(self.conn, page_size=10_000)
         self.assertLessEqual(result["page_size"], 100)
 
+    def test_overshoot_page_clamps_and_still_returns_rows(self) -> None:
+        for _ in range(12):
+            self.conn.execute(
+                "INSERT INTO event_log (event_type, entity_type, payload) VALUES ('alpha', 'x', '{}')",
+            )
+        self.conn.commit()
+        result = _query_audit_trail(self.conn, page=99, page_size=5)
+        self.assertEqual(result["page"], 3)
+        self.assertEqual(result["pages"], 3)
+        self.assertEqual(len(result["rows"]), 2)
+
     def test_event_types_bounded(self) -> None:
         for i in range(12):
             self.conn.execute(
