@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 from . import cli_health
-from .dashboard import render_dashboard_html, serve_dashboard
+from .dashboard import export_graph_json, render_dashboard_html, serve_dashboard
 from .db import connection, get_connection
 
 
@@ -42,6 +42,12 @@ def cmd_dashboard(args: argparse.Namespace) -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(render_dashboard_html(conn, report_dir=args.report_dir))
         print(f"Dashboard snapshot written: {output_path}")
+        graph_out = str(getattr(args, "output_graph_json", "") or "").strip()
+        if graph_out:
+            graph_path = Path(graph_out)
+            graph_path.parent.mkdir(parents=True, exist_ok=True)
+            graph_path.write_text(export_graph_json(conn))
+            print(f"Graph snapshot written: {graph_path}")
         return
     print(f"Serving dashboard at http://{args.host}:{args.port}")
     serve_dashboard(conn, host=args.host, port=args.port, report_dir=args.report_dir)
@@ -119,5 +125,6 @@ def cmd_ui(args: argparse.Namespace) -> None:
             report_dir="",
             once=False,
             output_html="",
+            output_graph_json="",
         )
     )

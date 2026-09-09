@@ -16,7 +16,7 @@ import os
 import sqlite3
 from typing import Any
 
-from .tui_utils import format_age, parse_payload, truncate
+from .tui_utils import condense_payload, format_age, parse_payload, truncate
 
 # ---------------------------------------------------------------------------
 # Data layer — pure functions, no rich/textual, independently testable
@@ -54,20 +54,80 @@ def _query_work_items(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         return []
 
 
-def _query_recent_events(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    """Last 8 event_log rows for the events panel."""
+def _query_recent_events(conn: sqlite3.Connection, *, limit: int = 8) -> list[dict[str, Any]]:
+    """Recent event_log rows for the events/audit panel. Default 8; callers may request more."""
+    try:
+        capped = max(1, min(int(limit), 50))
+    except (TypeError, ValueError):
+        capped = 8
     try:
         rows = conn.execute(
             """
             SELECT event_type, entity_type, entity_id, payload, created_at
             FROM event_log
             ORDER BY created_at DESC
-            LIMIT 8
-            """
+            LIMIT ?
+            """,
+            (capped,),
         ).fetchall()
         return [dict(r) for r in rows]
     except Exception:  # noqa: BLE001
         return []
+
+
+def _query_intents(conn: sqlite3.Connection, *, limit: int = 8) -> list[dict[str, Any]]:
+    """Open/active intents with open-risk and evidence counts."""
+    try:
+        capped = max(1, min(int(limit), 50))
+    except (TypeError, ValueError):
+        capped = 8
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+              i.id,
+              i.objective,
+              i.status,
+              i.priority,
+              i.created_at,
+              (SELECT COUNT(*) FROM intent_risks r
+                 WHERE r.intent_id = i.id AND r.status = 'open') AS open_risks,
+              (SELECT COUNT(*) FROM intent_evidence e
+                 WHERE e.intent_id = i.id) AS evidence_count
+            FROM intents i
+            WHERE i.status IN ('open', 'active')
+            ORDER BY i.priority ASC, i.updated_at DESC, i.id DESC
+            LIMIT ?
+            """,
+            (capped,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _query_graph_counts(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Knowledge graph node/edge totals and top node types."""
+    empty: dict[str, Any] = {"node_count": 0, "edge_count": 0, "top_types": []}
+    try:
+        node_row = conn.execute("SELECT COUNT(*) AS n FROM knowledge_nodes").fetchone()
+        edge_row = conn.execute("SELECT COUNT(*) AS n FROM knowledge_edges").fetchone()
+        type_rows = conn.execute(
+            """
+            SELECT node_type, COUNT(*) AS n
+            FROM knowledge_nodes
+            GROUP BY node_type
+            ORDER BY n DESC, node_type ASC
+            LIMIT 6
+            """
+        ).fetchall()
+        return {
+            "node_count": int(node_row["n"] or 0) if node_row else 0,
+            "edge_count": int(edge_row["n"] or 0) if edge_row else 0,
+            "top_types": [dict(r) for r in type_rows],
+        }
+    except Exception:  # noqa: BLE001
+        return empty
 
 
 def _query_inbox_count(conn: sqlite3.Connection) -> int:
@@ -133,7 +193,9 @@ def build_snapshot(conn: sqlite3.Connection) -> dict[str, Any]:
         "queue": _query_queue(conn),
         "work_items": _query_work_items(conn),
         "work_counts": _query_work_count(conn),
-        "events": _query_recent_events(conn),
+        "events": _query_recent_events(conn, limit=20),
+        "intents": _query_intents(conn, limit=8),
+        "graph": _query_graph_counts(conn),
         "inbox_new": _query_inbox_count(conn),
         "digest": _query_latest_digest(conn),
         "loop": _query_loop_status(conn),
@@ -217,6 +279,19 @@ def status_plain(conn: sqlite3.Connection) -> None:
         print(
             f"  #{row['id']}  {row['action_type']}{target_str}  {row['status']}  {format_age(str(row.get('created_at', '')))}"
         )
+        preview = condense_payload(payload, 80)
+        if preview:
+            print(f"    {preview}")
+
+    intents = snapshot.get("intents") or []
+    print(f"\nIntents: {len(intents)} open/active")
+    for intent in intents[:5]:
+        print(
+            f"  #{intent.get('id')}  {truncate(str(intent.get('objective') or ''), 50)}  "
+            f"{intent.get('status')}  pri={intent.get('priority')}  "
+            f"{format_age(str(intent.get('created_at') or ''))}  "
+            f"risks={int(intent.get('open_risks') or 0)}  evidence={int(intent.get('evidence_count') or 0)}"
+        )
 
     wc = snapshot["work_counts"]
     print(f"\nWork: {wc['total']} open  {wc['at_risk']} at-risk")
@@ -234,9 +309,15 @@ def status_plain(conn: sqlite3.Connection) -> None:
     events = snapshot["events"]
     if events:
         print("\nRecent events:")
-        for ev in events[:5]:
+        for ev in events[:12]:
             age = format_age(str(ev.get("created_at", "")))
             print(f"  {age:>6}  {_event_summary(ev)}")
+
+    graph = snapshot.get("graph") or {}
+    types = graph.get("top_types") or []
+    type_str = ", ".join(f"{row.get('node_type')}={int(row.get('n') or 0)}" for row in types[:4])
+    type_note = f"  types: {type_str}" if type_str else ""
+    print(f"\nGraph: {int(graph.get('node_count') or 0)} nodes  {int(graph.get('edge_count') or 0)} edges{type_note}")
 
     print("\nRun: pip install 'personal-assistant-os[tui]'  for the live dashboard.")
 
@@ -305,9 +386,14 @@ def _render_layout(snapshot: dict[str, Any]) -> Any:
         cursor = "▶" if i == 0 else " "
         status = str(row.get("status") or "")
         age = format_age(str(row.get("created_at") or ""))
+        payload = parse_payload(str(row.get("payload_json") or "{}"))
+        preview = condense_payload(payload, 28)
+        action_label = truncate(str(row.get("action_type") or ""), 28)
+        if preview:
+            action_label = truncate(f"{action_label} {preview}", 28)
         q_table.add_row(
             cursor,
-            truncate(str(row.get("action_type") or ""), 28),
+            action_label,
             Text(status, style=_S_STYLE.get(status, "")),
             Text(age, style="dim"),
         )
@@ -343,21 +429,49 @@ def _render_layout(snapshot: dict[str, Any]) -> Any:
         border_style="red" if wc["at_risk"] > 0 else "blue",
     )
 
+    # --- intents panel ---
+    intents = snapshot.get("intents") or []
+    intent_table = Table.grid(padding=(0, 1))
+    intent_table.add_column(width=4)
+    intent_table.add_column()
+    intent_table.add_column(width=14)
+    for intent in intents[:6]:
+        intent_table.add_row(
+            f"#{intent.get('id')}",
+            truncate(str(intent.get("objective") or ""), 32),
+            Text(
+                f"r={int(intent.get('open_risks') or 0)} e={int(intent.get('evidence_count') or 0)}",
+                style="dim",
+            ),
+        )
+    if not intents:
+        intent_table.add_row("", Text("No open intents", style="dim"), "")
+    intents_panel = Panel(
+        intent_table,
+        title=f"[bold]INTENTS ({len(intents)})[/bold]",
+        border_style="cyan",
+    )
+
     # --- events panel ---
     ev_table = Table.grid(padding=(0, 1))
     ev_table.add_column(width=6, style="dim")
     ev_table.add_column()
-    for ev in snapshot["events"]:
+    for ev in snapshot["events"][:16]:
         age = format_age(str(ev.get("created_at") or ""))
         ev_table.add_row(age, _event_summary(ev))
     if not snapshot["events"]:
         ev_table.add_row("", Text("No events yet", style="dim"))
-    events_panel = Panel(ev_table, title="[bold]RECENT EVENTS[/bold]", border_style="blue")
+    events_panel = Panel(ev_table, title="[bold]AUDIT EVENTS[/bold]", border_style="blue")
 
     # --- footer ---
     inbox_new = snapshot["inbox_new"]
     inbox_txt = f"Inbox: {inbox_new} new  ·  " if inbox_new else ""
-    footer_text = Text(f"{inbox_txt}[q] quit   [r] refresh   myos approve --tui for actions", style="dim")
+    graph = snapshot.get("graph") or {}
+    graph_txt = f"Graph: {int(graph.get('node_count') or 0)}n/{int(graph.get('edge_count') or 0)}e  ·  "
+    footer_text = Text(
+        f"{inbox_txt}{graph_txt}[q] quit   [r] refresh   myos approve --tui for actions",
+        style="dim",
+    )
     footer_panel = Panel(footer_text, padding=(0, 1))
 
     # --- assemble ---
@@ -365,12 +479,13 @@ def _render_layout(snapshot: dict[str, Any]) -> Any:
     layout.split_column(
         Layout(header_panel, name="header", size=3),
         Layout(name="body", ratio=1),
-        Layout(events_panel, name="events", size=10),
+        Layout(events_panel, name="events", size=14),
         Layout(footer_panel, name="footer", size=3),
     )
     layout["body"].split_row(
         Layout(queue_panel, name="queue", ratio=2),
         Layout(work_panel, name="work", ratio=3),
+        Layout(intents_panel, name="intents", ratio=2),
     )
     return layout
 

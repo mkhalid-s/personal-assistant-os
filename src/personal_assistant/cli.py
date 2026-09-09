@@ -1521,6 +1521,11 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard.add_argument("--report-dir", default="")
     dashboard.add_argument("--once", action="store_true")
     dashboard.add_argument("--output-html", default="")
+    dashboard.add_argument(
+        "--output-graph-json",
+        default="",
+        help="With --once, also write a bounded knowledge-graph JSON snapshot.",
+    )
     dashboard.set_defaults(func=cmd_dashboard)
 
     sanity = sub.add_parser("sanity", help="Run operational sanity checks.")
