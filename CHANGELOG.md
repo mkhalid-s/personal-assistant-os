@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 - `myos loop status` no longer crashes when factory or `agent-run` tasks share `agent_tasks` and store a JSON list in `constraints_json`. Loop listing now ignores non-loop rows instead of calling `.get()` on a list.
+- `myos dashboard --once` writes `dashboard.html` under `MYOS_DATA_DIR` (via `resolve_data_dir()`) instead of always targeting the source checkout `data/` directory.
 
 ### Added
 
