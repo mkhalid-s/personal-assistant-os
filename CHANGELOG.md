@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Fixed
+
+- `myos loop status` no longer crashes when factory or `agent-run` tasks share `agent_tasks` and store a JSON list in `constraints_json`. Loop listing now ignores non-loop rows instead of calling `.get()` on a list.
+
 ### Added
 
 - Dashboard Phase A/B read-only views: web dashboard now includes bounded Intents, Audit trail (GET `page` / `event_type` paging), Approvals (payload preview), and Graph context summary plus a tokened `GET /graph.json` export (optional `--once --output-graph-json`). Terminal `myos status` mirrors intents, a larger audit window, approval payload detail, and graph node/edge counts in both the rich live view and `status_plain`.
