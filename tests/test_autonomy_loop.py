@@ -76,6 +76,24 @@ class AutonomyLoopTest(unittest.TestCase):
         self.assertEqual(run_count, 1)
         conn.close()
 
+    def test_loop_status_skips_factory_list_constraints(self) -> None:
+        from personal_assistant import autonomy_loop
+
+        conn = self._conn()
+        conn.execute(
+            """
+            INSERT INTO agent_tasks (objective, context, constraints_json, priority, status)
+            VALUES ('factory planner', '', ?, 2, 'open')
+            """,
+            ('["GET-only localhost"]',),
+        )
+        loop = autonomy_loop.start_loop(conn, "Capture local reminder")
+        rows = autonomy_loop.loop_status(conn)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["task_id"], loop["task_id"])
+        self.assertEqual(autonomy_loop.find_goal_loop(conn, 1), None)
+        conn.close()
+
     def test_provider_actions_are_normalized_and_trace_linked(self) -> None:
         from personal_assistant import autonomy_loop, observability
 
