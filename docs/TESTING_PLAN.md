@@ -67,7 +67,7 @@ MYOS currently has **822 passing tests** covering core functionality, safety-cri
 class DatabaseConnectionTest(unittest.TestCase):
     def test_connection_closed_on_exception(self):
         """Ensure connections are closed even when exceptions occur"""
-        
+
     def test_connection_pool_limits(self):
         """Test connection pooling behavior under load"""
 ```
@@ -104,10 +104,10 @@ class DatabaseConnectionTest(unittest.TestCase):
 class SafetyCriticalTest(unittest.TestCase):
     def test_approval_hash_pinning_prevents_tampering(self):
         """Verify that tampered payloads are rejected at execution"""
-        
+
     def test_patch_guard_blocks_protected_paths(self):
         """Ensure apply_patch rejects paths touching safety-critical modules"""
-        
+
     def test_persona_enforcement_cannot_bypass_global_policy(self):
         """Verify persona restrictions never exceed global policy"""
 ```
@@ -125,10 +125,10 @@ class SafetyCriticalTest(unittest.TestCase):
 class PerformanceTest(unittest.TestCase):
     def test_large_dataset_retrieval_performance(self):
         """Measure retrieval performance with 10K+ items"""
-        
+
     def test_concurrent_approval_processing(self):
         """Test system behavior under concurrent approval requests"""
-        
+
     def test_memory_leak_detection(self):
         """Long-running operation memory profile"""
 ```

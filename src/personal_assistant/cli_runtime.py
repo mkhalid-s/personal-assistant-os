@@ -34,11 +34,7 @@ def cmd_launchd_status(_: argparse.Namespace) -> None:
 
 def cmd_dashboard(args: argparse.Namespace) -> None:
     if args.once:
-        output_path = (
-            Path(args.output_html)
-            if args.output_html
-            else (resolve_data_dir() / "dashboard.html")
-        )
+        output_path = Path(args.output_html) if args.output_html else (resolve_data_dir() / "dashboard.html")
         output_path.parent.mkdir(parents=True, exist_ok=True)
         graph_out = str(getattr(args, "output_graph_json", "") or "").strip()
         with connection() as conn:
