@@ -7,6 +7,7 @@ from pathlib import Path
 
 from . import cli_health
 from .dashboard import export_graph_json, render_dashboard_html, serve_dashboard
+from .data_dirs import resolve_data_dir
 from .db import connection, get_connection
 
 
@@ -32,23 +33,24 @@ def cmd_launchd_status(_: argparse.Namespace) -> None:
 
 
 def cmd_dashboard(args: argparse.Namespace) -> None:
-    conn = get_connection()
     if args.once:
         output_path = (
             Path(args.output_html)
             if args.output_html
-            else (Path(__file__).resolve().parents[2] / "data" / "dashboard.html")
+            else (resolve_data_dir() / "dashboard.html")
         )
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(render_dashboard_html(conn, report_dir=args.report_dir))
-        print(f"Dashboard snapshot written: {output_path}")
         graph_out = str(getattr(args, "output_graph_json", "") or "").strip()
-        if graph_out:
-            graph_path = Path(graph_out)
-            graph_path.parent.mkdir(parents=True, exist_ok=True)
-            graph_path.write_text(export_graph_json(conn))
-            print(f"Graph snapshot written: {graph_path}")
+        with connection() as conn:
+            output_path.write_text(render_dashboard_html(conn, report_dir=args.report_dir))
+            print(f"Dashboard snapshot written: {output_path}")
+            if graph_out:
+                graph_path = Path(graph_out)
+                graph_path.parent.mkdir(parents=True, exist_ok=True)
+                graph_path.write_text(export_graph_json(conn))
+                print(f"Graph snapshot written: {graph_path}")
         return
+    conn = get_connection()
     print(f"Serving dashboard at http://{args.host}:{args.port}")
     serve_dashboard(conn, host=args.host, port=args.port, report_dir=args.report_dir)
 

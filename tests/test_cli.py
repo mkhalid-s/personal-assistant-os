@@ -2607,6 +2607,28 @@ class CliFlowTest(unittest.TestCase):
             self.assertIn("Dashboard snapshot written", out.stdout)
             self.assertTrue(output_html.exists())
 
+    def test_dashboard_once_defaults_to_myos_data_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "myos-data"
+            data_dir.mkdir()
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            env["MYOS_DATA_DIR"] = str(data_dir)
+            env["MYOS_DB_PATH"] = str(data_dir / "assistant.db")
+            out = subprocess.run(
+                [sys.executable, "-m", "personal_assistant.cli", "dashboard", "--once"],
+                cwd=Path.cwd(),
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            snapshot = data_dir / "dashboard.html"
+            self.assertIn(str(snapshot), out.stdout)
+            self.assertTrue(snapshot.exists())
+            repo_default = Path.cwd() / "data" / "dashboard.html"
+            self.assertNotIn(str(repo_default), out.stdout)
+
     def test_sanity_and_runbook_commands(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()

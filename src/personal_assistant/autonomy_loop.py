@@ -38,6 +38,18 @@ def _load_json(value: str | None, default: Any) -> Any:
     return parsed if parsed is not None else default
 
 
+def _loop_constraints(value: str | None) -> dict[str, Any] | None:
+    """Return loop metadata only when constraints_json is a loop dict.
+
+    Factory/agent tasks store a JSON list in the same column, so list/status
+    scans must not treat every agent_tasks row as a loop record.
+    """
+    parsed = _load_json(value, {})
+    if not isinstance(parsed, dict) or parsed.get("source") != LOOP_SOURCE:
+        return None
+    return parsed
+
+
 def _constraints(
     *,
     mode: str,
@@ -77,8 +89,8 @@ def _task(conn: sqlite3.Connection, task_id: int):
     row = conn.execute("SELECT * FROM agent_tasks WHERE id = ?", (int(task_id),)).fetchone()
     if not row:
         raise ValueError(f"autonomy loop task not found: {task_id}")
-    constraints = _load_json(row["constraints_json"], {})
-    if constraints.get("source") != LOOP_SOURCE:
+    constraints = _loop_constraints(row["constraints_json"])
+    if constraints is None:
         raise ValueError(f"agent task #{task_id} is not an autonomy loop task")
     return row, constraints
 
@@ -435,8 +447,8 @@ def find_goal_loop(conn: sqlite3.Connection, goal_id: int) -> dict[str, object] 
         """
     ).fetchall()
     for row in rows:
-        meta = _load_json(row["constraints_json"], {})
-        if meta.get("source") != LOOP_SOURCE or _safe_int(meta.get("goal_id"), -1) != int(goal_id):
+        meta = _loop_constraints(row["constraints_json"])
+        if meta is None or _safe_int(meta.get("goal_id"), -1) != int(goal_id):
             continue
         counts = _counts(conn, int(row["id"]))
         return {
@@ -851,8 +863,8 @@ def loop_status(conn: sqlite3.Connection, task_id: int | None = None, *, limit: 
     ).fetchall()
     out: list[dict[str, object]] = []
     for row in rows:
-        meta = _load_json(row["constraints_json"], {})
-        if meta.get("source") != LOOP_SOURCE:
+        meta = _loop_constraints(row["constraints_json"])
+        if meta is None:
             continue
         counts = _counts(conn, int(row["id"]))
         latest_run = conn.execute(
