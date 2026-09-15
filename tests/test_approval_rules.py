@@ -20,9 +20,7 @@ def _conn() -> sqlite3.Connection:
 class CheckRuleTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
-
-    def tearDown(self) -> None:
-        self.conn.close()
+        self.addCleanup(self.conn.close)
 
     def test_returns_none_with_no_rules(self) -> None:
         self.assertIsNone(check_rule(self.conn, "create_inbox_item", "{}"))
@@ -95,9 +93,7 @@ class CheckRuleTest(unittest.TestCase):
 class AddRemoveRuleTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
-
-    def tearDown(self) -> None:
-        self.conn.close()
+        self.addCleanup(self.conn.close)
 
     def test_add_returns_id(self) -> None:
         rule_id = add_rule(self.conn, "test", action_type="local_note")
@@ -129,9 +125,7 @@ class StandingBlockPersistenceTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self.conn = _conn()
-
-    def tearDown(self) -> None:
-        self.conn.close()
+        self.addCleanup(self.conn.close)
 
     def test_check_rule_returns_block_for_blocked_tier(self) -> None:
         add_rule(self.conn, "no patches", action_type="apply_patch", tier="block")
@@ -144,9 +138,7 @@ class StandingBlockPersistenceTest(unittest.TestCase):
 class ListRulesTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
-
-    def tearDown(self) -> None:
-        self.conn.close()
+        self.addCleanup(self.conn.close)
 
     def test_empty_returns_empty(self) -> None:
         self.assertEqual(list_rules(self.conn), [])

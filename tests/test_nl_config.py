@@ -171,9 +171,7 @@ class DescribeIntentTest(unittest.TestCase):
 class ExecuteIntentTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
-
-    def tearDown(self) -> None:
-        self.conn.close()
+        self.addCleanup(self.conn.close)
 
     def test_add_rule_creates_row(self) -> None:
         intent = ConfigIntent(op="add_rule", action_type="create_inbox_item", tier="allow")
@@ -248,9 +246,7 @@ class ExecuteIntentTest(unittest.TestCase):
 class ExtractConfigIntentTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
-
-    def tearDown(self) -> None:
-        self.conn.close()
+        self.addCleanup(self.conn.close)
 
     def test_extracts_add_rule_from_model_reply(self) -> None:
         reply = json.dumps(

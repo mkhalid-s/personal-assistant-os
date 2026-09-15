@@ -45,9 +45,7 @@ def _conn() -> sqlite3.Connection:
 class PemBlockRedactionTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
-
-    def tearDown(self) -> None:
-        self.conn.close()
+        self.addCleanup(self.conn.close)
 
     def _redact(self, text: str) -> str:
         return apply_privacy_filters(self.conn, text)

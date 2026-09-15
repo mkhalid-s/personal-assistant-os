@@ -218,9 +218,7 @@ class ParseCompensationTest(unittest.TestCase):
 class RecordCompensationTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
-
-    def tearDown(self) -> None:
-        self.conn.close()
+        self.addCleanup(self.conn.close)
 
     def _insert_receipt(self) -> int:
         task_id = self.conn.execute("INSERT INTO agent_tasks (objective) VALUES ('test')").lastrowid

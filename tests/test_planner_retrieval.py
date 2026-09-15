@@ -72,10 +72,8 @@ class AgentAnalogiesHashTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
         set_embedding_backend(_HashBackend())
-
-    def tearDown(self) -> None:
-        set_embedding_backend(_HashBackend())
-        self.conn.close()
+        self.addCleanup(set_embedding_backend, _HashBackend())
+        self.addCleanup(self.conn.close)
 
     def test_returns_empty_on_empty_db(self) -> None:
         results = _agent_analogies(self.conn, "auth service", limit=5)
@@ -125,10 +123,8 @@ class AgentAnalogiesSemanticTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
         set_embedding_backend(_MockBackend())
-
-    def tearDown(self) -> None:
-        set_embedding_backend(_HashBackend())
-        self.conn.close()
+        self.addCleanup(set_embedding_backend, _HashBackend())
+        self.addCleanup(self.conn.close)
 
     def test_returns_positive_scores_with_semantic_backend(self) -> None:
         self.conn.execute(

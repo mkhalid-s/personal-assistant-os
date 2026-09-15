@@ -41,9 +41,7 @@ def _ts(delta_seconds: int = 0) -> str:
 class QueryQueueTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
-
-    def tearDown(self) -> None:
-        self.conn.close()
+        self.addCleanup(self.conn.close)
 
     def _make_task(self) -> int:
         cur = self.conn.execute(
@@ -116,9 +114,7 @@ class QueryQueueTest(unittest.TestCase):
 class QueryWorkItemsTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
-
-    def tearDown(self) -> None:
-        self.conn.close()
+        self.addCleanup(self.conn.close)
 
     def _make_work_item(self, title: str, risk: int = 10, status: str = "open") -> None:
         self.conn.execute(
@@ -151,9 +147,7 @@ class QueryWorkItemsTest(unittest.TestCase):
 class QueryWorkCountTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
-
-    def tearDown(self) -> None:
-        self.conn.close()
+        self.addCleanup(self.conn.close)
 
     def test_empty_returns_zeros(self) -> None:
         result = _query_work_count(self.conn)
@@ -172,9 +166,7 @@ class QueryWorkCountTest(unittest.TestCase):
 class QueryInboxCountTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
-
-    def tearDown(self) -> None:
-        self.conn.close()
+        self.addCleanup(self.conn.close)
 
     def test_empty_returns_zero(self) -> None:
         self.assertEqual(_query_inbox_count(self.conn), 0)
@@ -189,9 +181,7 @@ class QueryInboxCountTest(unittest.TestCase):
 class QueryLatestDigestTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
-
-    def tearDown(self) -> None:
-        self.conn.close()
+        self.addCleanup(self.conn.close)
 
     def test_empty_returns_none(self) -> None:
         self.assertIsNone(_query_latest_digest(self.conn))
@@ -208,9 +198,7 @@ class QueryLatestDigestTest(unittest.TestCase):
 class QueryLoopStatusTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
-
-    def tearDown(self) -> None:
-        self.conn.close()
+        self.addCleanup(self.conn.close)
 
     def test_empty_returns_empty_dict(self) -> None:
         self.assertEqual(_query_loop_status(self.conn), {})
@@ -230,9 +218,7 @@ class QueryLoopStatusTest(unittest.TestCase):
 class BuildSnapshotTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
-
-    def tearDown(self) -> None:
-        self.conn.close()
+        self.addCleanup(self.conn.close)
 
     def test_all_keys_present_on_empty_db(self) -> None:
         snapshot = build_snapshot(self.conn)
@@ -315,9 +301,7 @@ class EventSummaryTest(unittest.TestCase):
 class StatusPlainTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
-
-    def tearDown(self) -> None:
-        self.conn.close()
+        self.addCleanup(self.conn.close)
 
     def test_does_not_crash_on_empty_db(self) -> None:
         buf = io.StringIO()

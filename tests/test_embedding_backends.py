@@ -51,10 +51,8 @@ class LoadBestAvailableTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
         set_embedding_backend(_HashBackend())
-
-    def tearDown(self) -> None:
-        set_embedding_backend(_HashBackend())
-        self.conn.close()
+        self.addCleanup(set_embedding_backend, _HashBackend())
+        self.addCleanup(self.conn.close)
 
     def test_returns_hash_backend_when_fastembed_not_installed(self) -> None:
         with patch.dict("sys.modules", {"fastembed": None}):
@@ -98,9 +96,7 @@ class LoadBestAvailableTest(unittest.TestCase):
 class EmbeddingDoctorCheckTest(unittest.TestCase):
     def setUp(self) -> None:
         set_embedding_backend(_HashBackend())
-
-    def tearDown(self) -> None:
-        set_embedding_backend(_HashBackend())
+        self.addCleanup(set_embedding_backend, _HashBackend())
 
     def test_hash_backend_returns_not_ok(self) -> None:
         ok, detail = embedding_doctor_check()

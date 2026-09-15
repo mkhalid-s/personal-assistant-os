@@ -36,9 +36,7 @@ class ReviewerBackendNameTest(unittest.TestCase):
 class ClassifyActionSafetyTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
-
-    def tearDown(self) -> None:
-        self.conn.close()
+        self.addCleanup(self.conn.close)
 
     def _mock_backend(self, reply: str, available: bool = True) -> MagicMock:
         b = MagicMock()

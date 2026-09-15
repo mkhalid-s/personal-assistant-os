@@ -180,9 +180,7 @@ class PostAhaCommentTest(unittest.TestCase):
 class ConnectorMutationDispatchTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
-
-    def tearDown(self) -> None:
-        self.conn.close()
+        self.addCleanup(self.conn.close)
 
     def _base_payload(self, connector: str) -> dict:
         return {
@@ -285,9 +283,7 @@ class ConnectorMutationDispatchTest(unittest.TestCase):
 class PersonaExecutionGuardTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
-
-    def tearDown(self) -> None:
-        self.conn.close()
+        self.addCleanup(self.conn.close)
 
     def test_no_persona_allows_any_action_type(self) -> None:
         _, action_id = _seed_task_and_action(self.conn, action_type="local_note", persona="")

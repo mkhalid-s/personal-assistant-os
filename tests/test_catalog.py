@@ -49,9 +49,7 @@ class ServiceRefIdTest(unittest.TestCase):
 class AddServiceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
-
-    def tearDown(self) -> None:
-        self.conn.close()
+        self.addCleanup(self.conn.close)
 
     def test_creates_knowledge_node(self) -> None:
         add_service(self.conn, "auth-service", owner="platform")
@@ -104,9 +102,7 @@ class AddServiceTest(unittest.TestCase):
 class RemoveServiceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
-
-    def tearDown(self) -> None:
-        self.conn.close()
+        self.addCleanup(self.conn.close)
 
     def test_removes_node_and_edges(self) -> None:
         add_service(self.conn, "auth-service", deps=["postgres"])
@@ -134,9 +130,7 @@ class RemoveServiceTest(unittest.TestCase):
 class ListServicesTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
-
-    def tearDown(self) -> None:
-        self.conn.close()
+        self.addCleanup(self.conn.close)
 
     def test_empty_catalog_returns_empty(self) -> None:
         self.assertEqual(list_services(self.conn), [])
@@ -160,9 +154,7 @@ class ListServicesTest(unittest.TestCase):
 class GetServiceContextTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
-
-    def tearDown(self) -> None:
-        self.conn.close()
+        self.addCleanup(self.conn.close)
 
     def test_empty_catalog_returns_empty_string(self) -> None:
         self.assertEqual(get_service_context(self.conn, "auth"), "")

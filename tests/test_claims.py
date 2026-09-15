@@ -92,9 +92,7 @@ class ExtractClaimsTest(unittest.TestCase):
 class RecordClaimsTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
-
-    def tearDown(self) -> None:
-        self.conn.close()
+        self.addCleanup(self.conn.close)
 
     def test_record_persists_claim(self) -> None:
         recorded = record_claims(self.conn, "The API is stable today.", source_type="note")
@@ -139,9 +137,7 @@ class RecordClaimsTest(unittest.TestCase):
 class ListClaimsTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = _conn()
-
-    def tearDown(self) -> None:
-        self.conn.close()
+        self.addCleanup(self.conn.close)
 
     def test_list_returns_all_when_no_filter(self) -> None:
         record_claims(self.conn, "Auth is required.", source_type="note")
