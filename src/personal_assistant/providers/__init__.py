@@ -159,6 +159,10 @@ def get_backend(name: str | None = None):
         from .agent_cli import AgentCliBackend
 
         return AgentCliBackend(name="command")
+    if resolved == "devin":
+        from .devin_backend import DevinBackend
+
+        return DevinBackend()
     # Auto-discovery: scan providers/ for {resolved}_backend.py containing a
     # BaseBackend subclass. Inspired by aisuite's plugin convention — drop a file,
     # get a backend, no registry edit needed.
@@ -232,7 +236,7 @@ def available_backends() -> list[dict]:
     from pathlib import Path
 
     out = []
-    for name in ("claude", "claude-sdk", "claude-code-sdk", "cursor", "zero", "claude-code", "copilot", "command"):
+    for name in ("claude", "claude-sdk", "claude-code-sdk", "cursor", "zero", "claude-code", "copilot", "command", "devin"):
         try:
             ok, detail = get_backend(name).available()
         except Exception as exc:  # pragma: no cover - defensive

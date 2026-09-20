@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import unittest
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from personal_assistant.db import initialize_schema
@@ -21,7 +21,6 @@ from personal_assistant.execution import (
     _patch_target_paths,
     _path_is_protected,
     _payload_target,
-    approve_and_execute,
     verify_approval_integrity,
 )
 
@@ -130,7 +129,7 @@ class CanonicalJsonEdgeCasesTest(unittest.TestCase):
     def test_array_canonicalization(self) -> None:
         payload = '{"items":[3,1,2]}'
         result = _canonical_payload_json(payload)
-        self.assertIn('[3,1,2]', result)
+        self.assertIn("[3,1,2]", result)
 
 
 class ProtectedPathEdgeCasesTest(unittest.TestCase):
@@ -318,7 +317,6 @@ class ApprovalIntegrityEdgeCasesTest(unittest.TestCase):
 
     def test_hash_mismatch_detection(self) -> None:
         payload = '{"test":1}'
-        correct_hash = _compute_payload_hash(payload)
         row = {
             "payload_json": payload,
             "payload_hash": "0" * 64,  # Wrong hash

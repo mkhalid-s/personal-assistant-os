@@ -29,3 +29,6 @@ data/
 
 dist/
 build/
+
+.coverage
+htmlcov/
