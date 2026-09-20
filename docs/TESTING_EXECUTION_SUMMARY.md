@@ -13,7 +13,7 @@ Replaced `tearDown()` methods with `addCleanup()` for database connection cleanu
 
 **Files Updated:**
 - `test_approval_rules.py` - 4 test classes
-- `test_catalog.py` - 4 test classes  
+- `test_catalog.py` - 4 test classes
 - `test_claims.py` - 2 test classes
 - `test_embedding_backends.py` - 2 test classes
 - `test_execution_connectors.py` - 2 test classes

@@ -236,7 +236,17 @@ def available_backends() -> list[dict]:
     from pathlib import Path
 
     out = []
-    for name in ("claude", "claude-sdk", "claude-code-sdk", "cursor", "zero", "claude-code", "copilot", "command", "devin"):
+    for name in (
+        "claude",
+        "claude-sdk",
+        "claude-code-sdk",
+        "cursor",
+        "zero",
+        "claude-code",
+        "copilot",
+        "command",
+        "devin",
+    ):
         try:
             ok, detail = get_backend(name).available()
         except Exception as exc:  # pragma: no cover - defensive
