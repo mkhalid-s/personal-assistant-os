@@ -170,6 +170,24 @@ Tests specifically designed to catch:
 - **Edge case detection**: Systematic testing of boundary conditions
 - **Resource management**: Improved database connection cleanup
 
+## Cursor Agent Integration Check
+
+Verified that the first-class `cursor` backend integrates cleanly with MYOS and can be used as a reasoning agent.
+
+### Probe Results
+- **CLI on PATH**: `agent` / `cursor` present
+- **`available()`**: `True` — logged-in Cursor Agent CLI (`agent status` healthy)
+- **Default brain command**: `agent --print --trust --mode ask --output-format text` (read-only ask mode)
+- **`reason()` smoke**: returned exact reply `CURSOR_OK` with zero proposed actions
+
+### What This Confirms
+- Doctor/backend discovery can surface Cursor alongside Claude, Claude Code, Copilot, Devin, etc.
+- Chat/reasoning path works without granting write power (ask mode)
+- Executor path remains separate via `MYOS_AGENT_EXEC_CURSOR` / worktree harness — not exercised in this smoke
+
+### Live Session Evidence
+Cursor Agent also drove the CI recovery on `main` (whitespace + ruff format), including Public Hygiene / Static Checks going green after retry: https://github.com/mkhalid-s/personal-assistant-os/actions/runs/35501951073
+
 ## Recommendations
 
 ### Immediate (Next Session)
